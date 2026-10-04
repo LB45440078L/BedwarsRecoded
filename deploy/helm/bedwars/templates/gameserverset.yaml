@@ -29,6 +29,8 @@ spec:
                   fieldPath: metadata.name
             - name: BEDWARS_ARENA_GROUP
               value: {{ .Values.arena.group | quote }}
+            - name: BEDWARS_TEMPLATE_SOURCE
+              value: {{ .Values.arena.templateSource | default "S3" | quote }}
             - name: BEDWARS_CONTROLLER_URL
               value: {{ include "bedwars.controllerUrl" . | quote }}
             - name: BEDWARS_TEMPLATE_NAME

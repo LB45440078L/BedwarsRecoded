@@ -146,7 +146,7 @@ public final class BedwarsRecodedPlugin extends JavaPlugin {
         getServer().getScheduler().runTaskTimer(this, this::applyTeamEffects, 40L, 40L);
 
         loadTemplate(template, config);
-        reporter.reportReady(config.serverId(), template, game.id());
+        reporter.reportReady(config.serverId(), config.arenaGroup(), template, game.id());
         LOG.info("pod_ready pod={} game={} template={} shop={}", config.serverId(), game.id(),
                 template.coordinate(), shop.id());
     }
@@ -461,11 +461,11 @@ public final class BedwarsRecodedPlugin extends JavaPlugin {
     @Override
     public void onDisable() {
         if (game != null) {
-            reporter.reportDraining(game.id(), game.activePlayerCount());
+            reporter.reportDraining(config.serverId(), game.id(), game.activePlayerCount());
             if (game.state() == GameState.RUNNING) {
                 game.endGame(game.winnerTeamId(), System.currentTimeMillis());
             }
-            reporter.reportGameEnded(game.results());
+            reporter.reportGameEnded(config.serverId(), game.results());
         }
         if (statsRepository != null) {
             statsRepository.close();

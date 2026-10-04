@@ -10,17 +10,17 @@ import dev.bedwars.api.dto.TemplateDescriptor;
 public interface PodReporter {
 
     /** Announce that this pod has loaded its template and is accepting players. */
-    void reportReady(String podId, TemplateDescriptor template, String gameId);
+    void reportReady(String podId, String arenaGroup, TemplateDescriptor template, String gameId);
 
     /** Announce that a match has begun. */
     void reportGameStarted(String gameId, int playerCount);
 
-    /** Flush the structured end-of-game payload. */
-    void reportGameEnded(GameResult result);
+    /** Flush the structured end-of-game payload for a pod leaving the pool. */
+    void reportGameEnded(String podId, GameResult result);
 
     /** Periodic liveness + metrics heartbeat (TPS, player count, phase). */
     void heartbeat(PodHeartbeat heartbeat);
 
-    /** Best-effort final report during SIGTERM drain. */
-    void reportDraining(String gameId, int remainingPlayers);
+    /** Best-effort final report during SIGTERM drain; removes the pod from the pool. */
+    void reportDraining(String podId, String gameId, int remainingPlayers);
 }

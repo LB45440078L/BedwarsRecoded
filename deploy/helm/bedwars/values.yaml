@@ -9,6 +9,7 @@ image:
 # Arena group this release hosts.
 arena:
   group: solo
+  templateSource: S3
   teamCount: 2
   playersPerTeam: 2
 

@@ -58,9 +58,9 @@ public final class WebhookServer {
         server.setExecutor(executor);
         server.createContext("/pods/ready", exchange -> handle(exchange, this::podReady));
         server.createContext("/pods/started", exchange -> handle(exchange, this::logOnly));
-        server.createContext("/pods/ended", exchange -> handle(exchange, this::logOnly));
+        server.createContext("/pods/ended", exchange -> handle(exchange, this::podGone));
         server.createContext("/pods/heartbeat", exchange -> handle(exchange, this::logOnly));
-        server.createContext("/pods/draining", exchange -> handle(exchange, this::logOnly));
+        server.createContext("/pods/draining", exchange -> handle(exchange, this::podGone));
         server.createContext("/lobby/queue", exchange -> handle(exchange, this::lobbyQueue));
         server.createContext("/queue/depth", exchange -> respond(exchange, 200, gson.toJson(queueManager.depthByGroup())));
         server.createContext("/metrics", exchange -> respondText(exchange, 200, metrics()));
@@ -90,6 +90,21 @@ public final class WebhookServer {
 
     private String logOnly(JsonObject body) {
         log.info("Controller received: {}", body);
+        return "{\"accepted\":true}";
+    }
+
+    /**
+     * A pod that reports draining or ended is leaving the pool: remove it so a
+     * later queue request is never dispatched to a pod that no longer exists.
+     */
+    private String podGone(JsonObject body) {
+        if (body.has("podId") && !body.get("podId").isJsonNull()) {
+            String podId = body.get("podId").getAsString();
+            registry.markGone(podId);
+            log.info("Pod {} removed from the ready pool; {}", podId, body);
+        } else {
+            log.info("Controller received (no podId): {}", body);
+        }
         return "{\"accepted\":true}";
     }
 

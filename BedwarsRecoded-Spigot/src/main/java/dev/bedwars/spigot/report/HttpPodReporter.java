@@ -34,9 +34,10 @@ public final class HttpPodReporter implements PodReporter {
     }
 
     @Override
-    public void reportReady(String podId, TemplateDescriptor template, String gameId) {
+    public void reportReady(String podId, String arenaGroup, TemplateDescriptor template, String gameId) {
         post("/pods/ready", Map.of(
                 "podId", podId,
+                "arenaGroup", arenaGroup,
                 "gameId", gameId,
                 "template", template.coordinate(),
                 "phase", "READY"));
@@ -48,8 +49,8 @@ public final class HttpPodReporter implements PodReporter {
     }
 
     @Override
-    public void reportGameEnded(GameResult result) {
-        post("/pods/ended", result);
+    public void reportGameEnded(String podId, GameResult result) {
+        post("/pods/ended", Map.of("podId", podId, "result", result));
     }
 
     @Override
@@ -58,8 +59,9 @@ public final class HttpPodReporter implements PodReporter {
     }
 
     @Override
-    public void reportDraining(String gameId, int remainingPlayers) {
+    public void reportDraining(String podId, String gameId, int remainingPlayers) {
         Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("podId", podId);
         payload.put("gameId", gameId);
         payload.put("remainingPlayers", remainingPlayers);
         payload.put("phase", "DRAINING");

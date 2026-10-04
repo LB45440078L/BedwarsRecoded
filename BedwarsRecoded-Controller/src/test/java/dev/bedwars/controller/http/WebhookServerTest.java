@@ -109,4 +109,14 @@ class WebhookServerTest {
         assertThat(metrics.body()).contains("bedwars_queue_depth");
         assertThat(metrics.body()).contains("bedwars_ready_pods{group=\"doubles\"} 1");
     }
+
+    @Test
+    void drainingPodIsRemovedFromReadyPool() throws Exception {
+        post("/pods/ready", "{\"podId\":\"pod-x\",\"arenaGroup\":\"solo\"}");
+        assertThat(get("/metrics").body()).contains("bedwars_ready_pods{group=\"solo\"} 1");
+
+        post("/pods/draining", "{\"podId\":\"pod-x\",\"gameId\":\"g\",\"remainingPlayers\":0}");
+
+        assertThat(get("/metrics").body()).contains("bedwars_ready_pods{group=\"solo\"} 0");
+    }
 }

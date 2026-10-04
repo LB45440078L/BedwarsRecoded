@@ -23,6 +23,9 @@ spec:
           env:
             - name: BEDWARS_ARENA_GROUP
               value: "solo"
+            # Templates come from S3 in production (Slime via AdvancedSlimePaper).
+            - name: BEDWARS_TEMPLATE_SOURCE
+              value: "S3"
             - name: BEDWARS_CONTROLLER_URL
               value: "http://bedwars-controller:8080"
             - name: BEDWARS_TEMPLATE_S3_ENDPOINT

@@ -33,3 +33,9 @@ keda:
 gameServerSet:
   enabled: true
   replicas: 0
+  # This node is only 4 GiB total, so the default 2/4Gi game-pod footprint
+  # starves the API server. Use a small footprint that still boots Paper.
+  cpuRequest: 500m
+  memoryRequest: 512Mi
+  cpuLimit: "1"
+  memoryLimit: 1536Mi
