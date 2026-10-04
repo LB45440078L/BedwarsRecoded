@@ -41,7 +41,7 @@ Spigot adapter:
 - Shop GUI (`/bw shop`), Upgrade GUI (`/bw upgrades`), live scoreboard sidebar.
 - Listeners: bed break, death/respawn, join/quit, void kill, bed protection, spectator
   on elimination, sign join (`[bedwars]`).
-- Join via command (`/bw join`), sign, or GUI; `/bw status|start|stop`.
+- Join via command (`/bw join`) or sign (`[bedwars]`); `/bw status|start|stop`.
 - Pod reporting to the controller (ready/started/ended/heartbeat/draining).
 
 ## Targets (verified)
