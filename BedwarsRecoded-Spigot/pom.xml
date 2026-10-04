@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>dev.bedwars</groupId>
+        <artifactId>bedwars-recoded-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>BedwarsRecoded-Spigot</artifactId>
+    <name>BedwarsRecoded :: Spigot</name>
+    <description>Paper/Spigot plugin entrypoint. Thin listeners resolve the owning Game and delegate to Core.</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>dev.bedwars</groupId>
+            <artifactId>BedwarsRecoded-Core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.papermc.paper</groupId>
+            <artifactId>paper-api</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+            </resource>
+        </resources>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <!-- Only our own modules are shaded. Everything else is
+                                 provided by the server or loaded via plugin.yml `libraries`. -->
+                            <artifactSet>
+                                <includes>
+                                    <include>dev.bedwars:BedwarsRecoded-Core</include>
+                                    <include>dev.bedwars:BedwarsRecoded-API</include>
+                                </includes>
+                            </artifactSet>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                        <exclude>module-info.class</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Hard gate: the shaded plugin jar must stay under 4 MB. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>verify-jar-size</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <target>
+                                <fail message="Plugin jar exceeds the 4 MB budget">
+                                    <condition>
+                                        <length file="${project.build.directory}/${project.build.finalName}.jar"
+                                                when="greater" length="${max.jar.bytes}"/>
+                                    </condition>
+                                </fail>
+                                <echo message="JAR size gate OK: ${project.build.finalName}.jar is under 4 MB"/>
+                            </target>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

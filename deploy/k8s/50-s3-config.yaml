@@ -1,0 +1,22 @@
+# S3-compatible object store for Slime world templates.
+# Templates are semantic-versioned (name@x.y.z) so map changes can be canaried.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bedwars-s3
+  namespace: bedwars
+data:
+  endpoint: "http://minio.bedwars-storage:9000"
+  bucket: "bedwars-templates"
+  region: "us-east-1"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bedwars-s3-credentials
+  namespace: bedwars
+type: Opaque
+stringData:
+  # Replace in real clusters; use ExternalSecrets/SealedSecrets in production.
+  access-key: "REPLACE_ME"
+  secret-key: "REPLACE_ME"

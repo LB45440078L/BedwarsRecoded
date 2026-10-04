@@ -1,0 +1,8 @@
+{
+  "id": "bedwarsrecoded",
+  "name": "BedwarsRecoded",
+  "version": "1.0.0-SNAPSHOT",
+  "description": "Persistent Bedwars proxy: routes players to game pods on the controller's instruction.",
+  "authors": ["BedwarsRecoded"],
+  "main": "dev.bedwars.velocity.BedwarsVelocityPlugin"
+}

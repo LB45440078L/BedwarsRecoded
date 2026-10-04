@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: bedwars
+resources:
+  - 00-namespace.yaml
+  - 50-s3-config.yaml
+  - 51-mysql.yaml
+  - 10-gameserverset.yaml
+  - 11-keda-scaledobject.yaml
+  - 20-mc-router.yaml
+  - 30-velocity.yaml
+  - 40-controller.yaml
+commonLabels:
+  app.kubernetes.io/part-of: bedwars-recoded

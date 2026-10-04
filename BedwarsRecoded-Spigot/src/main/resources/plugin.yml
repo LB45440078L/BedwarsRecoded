@@ -1,0 +1,16 @@
+name: "BedwarsRecoded"
+version: ${project.version}
+main: dev.bedwars.spigot.BedwarsRecodedPlugin
+api-version: '26.2'
+authors: [ "BedwarsRecoded" ]
+description: "Kubernetes-native Bedwars game pod. One match per pod; pod destruction is the reset."
+website: ${project.url}
+# Downloaded by Paper at startup, so the plugin jar stays tiny (constraint: JAR < 4 MB).
+libraries:
+  - "com.zaxxer:HikariCP:6.3.0"
+  - "com.mysql:mysql-connector-j:9.3.0"
+commands:
+  bedwars:
+    description: "Bedwars game-pod administration."
+    aliases: [ bw ]
+    permission: bedwars.admin

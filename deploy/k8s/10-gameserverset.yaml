@@ -1,0 +1,63 @@
+# OpenKruise GameServerSet: pod lifecycle Ready -> Allocated -> Destroyed.
+# Scaling starts at zero; KEDA (see 11-keda-scaledobject.yaml) and the controller
+# drive replicas. Each replica is one ephemeral match pod.
+apiVersion: game.kruise.io/v1alpha1
+kind: GameServerSet
+metadata:
+  name: bedwars-solo
+  namespace: bedwars
+spec:
+  replicas: 0
+  serviceName: bedwars-solo
+  gameServerTemplate:
+    spec:
+      containers:
+        - name: paper
+          image: bedwars-spigot:1.0.0
+          ports:
+            - name: minecraft
+              containerPort: 25565
+          env:
+            - name: BEDWARS_ARENA_GROUP
+              value: "solo"
+            - name: BEDWARS_CONTROLLER_URL
+              value: "http://bedwars-controller:8080"
+            - name: BEDWARS_TEMPLATE_S3_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: bedwars-s3
+                  key: endpoint
+            - name: BEDWARS_TEMPLATE_S3_BUCKET
+              valueFrom:
+                configMapKeyRef:
+                  name: bedwars-s3
+                  key: bucket
+            - name: BEDWARS_TEMPLATE_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bedwars-s3-credentials
+                  key: access-key
+            - name: BEDWARS_TEMPLATE_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bedwars-s3-credentials
+                  key: secret-key
+          resources:
+            # Hard constraint #5: never run a pod without strict requests and limits.
+            requests:
+              cpu: "1"
+              memory: "2Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+          readinessProbe:
+            tcpSocket:
+              port: 25565
+            initialDelaySeconds: 20
+            periodSeconds: 5
+          lifecycle:
+            preStop:
+              exec:
+                # Graceful drain: report DRAINING, finish the game, then exit.
+                command: ["/bin/sh", "-c", "sleep 5"]
+      terminationGracePeriodSeconds: 60

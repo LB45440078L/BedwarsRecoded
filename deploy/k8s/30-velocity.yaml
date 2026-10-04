@@ -1,0 +1,48 @@
+# Velocity: the persistent, single entry point. Players always connect here first;
+# the proxy asks the controller where to send them.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: velocity
+  namespace: bedwars
+  labels:
+    app: velocity
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: velocity
+  template:
+    metadata:
+      labels:
+        app: velocity
+    spec:
+      containers:
+        - name: velocity
+          image: bedwars-velocity:1.0.0
+          env:
+            - name: CONTROLLER_URL
+              value: "http://bedwars-controller:8080"
+          ports:
+            - name: proxy
+              containerPort: 25577
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: velocity
+  namespace: bedwars
+spec:
+  selector:
+    app: velocity
+  ports:
+    - name: proxy
+      port: 25565
+      targetPort: 25577

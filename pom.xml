@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>dev.bedwars</groupId>
+    <artifactId>bedwars-recoded-parent</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <name>BedwarsRecoded</name>
+    <description>Kubernetes-native Bedwars: pods-as-cattle, ephemeral per-match game servers.</description>
+    <url>https://github.com/LB45440078L/Bedwars</url>
+
+    <modules>
+        <module>BedwarsRecoded-API</module>
+        <module>BedwarsRecoded-Core</module>
+        <module>BedwarsRecoded-Spigot</module>
+        <module>BedwarsRecoded-Velocity</module>
+        <module>BedwarsRecoded-Controller</module>
+    </modules>
+
+    <properties>
+        <maven.compiler.release>25</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
+        <!-- Platform APIs (verified against repo.papermc.io, 2026) -->
+        <paper.version>26.2.build.129-stable</paper.version>
+        <velocity.version>4.2.0</velocity.version>
+
+        <!-- Runtime / infrastructure -->
+        <hikari.version>6.3.0</hikari.version>
+        <mysql.version>9.3.0</mysql.version>
+        <gson.version>2.14.0</gson.version>
+        <slf4j.version>2.0.17</slf4j.version>
+        <fabric8.version>7.3.1</fabric8.version>
+        <adventure.version>4.24.0</adventure.version>
+
+        <!-- Testing -->
+        <junit.version>5.12.2</junit.version>
+        <assertj.version>3.27.3</assertj.version>
+
+        <!-- Build plugins -->
+        <compiler.plugin.version>3.14.0</compiler.plugin.version>
+        <surefire.plugin.version>3.5.3</surefire.plugin.version>
+        <shade.plugin.version>3.6.1</shade.plugin.version>
+        <jar.plugin.version>3.4.2</jar.plugin.version>
+        <antrun.plugin.version>3.1.0</antrun.plugin.version>
+
+        <!-- Deliverable size gate -->
+        <max.jar.bytes>4194304</max.jar.bytes>
+    </properties>
+
+    <repositories>
+        <repository>
+            <id>papermc</id>
+            <url>https://repo.papermc.io/repository/maven-public/</url>
+        </repository>
+    </repositories>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- Internal modules -->
+            <dependency>
+                <groupId>dev.bedwars</groupId>
+                <artifactId>BedwarsRecoded-API</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.bedwars</groupId>
+                <artifactId>BedwarsRecoded-Core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <!-- Paper API: provided at runtime by the server -->
+            <dependency>
+                <groupId>io.papermc.paper</groupId>
+                <artifactId>paper-api</artifactId>
+                <version>${paper.version}</version>
+                <scope>provided</scope>
+            </dependency>
+
+            <!-- Velocity API: provided at runtime by the proxy -->
+            <dependency>
+                <groupId>com.velocitypowered</groupId>
+                <artifactId>velocity-api</artifactId>
+                <version>${velocity.version}</version>
+                <scope>provided</scope>
+            </dependency>
+
+            <!-- Persistence: downloaded at runtime via plugin.yml `libraries` -->
+            <dependency>
+                <groupId>com.zaxxer</groupId>
+                <artifactId>HikariCP</artifactId>
+                <version>${hikari.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.mysql</groupId>
+                <artifactId>mysql-connector-j</artifactId>
+                <version>${mysql.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.google.code.gson</groupId>
+                <artifactId>gson</artifactId>
+                <version>${gson.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.slf4j</groupId>
+                <artifactId>slf4j-api</artifactId>
+                <version>${slf4j.version}</version>
+            </dependency>
+
+            <!-- Controller: Kubernetes API client -->
+            <dependency>
+                <groupId>io.fabric8</groupId>
+                <artifactId>kubernetes-client</artifactId>
+                <version>${fabric8.version}</version>
+            </dependency>
+
+            <!-- Testing -->
+            <dependency>
+                <groupId>org.junit.jupiter</groupId>
+                <artifactId>junit-jupiter</artifactId>
+                <version>${junit.version}</version>
+                <scope>test</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.assertj</groupId>
+                <artifactId>assertj-core</artifactId>
+                <version>${assertj.version}</version>
+                <scope>test</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <version>${compiler.plugin.version}</version>
+                    <configuration>
+                        <release>${maven.compiler.release}</release>
+                        <parameters>true</parameters>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>${surefire.plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-shade-plugin</artifactId>
+                    <version>${shade.plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-jar-plugin</artifactId>
+                    <version>${jar.plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-antrun-plugin</artifactId>
+                    <version>${antrun.plugin.version}</version>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
+</project>

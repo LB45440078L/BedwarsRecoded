@@ -1,0 +1,101 @@
+# Controller: watches the queue, pre-warms GameServerSets, receives pod reports.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bedwars-controller
+  namespace: bedwars
+  labels:
+    app: bedwars-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bedwars-controller
+  template:
+    metadata:
+      labels:
+        app: bedwars-controller
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: bedwars-controller
+      containers:
+        - name: controller
+          image: bedwars-controller:1.0.0
+          env:
+            - name: BEDWARS_NAMESPACE
+              value: "bedwars"
+            - name: BEDWARS_GAMESERVERSET
+              value: "bedwars-solo"
+            - name: BEDWARS_HTTP_PORT
+              value: "8080"
+            - name: BEDWARS_MIN_REPLICAS
+              value: "0"
+            - name: BEDWARS_MAX_REPLICAS
+              value: "50"
+            - name: BEDWARS_PREWARM_THRESHOLD
+              value: "2"
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bedwars-controller
+  namespace: bedwars
+spec:
+  selector:
+    app: bedwars-controller
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: bedwars-controller
+  namespace: bedwars
+---
+# The controller scales GameServerSets and reads pods/status.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: bedwars-controller
+  namespace: bedwars
+rules:
+  - apiGroups: ["game.kruise.io"]
+    resources: ["gameserversets", "gameserversets/status"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["pods", "services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: bedwars-controller
+  namespace: bedwars
+subjects:
+  - kind: ServiceAccount
+    name: bedwars-controller
+    namespace: bedwars
+roleRef:
+  kind: Role
+  name: bedwars-controller
+  apiGroup: rbac.authorization.k8s.io

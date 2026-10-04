@@ -1,0 +1,51 @@
+# BedwarsRecoded game-pod configuration.
+# This pod hosts exactly one match for exactly one arena group.
+
+server-id: "pod-${HOSTNAME}"
+
+# The arena group this pod serves (solo, doubles, quads ...).
+arena:
+  group: "solo"
+  team-count: 2
+  players-per-team: 2
+  countdown-seconds: 15
+  sudden-death-after-seconds: 300
+  void-y-threshold: 0.0
+  island-radius: 30.0
+  bed-protection-radius: 3.0
+
+# Where the map template comes from. Production uses S3 (Slime); local is a
+# documented dev-only fallback that copies a world directory on the same host.
+template:
+  name: "Glacier"
+  version: "1.0.0"
+  source: "LOCAL"        # S3 | LOCAL
+  local-path: "templates/Glacier"
+  s3:
+    endpoint: "http://minio:9000"
+    bucket: "bedwars-templates"
+    region: "us-east-1"
+    access-key: ""
+    secret-key: ""
+
+# Controller webhook. The pod reports readiness, heartbeats and game results here.
+controller:
+  base-url: "http://bedwars-controller:8080"
+  heartbeat-seconds: 15
+
+database:
+  host: "mysql"
+  port: 3306
+  name: "bedwars"
+  username: "bedwars"
+  password: "bedwars"
+  pool-size: 4
+  baseline-elo: 1000
+
+ranking:
+  k-factor: 32
+  leaderboard-refresh-seconds: 60
+  leaderboard-page-size: 100
+
+logging:
+  json: true            # structured logs with correlation ids (game-id, pod-id)
