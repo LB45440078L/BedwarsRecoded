@@ -19,10 +19,37 @@ and a controller that drives scaling.
 | `BedwarsRecoded-Velocity` | Persistent proxy; asks the controller where to route players. |
 | `BedwarsRecoded-Controller` | Standalone service: queue watcher, GameServerSet scaler, pod webhook receiver. |
 
+## Implemented features
+
+Gameplay (Core, unit-tested, Bukkit-free):
+- Match state machine (WAITING → COUNTDOWN → RUNNING → SUDDEN_DEATH → ENDED) with
+  validated transitions.
+- Teams with auto-balancing, beds, bed-protection radius, island radius, void-Y kill.
+- Generators with tiers and a deterministic tick; Iron Forge upgrades retier a team's
+  generators.
+- Shop system: categories, prices in four currencies, permanent items, downgradable
+  tiered items with refund, quick-buy store.
+- Team upgrades (Sharpness, Protection, Maniac Miner, Iron Forge, Heal Pool, Dragon
+  Buff) and traps (It's a Trap!, Counter-Offensive, Alarm, Miner Fatigue, Blindness &
+  Poison) with scaling trap cost and FIFO trigger order.
+- Per-player language (`/bw lang`) with a message catalog and English fallback.
+- Scoreboard content builder.
+- Arena definitions loaded from YAML (SnakeYAML) — teams, beds, spawns, generators, shop.
+- ELO ranking, MySQL persistence with versioned migrations, cached leaderboards.
+
+Spigot adapter:
+- Shop GUI (`/bw shop`), Upgrade GUI (`/bw upgrades`), live scoreboard sidebar.
+- Listeners: bed break, death/respawn, join/quit, void kill, bed protection, spectator
+  on elimination, sign join (`[bedwars]`).
+- Join via command (`/bw join`), sign, or GUI; `/bw status|start|stop`.
+- Pod reporting to the controller (ready/started/ended/heartbeat/draining).
+
 ## Targets (verified)
 
-- **Paper API**: `26.2.build.129-stable` (compatibility: 26.1, 26.2, 26.3 — all three
-  exist on `repo.papermc.io`; only the compile target is pinned).
+- **Spigot API**: `26.2-R0.1-SNAPSHOT` (the plugin's compile target — runs on Spigot and
+  Paper). Paper API `26.2.build.129-stable` is retained for reference. Compatibility
+  covers 26.1, 26.2, 26.3 (all exist on the respective repos). The plugin deliberately
+  uses only Spigot API surface (no Paper-only Adventure), so it loads on plain Spigot.
 - **Velocity API**: `4.2.0`.
 - **Java**: source/target release **25** (`maven.compiler.release=25`). Built with the
   installed JDK 27 (Temurin), which targets release 25 cleanly.

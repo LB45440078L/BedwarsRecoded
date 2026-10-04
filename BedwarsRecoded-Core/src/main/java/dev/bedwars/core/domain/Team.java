@@ -1,11 +1,14 @@
 package dev.bedwars.core.domain;
 
+import dev.bedwars.core.upgrade.TeamUpgrades;
+import dev.bedwars.core.upgrade.TrapQueue;
+
 import java.util.LinkedHashSet;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 
-/** A team within a match: colour, roster, and its bed. */
+/** A team within a match: colour, roster, its bed, and its upgrades and traps. */
 public final class Team {
 
     private final String id;
@@ -13,6 +16,8 @@ public final class Team {
     private final Set<UUID> members = new LinkedHashSet<>();
     private final Bed bed;
     private final int maxSize;
+    private final TeamUpgrades upgrades = new TeamUpgrades();
+    private final TrapQueue traps = new TrapQueue();
     private boolean eliminated;
 
     public Team(String id, TeamColor color, Bed bed, int maxSize) {
@@ -20,6 +25,14 @@ public final class Team {
         this.color = Objects.requireNonNull(color, "color");
         this.bed = Objects.requireNonNull(bed, "bed");
         this.maxSize = maxSize;
+    }
+
+    public TeamUpgrades upgrades() {
+        return upgrades;
+    }
+
+    public TrapQueue traps() {
+        return traps;
     }
 
     public String id() {

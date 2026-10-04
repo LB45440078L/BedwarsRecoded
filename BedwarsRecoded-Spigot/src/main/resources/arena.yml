@@ -1,0 +1,99 @@
+# Sample arena layout for the Glacier fixture. Loaded if present in the pod's
+# data folder; otherwise the plugin derives a default arena from config.yml.
+# In production these coordinates are produced by the Slime template loader.
+
+group:
+  id: solo
+  team-count: 2
+  players-per-team: 2
+  countdown-seconds: 15
+  sudden-death-after-seconds: 300
+  void-y-threshold: 0.0
+  island-radius: 30.0
+  bed-protection-radius: 3.0
+  team-generators: [IRON, GOLD]
+
+teams:
+  - id: red
+    bed: { x: 8.5, y: 64, z: 8.5 }
+    spawn: { x: 8.5, y: 66, z: 8.5 }
+  - id: blue
+    bed: { x: -8.5, y: 64, z: -8.5 }
+    spawn: { x: -8.5, y: 66, z: -8.5 }
+
+generators:
+  - id: red-iron
+    type: IRON
+    tier: I
+    x: 10
+    y: 64
+    z: 10
+  - id: blue-iron
+    type: IRON
+    tier: I
+    x: -10
+    y: 64
+    z: -10
+  - id: center-diamond
+    type: DIAMOND
+    tier: I
+    x: 0
+    y: 64
+    z: 0
+  - id: center-emerald
+    type: EMERALD
+    tier: I
+    x: 0
+    y: 64
+    z: 4
+
+shop:
+  id: default
+  display-name: "Item Shop"
+  categories:
+    - id: blocks
+      display-name: "Blocks"
+      slot: 0
+      icon: WHITE_WOOL
+      items:
+        - id: wool
+          display-name: "Wool"
+          slot: 0
+          material: WHITE_WOOL
+          give-amount: 16
+          currency: IRON
+          amount: 4
+        - id: wood
+          display-name: "Wood"
+          slot: 1
+          material: OAK_PLANKS
+          give-amount: 16
+          currency: GOLD
+          amount: 4
+    - id: combat
+      display-name: "Combat"
+      slot: 1
+      icon: IRON_SWORD
+      items:
+        - id: sword-stone
+          display-name: "Stone Sword"
+          slot: 0
+          material: STONE_SWORD
+          give-amount: 1
+          currency: GOLD
+          amount: 10
+          permanent: true
+          downgradable: true
+          upgrade-group: sword
+          tier: 1
+        - id: sword-iron
+          display-name: "Iron Sword"
+          slot: 1
+          material: IRON_SWORD
+          give-amount: 1
+          currency: GOLD
+          amount: 7
+          permanent: true
+          downgradable: true
+          upgrade-group: sword
+          tier: 2

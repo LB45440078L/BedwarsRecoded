@@ -347,6 +347,50 @@ public final class Game {
     public record GeneratorSpawn(String generatorId, GeneratorType type, Vec3 position, int itemCount) {
     }
 
+    // ---- world rules -----------------------------------------------------
+
+    /** A player below the void threshold is dead. */
+    public boolean isVoidKill(Vec3 position) {
+        return position.y() < group.voidYThreshold();
+    }
+
+    /** True if {@code point} is within a team's island radius (build anchor = bed). */
+    public boolean isWithinIsland(Vec3 point, String teamId) {
+        return team(teamId).map(team -> point.isWithin(team.bed().position(), group.islandRadius())).orElse(false);
+    }
+
+    /** True if block placement at {@code point} is forbidden by a standing bed's protection radius. */
+    public boolean isProtectedFromBuild(Vec3 point) {
+        return teams.values().stream()
+                .filter(team -> !team.bed().isDestroyed())
+                .anyMatch(team -> point.isWithin(team.bed().position(), team.bed().protectionRadius()));
+    }
+
+    /** Turns a player into a spectator (after elimination). */
+    public void makeSpectator(UUID uuid) {
+        session(uuid).ifPresent(session -> session.setState(PlayerState.SPECTATOR));
+    }
+
+    /** Applies a team's Iron Forge level to its iron and gold generators. */
+    public void applyForge(String teamId, long nowMillis) {
+        int level = team(teamId).map(team -> team.upgrades().levelOf(
+                dev.bedwars.core.upgrade.UpgradeType.IRON_FORGE)).orElse(0);
+        GeneratorTier tier = switch (level) {
+            case 0 -> GeneratorTier.I;
+            case 1 -> GeneratorTier.II;
+            case 2 -> GeneratorTier.III;
+            case 3 -> GeneratorTier.IV;
+            default -> GeneratorTier.MAX;
+        };
+        for (Generator generator : generators) {
+            boolean teamGenerator = generator.id().startsWith(teamId + "-");
+            boolean forgeable = generator.type() == GeneratorType.IRON || generator.type() == GeneratorType.GOLD;
+            if (teamGenerator && forgeable) {
+                generator.setTier(tier, nowMillis);
+            }
+        }
+    }
+
     // ---- results ---------------------------------------------------------
 
     public GameResult results() {
