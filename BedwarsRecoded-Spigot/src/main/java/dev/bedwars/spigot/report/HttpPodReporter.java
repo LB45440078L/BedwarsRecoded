@@ -6,6 +6,8 @@ import dev.bedwars.api.dto.GameResult;
 import dev.bedwars.api.dto.TemplateDescriptor;
 import dev.bedwars.api.service.PodHeartbeat;
 import dev.bedwars.api.service.PodReporter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -23,6 +25,8 @@ import java.util.concurrent.Executors;
  * a virtual thread: a controller outage must never stall the game tick.
  */
 public final class HttpPodReporter implements PodReporter {
+
+    private static final Logger LOG = LoggerFactory.getLogger("bedwars-pod");
 
     private final String baseUrl;
     private final Gson gson = JsonSupport.gson();
@@ -78,8 +82,10 @@ public final class HttpPodReporter implements PodReporter {
                         .POST(HttpRequest.BodyPublishers.ofString(json, StandardCharsets.UTF_8))
                         .build();
                 http.send(request, HttpResponse.BodyHandlers.discarding());
-            } catch (Exception ignored) {
-                // Controller unreachable: drop the report. Liveness is the controller's concern.
+            } catch (Exception e) {
+                // Never stall the tick, but never silently drop either: a controller
+                // outage must be visible in the pod log.
+                LOG.warn("report_failed path={} error={}", path, e.toString());
             }
         });
     }

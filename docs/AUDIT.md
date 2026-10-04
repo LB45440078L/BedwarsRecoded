@@ -8,7 +8,8 @@ that carries it. Statuses:
 - **Partial** — modelled and wired, but one step short of complete.
 - **Not done** — absent; listed so nothing is silently overclaimed.
 
-Last updated after the gap-closure pass that fixed four defects (see §12).
+Last updated after the gap-closure pass that fixed defects found by auditing the code and
+exercising the live cluster HTTP API (see §12 — eleven in total).
 
 ---
 
@@ -192,13 +193,28 @@ Four real defects, found by auditing what the code actually does at runtime:
    `Local template not found`. Fixed by making `local-path` the directory *containing*
    templates (`templates`) and documenting it in `config.yml` and `docs/SETUP.md`.
 
+Then, found by exercising the live controller HTTP API:
+
+5. **The controller's error path was broken.** `handle()` used `try (exchange)`, which
+   closes the exchange *before* the `catch` runs — so any malformed request produced an
+   **empty reply** instead of a 400, hiding every bad request. Fixed by closing in
+   `finally`; covered by `malformedQueueBodyReturnsAReal400NotAnEmptyReply`.
+6. **The ready pool double-counted a pod.** OpenKruise reuses pod names, so a recreated
+   `bedwars-solo-0` reporting READY again added a *second* pool entry for the same id:
+   `bedwars_ready_pods{solo}` read **2** with one pod, and the same pod could be handed
+   to two different parties. Fixed by making `registerReady` id-keyed and idempotent;
+   covered by `ReadyPodRegistryTest`.
+7. **Pod report failures were silent.** `HttpPodReporter.post` swallowed every exception,
+   so a controller outage was invisible in the pod log. Now logged as
+   `report_failed path=… error=…`.
+
 Earlier in the project, four more were found by running the cluster:
 
-5. Missing `eula.txt` in the game image (the pod would exit on boot).
-6. Ready reports omitted the arena group, registering pods under `any`.
-7. The GameServerSet never set `BEDWARS_TEMPLATE_SOURCE`, so the S3 config was ignored.
-8. Dead pods were never removed from the ready pool (a queue request could be routed to
-   a pod that no longer existed).
+8. Missing `eula.txt` in the game image (the pod would exit on boot).
+9. Ready reports omitted the arena group, registering pods under `any`.
+10. The GameServerSet never set `BEDWARS_TEMPLATE_SOURCE`, so the S3 config was ignored.
+11. Dead pods were never removed from the ready pool (a queue request could be routed to
+    a pod that no longer existed).
 
 ## 13. Remaining gaps (honest list)
 

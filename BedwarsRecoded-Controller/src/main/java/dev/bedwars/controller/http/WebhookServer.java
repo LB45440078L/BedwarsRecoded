@@ -135,13 +135,18 @@ public final class WebhookServer {
     }
 
     private void handle(HttpExchange exchange, Handler handler) throws IOException {
-        try (exchange) {
+        try {
             JsonObject body = readJson(exchange);
             String response = handler.handle(body);
             respond(exchange, 200, response);
         } catch (RuntimeException e) {
+            // A malformed body must produce a real 400. Do NOT use try-with-resources
+            // here: it closes the exchange before this catch runs, so the error
+            // response would fail and the client would see an empty reply.
             log.warn("Request handling failed: {}", e.getMessage());
             respond(exchange, 400, "{\"error\":\"bad_request\"}");
+        } finally {
+            exchange.close();
         }
     }
 

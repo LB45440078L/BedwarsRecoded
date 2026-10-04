@@ -252,8 +252,12 @@ public final class BedwarsRecodedPlugin extends JavaPlugin {
         if (game == null) {
             return;
         }
-        reporter.heartbeat(new PodHeartbeat(config.serverId(), game.id(), tpsMeter.tps(),
-                game.playerCount(), game.phase(), System.currentTimeMillis() - startedAtMillis));
+        PodHeartbeat beat = new PodHeartbeat(config.serverId(), game.id(), tpsMeter.tps(),
+                game.playerCount(), game.phase(), System.currentTimeMillis() - startedAtMillis);
+        reporter.heartbeat(beat);
+        LOG.info("heartbeat pod={} game={} tps={} players={} phase={} uptime={}ms",
+                beat.podId(), beat.gameId(), String.format("%.1f", beat.tps()), beat.playerCount(),
+                beat.phase(), beat.uptimeMillis());
     }
 
     private void refreshLeaderboards() {

@@ -131,4 +131,14 @@ class WebhookServerTest {
         assertThat(status.body()).contains("\"ready\":1");
         assertThat(status.body()).contains("\"queued\":0");
     }
+
+    @Test
+    void malformedQueueBodyReturnsAReal400NotAnEmptyReply() throws Exception {
+        // Missing required 'player'/'username': the handler throws, and the client
+        // must still receive a 400 rather than a dropped connection.
+        HttpResponse<String> response = post("/lobby/queue", "{\"priority\":0}");
+
+        assertThat(response.statusCode()).isEqualTo(400);
+        assertThat(response.body()).contains("bad_request");
+    }
 }

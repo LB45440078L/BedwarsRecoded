@@ -203,7 +203,7 @@ curl -s localhost:18080/healthz
 curl -s localhost:18080/metrics | grep bedwars_
 curl -s -XPOST localhost:18080/lobby/queue \
      -H 'Content-Type: application/json' \
-     -d '{"players":["11111111-1111-1111-1111-111111111111"],"preferredGroup":"solo","priority":0,"partyId":null}'
+     -d '{"player":"11111111-1111-1111-1111-111111111111","username":"Tester","priority":0,"preferredGroup":"solo","party":null,"requestedAtMillis":0}'
 ```
 
 A ready pod yields `{"podAddress":"...","members":[...]}`; no capacity yields a
@@ -311,7 +311,7 @@ C=/mnt/c/Windows/System32/curl.exe
 # 3. dispatch a player
 "$C" -s -XPOST http://localhost:18081/lobby/queue \
      -H 'Content-Type: application/json' \
-     -d '{"players":["11111111-1111-1111-1111-111111111111"],"preferredGroup":"solo","priority":0,"partyId":null}'
+     -d '{"player":"11111111-1111-1111-1111-111111111111","username":"Tester","priority":0,"preferredGroup":"solo","party":null,"requestedAtMillis":0}'
 #   {"podAddress":"bedwars-solo-0","members":["1111..."],"retryAfterMillis":0}
 
 # 4. the pod is consumed

@@ -17,9 +17,26 @@ public final class ReadyPodRegistry {
     private final Map<String, Deque<String>> readyByGroup = new ConcurrentHashMap<>();
     private final Map<String, String> podToGroup = new ConcurrentHashMap<>();
 
+    /**
+     * Marks a pod READY. Idempotent by pod id: OpenKruise reuses pod names
+     * (a recreated {@code bedwars-solo-0} reports READY again), and a repeated
+     * report must never inflate capacity or let the same pod be allocated twice.
+     */
     public void registerReady(String podId, String arenaGroup) {
-        readyByGroup.computeIfAbsent(arenaGroup, key -> new ConcurrentLinkedDeque<>()).add(podId);
-        podToGroup.put(podId, arenaGroup);
+        String previous = podToGroup.put(podId, arenaGroup);
+        Deque<String> queue = readyByGroup.computeIfAbsent(arenaGroup, key -> new ConcurrentLinkedDeque<>());
+        if (arenaGroup.equals(previous)) {
+            return; // already pooled under this group; the pod is not twice the capacity
+        }
+        if (previous != null) {
+            Deque<String> old = readyByGroup.get(previous);
+            if (old != null) {
+                old.remove(podId);
+            }
+        }
+        if (!queue.contains(podId)) {
+            queue.add(podId);
+        }
     }
 
     /** Removes and returns a ready pod for the group, if any. */
