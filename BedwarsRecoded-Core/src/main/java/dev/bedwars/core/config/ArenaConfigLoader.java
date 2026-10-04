@@ -52,7 +52,12 @@ public final class ArenaConfigLoader {
         }
 
         Shop shop = parseShop(map(root.get("shop")));
-        return new ArenaDefinition(group, beds, spawns, generators, shop);
+
+        List<String> startItems = new ArrayList<>();
+        for (Object item : list(root.getOrDefault("start-items", List.of()))) {
+            startItems.add(str(item));
+        }
+        return new ArenaDefinition(group, beds, spawns, generators, shop, startItems);
     }
 
     private ArenaGroup parseGroup(Map<String, Object> g) {

@@ -36,6 +36,12 @@ public final class QuickBuyStore {
         return favourites.getOrDefault(player, Set.of()).contains(itemId);
     }
 
+    /** Replaces a player's layout wholesale (used when loading from persistence). */
+    public void setAll(UUID player, List<String> items) {
+        Set<String> set = java.util.Collections.synchronizedSet(new LinkedHashSet<>(items));
+        favourites.put(player, set);
+    }
+
     public void clear(UUID player) {
         favourites.remove(player);
     }

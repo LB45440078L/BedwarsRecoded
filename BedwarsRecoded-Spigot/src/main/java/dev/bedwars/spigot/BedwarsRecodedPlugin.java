@@ -25,6 +25,15 @@ import dev.bedwars.core.persistence.LeaderboardCache;
 import dev.bedwars.core.persistence.Migrations;
 import dev.bedwars.core.persistence.SchemaMigrator;
 import dev.bedwars.core.persistence.StatsRepository;
+import dev.bedwars.core.persistence.QuickBuyRepository;
+import dev.bedwars.core.upgrade.TeamEffectCalculator;
+import dev.bedwars.core.upgrade.TrapTriggerService;
+import dev.bedwars.spigot.effects.UpgradeEffectApplier;
+import dev.bedwars.spigot.gui.JoinMenu;
+import dev.bedwars.spigot.listener.NpcJoinListener;
+import dev.bedwars.spigot.listener.QuickBuyListener;
+import dev.bedwars.spigot.listener.QuickBuySyncListener;
+import dev.bedwars.spigot.listener.TrapTriggerListener;
 import dev.bedwars.core.shop.Currency;
 import dev.bedwars.core.shop.Price;
 import dev.bedwars.core.shop.QuickBuyStore;
@@ -96,6 +105,10 @@ public final class BedwarsRecodedPlugin extends JavaPlugin {
     private final QuickBuyStore quickBuy = new QuickBuyStore();
     private final Map<UUID, Set<String>> ownedItems = new ConcurrentHashMap<>();
     private final ScoreboardRenderer scoreboardRenderer = new ScoreboardRenderer();
+    private final TrapTriggerService trapTriggers = new TrapTriggerService(8.0, 5_000L);
+    private QuickBuyRepository quickBuyRepository;
+    private JoinMenu joinMenu;
+    private List<String> startItems = List.of();
 
     private int countdownRemaining = -1;
 
@@ -122,12 +135,15 @@ public final class BedwarsRecodedPlugin extends JavaPlugin {
 
         ArenaDefinition arena = loadArenaDefinition(config);
         this.shop = arena != null ? arena.shop() : defaultShop();
+        this.startItems = arena != null ? arena.startItems() : List.of();
         this.game = buildGame(config, template, arena);
         gameManager.register(game);
 
+        this.joinMenu = new JoinMenu(gameManager, game);
         registerListeners();
         getCommand("bedwars").setExecutor(new BedwarsCommand(this));
         getServer().getScheduler().runTaskTimer(this, this::tick, 20L, 20L);
+        getServer().getScheduler().runTaskTimer(this, this::applyTeamEffects, 40L, 40L);
 
         loadTemplate(template, config);
         reporter.reportReady(config.serverId(), template, game.id());
@@ -146,6 +162,47 @@ public final class BedwarsRecodedPlugin extends JavaPlugin {
         pm.registerEvents(new ProtectionListener(gameManager), this);
         pm.registerEvents(new SpectatorListener(gameManager, this), this);
         pm.registerEvents(new JoinSignListener(gameManager, game), this);
+        pm.registerEvents(new NpcJoinListener(gameManager, game), this);
+        pm.registerEvents(new TrapTriggerListener(gameManager, trapTriggers), this);
+        pm.registerEvents(new QuickBuyListener(), this);
+        pm.registerEvents(joinMenu, this);
+        if (quickBuyRepository != null) {
+            pm.registerEvents(new QuickBuySyncListener(quickBuyRepository, quickBuy), this);
+        }
+    }
+
+    /** Periodically applies team upgrade effects to every participant's gear and buffs. */
+    private void applyTeamEffects() {
+        if (game.state() != GameState.RUNNING && game.state() != GameState.SUDDEN_DEATH) {
+            return;
+        }
+        for (Player player : getServer().getOnlinePlayers()) {
+            game.session(player.getUniqueId()).ifPresent(session ->
+                    session.teamId().flatMap(game::team).ifPresent(team -> {
+                        var effects = TeamEffectCalculator.forTeam(team.upgrades());
+                        boolean inBase = new Vec3(player.getLocation().getX(), player.getLocation().getY(),
+                                player.getLocation().getZ()).isWithin(team.bed().position(), 8.0);
+                        UpgradeEffectApplier.apply(player, effects, inBase);
+                    }));
+        }
+    }
+
+    private void giveStartItems() {
+        World world = getServer().getWorlds().isEmpty() ? null : getServer().getWorlds().getFirst();
+        if (world == null || startItems.isEmpty()) {
+            return;
+        }
+        for (Player player : getServer().getOnlinePlayers()) {
+            if (game.session(player.getUniqueId()).isEmpty()) {
+                continue;
+            }
+            for (String materialName : startItems) {
+                Material material = Material.matchMaterial(materialName);
+                if (material != null) {
+                    player.getInventory().addItem(new ItemStack(material));
+                }
+            }
+        }
     }
 
     private void bootPersistence(DatabaseConfig databaseConfig) {
@@ -154,6 +211,7 @@ public final class BedwarsRecodedPlugin extends JavaPlugin {
             new SchemaMigrator(database, LOG).migrate(Migrations.all());
             this.statsRepository = new StatsRepository(database, LOG, 1000);
             this.leaderboardCache = new LeaderboardCache(database, LOG, 100);
+            this.quickBuyRepository = new QuickBuyRepository(database, LOG);
         } catch (RuntimeException e) {
             LOG.error("Persistence unavailable; running without stats", e);
         }
@@ -290,6 +348,7 @@ public final class BedwarsRecodedPlugin extends JavaPlugin {
             countdownRemaining--;
             if (countdownRemaining <= 0) {
                 game.beginMatch(System.currentTimeMillis());
+                giveStartItems();
             } else if (countdownRemaining <= 5) {
                 broadcast("&eStarting in &c" + countdownRemaining + "&e...");
             }
@@ -382,6 +441,14 @@ public final class BedwarsRecodedPlugin extends JavaPlugin {
         return quickBuy;
     }
 
+    public TrapTriggerService trapTriggers() {
+        return trapTriggers;
+    }
+
+    public JoinMenu joinMenu() {
+        return joinMenu;
+    }
+
     public Set<String> ownedItems(UUID player) {
         return ownedItems.computeIfAbsent(player, key -> ConcurrentHashMap.newKeySet());
     }
@@ -397,6 +464,9 @@ public final class BedwarsRecodedPlugin extends JavaPlugin {
         }
         if (statsRepository != null) {
             statsRepository.close();
+        }
+        if (quickBuyRepository != null) {
+            quickBuyRepository.close();
         }
         if (leaderboardCache != null) {
             leaderboardCache.close();

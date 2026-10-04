@@ -20,6 +20,17 @@ public enum TrapType {
         return displayName;
     }
 
+    /** The in-world effect this trap applies when triggered. */
+    public TrapEffect effects() {
+        return switch (this) {
+            case IT_IS_A_TRAP -> TrapEffect.reveal();
+            case COUNTER_OFFENSIVE -> TrapEffect.counterOffensive();
+            case ALARM -> TrapEffect.alarm();
+            case MINER_FATIGUE -> TrapEffect.minerFatigue();
+            case BLINDNESS_POISON -> TrapEffect.blindnessPoison();
+        };
+    }
+
     /**
      * Cost scales with how many traps the team already owns (classic Bedwars:
      * 1, 2, 4 diamonds for the 1st, 2nd, 3rd trap).

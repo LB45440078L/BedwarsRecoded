@@ -3,6 +3,7 @@ package dev.bedwars.spigot.command;
 import dev.bedwars.core.domain.Game;
 import dev.bedwars.core.domain.Team;
 import dev.bedwars.spigot.BedwarsRecodedPlugin;
+import dev.bedwars.spigot.shop.QuickBuyMenu;
 import dev.bedwars.spigot.shop.ShopMenu;
 import dev.bedwars.spigot.upgrade.UpgradeMenu;
 import org.bukkit.ChatColor;
@@ -46,9 +47,12 @@ public final class BedwarsCommand implements CommandExecutor {
             }
             case "join" -> join(sender);
             case "shop" -> shop(sender, args);
+            case "quickbuy" -> quickBuy(sender);
             case "upgrades" -> upgrades(sender);
+            case "gui" -> openJoinGui(sender);
             case "lang" -> language(sender, args);
-            default -> sender.sendMessage(ChatColor.RED + "Usage: /bw status|start|stop|join|shop|upgrades|lang");
+            default -> sender.sendMessage(ChatColor.RED
+                    + "Usage: /bw status|start|stop|join|gui|shop|quickbuy|upgrades|lang");
         }
         return true;
     }
@@ -75,8 +79,25 @@ public final class BedwarsCommand implements CommandExecutor {
         String categoryId = args.length > 1 ? args[1] : plugin.shop().categories().getFirst().id();
         plugin.shop().category(categoryId).ifPresentOrElse(
                 category -> ShopMenu.open(player, plugin.shop(), category, plugin.shopService(),
-                        plugin.ownedItems(player.getUniqueId())),
+                        plugin.ownedItems(player.getUniqueId()), plugin.quickBuy()),
                 () -> player.sendMessage(ChatColor.RED + "Unknown shop category: " + categoryId));
+    }
+
+    private void quickBuy(CommandSender sender) {
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(ChatColor.RED + "Players only.");
+            return;
+        }
+        QuickBuyMenu.open(player, plugin.shop(), plugin.shopService(), plugin.quickBuy(),
+                plugin.ownedItems(player.getUniqueId()));
+    }
+
+    private void openJoinGui(CommandSender sender) {
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(ChatColor.RED + "Players only.");
+            return;
+        }
+        plugin.joinMenu().open(player);
     }
 
     private void upgrades(CommandSender sender) {

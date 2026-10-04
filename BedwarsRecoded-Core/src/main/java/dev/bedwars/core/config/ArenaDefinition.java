@@ -18,7 +18,8 @@ public record ArenaDefinition(
         Map<String, Vec3> teamBeds,
         Map<String, Vec3> teamSpawns,
         List<GeneratorSpec> generators,
-        Shop shop
+        Shop shop,
+        List<String> startItems
 ) {
     public ArenaDefinition {
         Objects.requireNonNull(group, "group");
@@ -26,6 +27,7 @@ public record ArenaDefinition(
         teamBeds = Map.copyOf(teamBeds);
         teamSpawns = Map.copyOf(teamSpawns);
         generators = List.copyOf(generators);
+        startItems = List.copyOf(startItems);
     }
 
     public Optional<Vec3> bedOf(String teamId) {

@@ -3,6 +3,7 @@ package dev.bedwars.spigot.shop;
 import dev.bedwars.core.shop.CurrencyWallet;
 import dev.bedwars.core.shop.PurchaseResult;
 import dev.bedwars.core.shop.PurchaseStatus;
+import dev.bedwars.core.shop.QuickBuyStore;
 import dev.bedwars.core.shop.Shop;
 import dev.bedwars.core.shop.ShopCategory;
 import dev.bedwars.core.shop.ShopItem;
@@ -34,20 +35,24 @@ public final class ShopMenu implements InventoryHolder {
     private final ShopCategory category;
     private final ShopService service;
     private final Set<String> owned;
+    private final QuickBuyStore quickBuy;
     private final Map<Integer, ShopItem> itemsBySlot = new HashMap<>();
 
-    private ShopMenu(Inventory inventory, Shop shop, ShopCategory category, ShopService service, Set<String> owned) {
+    private ShopMenu(Inventory inventory, Shop shop, ShopCategory category, ShopService service,
+                     Set<String> owned, QuickBuyStore quickBuy) {
         this.inventory = inventory;
         this.shop = shop;
         this.category = category;
         this.service = service;
         this.owned = owned;
+        this.quickBuy = quickBuy;
     }
 
-    public static ShopMenu open(Player player, Shop shop, ShopCategory category, ShopService service, Set<String> owned) {
+    public static ShopMenu open(Player player, Shop shop, ShopCategory category, ShopService service,
+                                Set<String> owned, QuickBuyStore quickBuy) {
         Inventory inventory = Bukkit.createInventory(null, 54,
                 ChatColor.DARK_GRAY + shop.displayName() + " - " + category.displayName());
-        ShopMenu menu = new ShopMenu(inventory, shop, category, service, owned);
+        ShopMenu menu = new ShopMenu(inventory, shop, category, service, owned, quickBuy);
         menu.populate();
         player.openInventory(inventory);
         return menu;
@@ -79,10 +84,17 @@ public final class ShopMenu implements InventoryHolder {
         }
     }
 
-    /** Handles a click; performs the purchase and gives the item on success. */
-    public void onClick(Player player, int slot) {
+    /** Handles a click; shift-click toggles quick buy, a normal click buys. */
+    public void onClick(Player player, int slot, boolean shiftClick) {
         ShopItem item = itemsBySlot.get(slot);
         if (item == null) {
+            return;
+        }
+        if (shiftClick) {
+            quickBuy.toggle(player.getUniqueId(), item.id());
+            player.sendMessage(ChatColor.YELLOW + "Quick buy "
+                    + (quickBuy.contains(player.getUniqueId(), item.id()) ? "added: " : "removed: ")
+                    + item.displayName());
             return;
         }
         CurrencyWallet wallet = new CurrencyWalletAdapter(player);

@@ -39,7 +39,16 @@ public final class Migrations {
                 Migration.of(2, "index player_stats.elo for leaderboards",
                         "CREATE INDEX idx_player_stats_elo ON player_stats (elo)"),
                 Migration.of(3, "index player_stats.wins for leaderboards",
-                        "CREATE INDEX idx_player_stats_wins ON player_stats (wins)")
+                        "CREATE INDEX idx_player_stats_wins ON player_stats (wins)"),
+                Migration.of(4, "quick_buy table for cross-pod layouts",
+                        """
+                        CREATE TABLE IF NOT EXISTS quick_buy (
+                            uuid    CHAR(36)    NOT NULL,
+                            slot    INT         NOT NULL,
+                            item_id VARCHAR(64) NOT NULL,
+                            PRIMARY KEY (uuid, slot)
+                        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                        """)
         ));
         migrations.sort(Comparator.comparingInt(Migration::version));
         return migrations;

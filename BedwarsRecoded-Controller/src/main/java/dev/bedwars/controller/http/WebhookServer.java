@@ -63,6 +63,7 @@ public final class WebhookServer {
         server.createContext("/pods/draining", exchange -> handle(exchange, this::logOnly));
         server.createContext("/lobby/queue", exchange -> handle(exchange, this::lobbyQueue));
         server.createContext("/queue/depth", exchange -> respond(exchange, 200, gson.toJson(queueManager.depthByGroup())));
+        server.createContext("/metrics", exchange -> respondText(exchange, 200, metrics()));
         server.createContext("/healthz", exchange -> respond(exchange, 200, "ok"));
         server.start();
         log.info("Controller HTTP listening on :{}", port);
@@ -128,6 +129,29 @@ public final class WebhookServer {
         try (InputStream in = exchange.getRequestBody()) {
             String text = new String(in.readAllBytes(), StandardCharsets.UTF_8);
             return text.isBlank() ? new JsonObject() : gson.fromJson(text, JsonObject.class);
+        }
+    }
+
+    /** Prometheus text exposition: the metrics KEDA scales on. */
+    private String metrics() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("# HELP bedwars_queue_depth Players waiting per arena group.\n");
+        sb.append("# TYPE bedwars_queue_depth gauge\n");
+        queueManager.depthByGroup().forEach((group, depth) ->
+                sb.append("bedwars_queue_depth{group=\"").append(group).append("\"} ").append(depth).append('\n'));
+        sb.append("# HELP bedwars_ready_pods READY pods available per arena group.\n");
+        sb.append("# TYPE bedwars_ready_pods gauge\n");
+        registry.readyByGroup().forEach((group, count) ->
+                sb.append("bedwars_ready_pods{group=\"").append(group).append("\"} ").append(count).append('\n'));
+        return sb.toString();
+    }
+
+    private void respondText(HttpExchange exchange, int status, String body) throws IOException {
+        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().add("Content-Type", "text/plain; version=0.0.4");
+        exchange.sendResponseHeaders(status, bytes.length);
+        try (var out = exchange.getResponseBody()) {
+            out.write(bytes);
         }
     }
 

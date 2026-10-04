@@ -36,13 +36,41 @@ Gameplay (Core, unit-tested, Bukkit-free):
 - Scoreboard content builder.
 - Arena definitions loaded from YAML (SnakeYAML) — teams, beds, spawns, generators, shop.
 - ELO ranking, MySQL persistence with versioned migrations, cached leaderboards.
+- Upgrade effects: team upgrades map to concrete effects (Sharpness/Protection
+  enchants, Haste, Regeneration) via `TeamEffectCalculator`.
+- Trap triggering: `TrapTriggerService` fires a team's next armed trap when an enemy
+  enters its base, with cooldown; each trap's effects are described by `TrapEffect`.
+- Quick-buy persistence (`QuickBuyRepository` + `quick_buy` table) for cross-pod sync.
+- Start items per arena group.
 
 Spigot adapter:
-- Shop GUI (`/bw shop`), Upgrade GUI (`/bw upgrades`), live scoreboard sidebar.
+- Shop GUI (`/bw shop`, shift-click toggles quick buy), Quick-buy GUI (`/bw quickbuy`),
+  Upgrade GUI (`/bw upgrades`), Join GUI (`/bw gui`), live scoreboard sidebar.
+- Live effects: `UpgradeEffectApplier` enchants gear and applies Haste/Regen;
+  `TrapApplier` applies blind/slow/poison/mining-fatigue to intruders and buffs to
+  defenders; `TrapTriggerListener` fires traps on base entry.
 - Listeners: bed break, death/respawn, join/quit, void kill, bed protection, spectator
-  on elimination, sign join (`[bedwars]`).
-- Join via command (`/bw join`) or sign (`[bedwars]`); `/bw status|start|stop`.
+  on elimination, sign join, NPC join (named entity `[bedwars]`), quick-buy sync.
+- Join via command (`/bw join`), sign, GUI, or NPC; `/bw status|start|stop|shop|
+  quickbuy|upgrades|gui|lang`.
 - Pod reporting to the controller (ready/started/ended/heartbeat/draining).
+
+## Known gaps
+
+Honest list of what is modelled but not fully wired, or absent:
+
+- **AdvancedSlimePaper load** — the S3/local `TemplateSource` stages the template file;
+  the actual Slime world load is a documented integration point, not implemented.
+- **Upgrade trees per arena group** — `UpgradeCatalog.defaults()` is fixed in code, not
+  yet parsed from arena YAML.
+- **Dragon Buff** — purchased and stored; no dragons are actually spawned.
+- **Config hot-reload** — not implemented (config is read at boot).
+- **Structured JSON logging** — logs carry fields (game-id/pod-id) but are not emitted
+  as JSON.
+- **Integration test mode** (docker-compose: MySQL + local S3 + one pod) — not built.
+- **gRPC** — controller communication is HTTP only.
+- **NPC via Citizens** — join NPCs use a named entity, not a Citizens hook.
+- **MockBukkit** — no release exists for Paper 26.x; Core is kept Bukkit-free instead.
 
 ## Targets (verified)
 
