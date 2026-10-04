@@ -1,0 +1,19 @@
+# ServiceMonitor so Prometheus scrapes the controller's /metrics endpoint, which
+# is what KEDA's ScaledObject trigger reads (bedwars_queue_depth).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: bedwars-controller
+  namespace: bedwars
+  labels:
+    release: prometheus
+spec:
+  namespaceSelector:
+    matchNames: ["bedwars"]
+  selector:
+    matchLabels:
+      app: bedwars-controller
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 10s

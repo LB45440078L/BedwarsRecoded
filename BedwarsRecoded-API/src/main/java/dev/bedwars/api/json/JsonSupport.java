@@ -16,6 +16,7 @@ import java.util.UUID;
 public final class JsonSupport {
 
     private static final Gson GSON = new GsonBuilder()
+            .serializeNulls()   // explicit nulls: a typed wire contract, not omitted keys
             .registerTypeAdapterFactory(new OptionalTypeAdapterFactory())
             .registerTypeAdapter(UUID.class, new UuidAdapter())
             .create();

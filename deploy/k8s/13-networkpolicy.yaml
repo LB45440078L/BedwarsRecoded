@@ -1,0 +1,51 @@
+# NetworkPolicies: default-deny ingress, then allow only what the platform needs.
+# Pods never talk to each other (constraint); all coordination is via the controller.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: bedwars
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+---
+# The controller accepts pod reports and lobby/queue requests from within the namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: controller-ingress
+  namespace: bedwars
+spec:
+  podSelector:
+    matchLabels:
+      app: bedwars-controller
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# Game pods accept Minecraft connections from mc-router and Velocity only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: game-pod-ingress
+  namespace: bedwars
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: gameserverset
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: mc-router
+        - podSelector:
+            matchLabels:
+              app: velocity
+      ports:
+        - protocol: TCP
+          port: 25565

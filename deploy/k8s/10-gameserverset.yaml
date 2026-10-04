@@ -55,6 +55,12 @@ spec:
               port: 25565
             initialDelaySeconds: 20
             periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 25565
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            failureThreshold: 4
           lifecycle:
             preStop:
               exec:

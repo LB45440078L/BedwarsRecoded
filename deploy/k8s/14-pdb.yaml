@@ -1,0 +1,34 @@
+# PodDisruptionBudgets keep the persistent tier available during node drains.
+# Game pods deliberately have NO PDB: they are cattle and may be evicted at any time.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: velocity
+  namespace: bedwars
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: velocity
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: bedwars-controller
+  namespace: bedwars
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: bedwars-controller
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: mc-router
+  namespace: bedwars
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: mc-router

@@ -220,9 +220,9 @@ public final class BedwarsRecodedPlugin extends JavaPlugin {
     private void loadTemplate(TemplateDescriptor template, PluginConfig config) {
         TemplateSource source = switch (config.templateSource()) {
             case S3 -> new S3TemplateSource(
-                    URI.create(getConfig().getString("template.s3.endpoint", "http://minio:9000")),
-                    getConfig().getString("template.s3.bucket", "bedwars-templates"),
-                    getConfig().getString("template.s3.region", "us-east-1"));
+                    URI.create(env("BEDWARS_TEMPLATE_S3_ENDPOINT", getConfig().getString("template.s3.endpoint", "http://minio:9000"))),
+                    env("BEDWARS_TEMPLATE_S3_BUCKET", getConfig().getString("template.s3.bucket", "bedwars-templates")),
+                    env("BEDWARS_TEMPLATE_S3_REGION", getConfig().getString("template.s3.region", "us-east-1")));
             case LOCAL -> new LocalTemplateSource(getDataFolder().toPath().resolve(config.localTemplatePath()));
         };
         source.materialise(template, getDataFolder().toPath().resolve("staging"))
@@ -386,6 +386,11 @@ public final class BedwarsRecodedPlugin extends JavaPlugin {
             case DIAMOND -> Material.DIAMOND;
             case EMERALD -> Material.EMERALD;
         };
+    }
+
+    private static String env(String key, String fallback) {
+        String value = System.getenv(key);
+        return value == null || value.isBlank() ? fallback : value;
     }
 
     // ---- default shop ----------------------------------------------------

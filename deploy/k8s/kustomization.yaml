@@ -5,10 +5,21 @@ resources:
   - 00-namespace.yaml
   - 50-s3-config.yaml
   - 51-mysql.yaml
+  - 52-minio.yaml
   - 10-gameserverset.yaml
   - 11-keda-scaledobject.yaml
+  - 12-servicemonitor.yaml
+  - 13-networkpolicy.yaml
+  - 14-pdb.yaml
   - 20-mc-router.yaml
   - 30-velocity.yaml
   - 40-controller.yaml
 commonLabels:
   app.kubernetes.io/part-of: bedwars-recoded
+images:
+  - name: bedwars-spigot
+    newTag: "1.0.0"
+  - name: bedwars-velocity
+    newTag: "1.0.0"
+  - name: bedwars-controller
+    newTag: "1.0.0"

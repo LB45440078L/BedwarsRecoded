@@ -129,8 +129,19 @@ Dockerfiles for each component.
 ## Documentation
 
 - `docs/ARCHITECTURE.md` — pod lifecycle, controller protocol, scaling model.
+- `docs/DEPLOYMENT.md` — Compose stack, Kubernetes platform, verification.
 - `docs/API.md` — public API reference (DTOs, events, services).
 - `docs/MIGRATIONS.md` — how to add database migrations.
+
+## Verifying everything
+
+```bash
+./deploy/verify.sh
+```
+
+Runs `mvn verify` (unit + real HTTP integration tests for the controller), the
+deployment-asset verifier (`deploy/verify_deploy.py` — parses every manifest and
+the compose file, 70 structural checks), and the 4 MB JAR gate.
 
 ## Hard constraints honoured
 
