@@ -42,6 +42,13 @@ Gameplay (Core, unit-tested, Bukkit-free):
   enters its base, with cooldown; each trap's effects are described by `TrapEffect`.
 - Quick-buy persistence (`QuickBuyRepository` + `quick_buy` table) for cross-pod sync.
 - Start items per arena group.
+- **Match persistence** (`MatchResultPersister`): on match end every player's additive
+  stat delta is written and team-aware ELO is recalculated — this is the code path that
+  actually writes to MySQL (previously the repositories were constructed but never called).
+- **Per-arena-group upgrade trees** parsed from the `arena.yml` `upgrades:` block;
+  falls back to `UpgradeCatalog.defaults()` when absent.
+- **Structured JSON logging** (`StructuredLog`) carrying `game_id`/`player_uuid`
+  correlation fields, enabled by `logging.json`.
 
 Spigot adapter:
 - Shop GUI (`/bw shop`, shift-click toggles quick buy), Quick-buy GUI (`/bw quickbuy`),
@@ -52,24 +59,30 @@ Spigot adapter:
 - Listeners: bed break, death/respawn, join/quit, void kill, bed protection, spectator
   on elimination, sign join, NPC join (named entity `[bedwars]`), quick-buy sync.
 - Join via command (`/bw join`), sign, GUI, or NPC; `/bw status|start|stop|shop|
-  quickbuy|upgrades|gui|lang`.
-- Pod reporting to the controller (ready/started/ended/heartbeat/draining).
+  quickbuy|upgrades|gui|lang|reload`.
+- Pod reporting to the controller (ready/started/ended/heartbeat/draining). A periodic
+  heartbeat carries **TPS, player count, phase and uptime** (`TpsMeter`).
+- Periodic async **leaderboard refresh** (no per-request DB read).
+- **Config hot-reload** (`/bw reload`, `bedwars.admin`): re-reads `config.yml` +
+  `arena.yml` and re-applies shop, upgrade tree, start items and countdown mid-match.
 
 ## Known gaps
 
 Honest list of what is modelled but not fully wired, or absent:
 
 - **AdvancedSlimePaper load** — the S3/local `TemplateSource` stages the template file;
-  the actual Slime world load is a documented integration point, not implemented.
-- **Upgrade trees per arena group** — `UpgradeCatalog.defaults()` is fixed in code, not
-  yet parsed from arena YAML.
+  the actual Slime world load is a documented integration point, not implemented. On a
+  real cluster the pod still boots and reports Ready; only the world swap is pending.
 - **Dragon Buff** — purchased and stored; no dragons are actually spawned.
-- **Config hot-reload** — not implemented (config is read at boot).
-- **Structured JSON logging** — logs carry fields (game-id/pod-id) but are not emitted
-  as JSON.
 - **gRPC** — controller communication is HTTP only.
+- **K8s annotations for pod state** — state is reported over HTTP webhooks only; the
+  controller does not patch pod annotations.
 - **NPC via Citizens** — join NPCs use a named entity, not a Citizens hook.
 - **MockBukkit** — no release exists for Paper 26.x; Core is kept Bukkit-free instead.
+- **Structured concurrency / scoped values** — still preview APIs (need
+  `--enable-preview` at compile *and* runtime), so plain virtual threads are used.
+- **MinIO / S3 fetch unexercised in-cluster** — the overlay disables MinIO (image pull),
+  so the S3 template path has never completed end-to-end here.
 
 Verified on a real cluster: the Compose stack and Helm chart are wired and the
 controller API was exercised end-to-end on minikube (see `docs/DEPLOYMENT.md`). The
@@ -133,9 +146,11 @@ Dockerfiles for each component.
 
 ## Documentation
 
+- `docs/SETUP.md` — **step-by-step setup**, from a bare machine to a running match.
+- `docs/AUDIT.md` — requirement-by-requirement audit against the original brief.
 - `docs/ARCHITECTURE.md` — pod lifecycle, controller protocol, scaling model.
 - `docs/DEPLOYMENT.md` — Compose stack, Kubernetes platform, verification.
-- `docs/API.md` — public API reference (DTOs, events, services).
+- `docs/API.md` — public API reference (DTOs, events, services, HTTP endpoints).
 - `docs/MIGRATIONS.md` — how to add database migrations.
 
 ## Verifying everything

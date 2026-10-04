@@ -119,4 +119,16 @@ class WebhookServerTest {
 
         assertThat(get("/metrics").body()).contains("bedwars_ready_pods{group=\"solo\"} 0");
     }
+
+    @Test
+    void arenaStatusReportsReadyAndQueuedPerGroup() throws Exception {
+        post("/pods/ready", "{\"podId\":\"pod-status\",\"arenaGroup\":\"solo\"}");
+
+        HttpResponse<String> status = get("/lobby/arena-status");
+
+        assertThat(status.statusCode()).isEqualTo(200);
+        assertThat(status.body()).contains("\"solo\"");
+        assertThat(status.body()).contains("\"ready\":1");
+        assertThat(status.body()).contains("\"queued\":0");
+    }
 }

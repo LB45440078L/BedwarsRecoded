@@ -51,8 +51,16 @@ public final class BedwarsCommand implements CommandExecutor {
             case "upgrades" -> upgrades(sender);
             case "gui" -> openJoinGui(sender);
             case "lang" -> language(sender, args);
+            case "reload" -> {
+                if (!sender.hasPermission("bedwars.admin")) {
+                    sender.sendMessage(ChatColor.RED + "No permission.");
+                } else {
+                    plugin.reloadConfiguration();
+                    sender.sendMessage(ChatColor.GREEN + "Configuration reloaded.");
+                }
+            }
             default -> sender.sendMessage(ChatColor.RED
-                    + "Usage: /bw status|start|stop|join|gui|shop|quickbuy|upgrades|lang");
+                    + "Usage: /bw status|start|stop|join|gui|shop|quickbuy|upgrades|lang|reload");
         }
         return true;
     }

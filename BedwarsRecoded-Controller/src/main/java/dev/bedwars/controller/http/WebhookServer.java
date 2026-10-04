@@ -16,6 +16,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -63,6 +67,7 @@ public final class WebhookServer {
         server.createContext("/pods/draining", exchange -> handle(exchange, this::podGone));
         server.createContext("/lobby/queue", exchange -> handle(exchange, this::lobbyQueue));
         server.createContext("/queue/depth", exchange -> respond(exchange, 200, gson.toJson(queueManager.depthByGroup())));
+        server.createContext("/lobby/arena-status", exchange -> respond(exchange, 200, gson.toJson(arenaStatus())));
         server.createContext("/metrics", exchange -> respondText(exchange, 200, metrics()));
         server.createContext("/healthz", exchange -> respond(exchange, 200, "ok"));
         server.start();
@@ -159,6 +164,25 @@ public final class WebhookServer {
         registry.readyByGroup().forEach((group, count) ->
                 sb.append("bedwars_ready_pods{group=\"").append(group).append("\"} ").append(count).append('\n'));
         return sb.toString();
+    }
+
+    /**
+     * Live per-group state for lobby NPC/sign displays: how many pods are ready
+     * and how many players are waiting. The lobby polls (or the controller pushes)
+     * this so NPCs show current counts without querying the game pods.
+     */
+    private Map<String, Map<String, Integer>> arenaStatus() {
+        Map<String, Integer> ready = registry.readyByGroup();
+        Map<String, Integer> depth = queueManager.depthByGroup();
+        Set<String> groups = new TreeSet<>(ready.keySet());
+        groups.addAll(depth.keySet());
+        Map<String, Map<String, Integer>> status = new LinkedHashMap<>();
+        for (String group : groups) {
+            status.put(group, Map.of(
+                    "ready", ready.getOrDefault(group, 0),
+                    "queued", depth.getOrDefault(group, 0)));
+        }
+        return status;
     }
 
     private void respondText(HttpExchange exchange, int status, String body) throws IOException {

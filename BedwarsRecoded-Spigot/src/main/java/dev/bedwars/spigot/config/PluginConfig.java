@@ -61,7 +61,7 @@ public record PluginConfig(
                 env("BEDWARS_TEMPLATE_NAME", c.getString("template.name", "Glacier")),
                 env("BEDWARS_TEMPLATE_VERSION", c.getString("template.version", "1.0.0")),
                 source,
-                env("BEDWARS_TEMPLATE_LOCAL_PATH", c.getString("template.local-path", "templates/Glacier")),
+                env("BEDWARS_TEMPLATE_LOCAL_PATH", c.getString("template.local-path", "templates")),
                 env("BEDWARS_CONTROLLER_URL", c.getString("controller.base-url", "http://bedwars-controller:8080")),
                 intEnv("BEDWARS_HEARTBEAT_SECONDS", c.getInt("controller.heartbeat-seconds", 15)),
                 db,

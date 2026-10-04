@@ -90,7 +90,7 @@ public final class StatsRepository implements StatsService, AutoCloseable {
     public CompletableFuture<Void> apply(PlayerStatDelta delta) {
         return CompletableFuture.runAsync(() -> {
             try (Connection c = database.connection()) {
-                ensureRow(c, delta.uuid(), delta.uuid().toString());
+                ensureRow(c, delta.uuid(), delta.username());
                 String update = """
                         UPDATE player_stats SET
                             kills = kills + ?, final_kills = final_kills + ?,

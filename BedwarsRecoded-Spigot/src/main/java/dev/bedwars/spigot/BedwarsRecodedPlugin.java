@@ -43,6 +43,10 @@ import dev.bedwars.core.shop.ShopItem;
 import dev.bedwars.core.shop.ShopService;
 import dev.bedwars.core.upgrade.UpgradeCatalog;
 import dev.bedwars.core.upgrade.UpgradeService;
+import dev.bedwars.core.ranking.EloCalculator;
+import dev.bedwars.core.ranking.MatchResultPersister;
+import dev.bedwars.api.service.PodHeartbeat;
+import dev.bedwars.spigot.util.TpsMeter;
 import dev.bedwars.spigot.command.BedwarsCommand;
 import dev.bedwars.spigot.config.PluginConfig;
 import dev.bedwars.spigot.listener.DomainEventBridge;
@@ -100,8 +104,13 @@ public final class BedwarsRecodedPlugin extends JavaPlugin {
     private LanguageService languageService;
     private Shop shop;
     private final ShopService shopService = new ShopService();
-    private final UpgradeCatalog upgradeCatalog = UpgradeCatalog.defaults();
+    private final UpgradeCatalog defaultUpgradeCatalog = UpgradeCatalog.defaults();
+    private UpgradeCatalog upgradeCatalog = defaultUpgradeCatalog;
     private final UpgradeService upgradeService = new UpgradeService();
+    private final TpsMeter tpsMeter = new TpsMeter();
+    private MatchResultPersister matchResultPersister;
+    private long startedAtMillis;
+    private boolean resultsPersisted;
     private final QuickBuyStore quickBuy = new QuickBuyStore();
     private final Map<UUID, Set<String>> ownedItems = new ConcurrentHashMap<>();
     private final ScoreboardRenderer scoreboardRenderer = new ScoreboardRenderer();
@@ -124,9 +133,10 @@ public final class BedwarsRecodedPlugin extends JavaPlugin {
 
         this.reporter = new HttpPodReporter(config.controllerBaseUrl());
         this.eventBus = new EventBus();
-        this.eventBus.subscribe(new DomainEventBridge(LOG, reporter));
+        this.eventBus.subscribe(new DomainEventBridge(LOG, reporter, config.jsonLogs()));
         this.gameManager = new GameManager();
         this.languageService = new LanguageService(catalog);
+        this.startedAtMillis = System.currentTimeMillis();
 
         TemplateDescriptor template = new TemplateDescriptor(
                 config.templateName(), config.templateVersion(), config.templateSource(), Optional.empty());
@@ -136,6 +146,7 @@ public final class BedwarsRecodedPlugin extends JavaPlugin {
         ArenaDefinition arena = loadArenaDefinition(config);
         this.shop = arena != null ? arena.shop() : defaultShop();
         this.startItems = arena != null ? arena.startItems() : List.of();
+        this.upgradeCatalog = arena != null ? arena.upgrades() : defaultUpgradeCatalog;
         this.game = buildGame(config, template, arena);
         gameManager.register(game);
 
@@ -144,6 +155,10 @@ public final class BedwarsRecodedPlugin extends JavaPlugin {
         getCommand("bedwars").setExecutor(new BedwarsCommand(this));
         getServer().getScheduler().runTaskTimer(this, this::tick, 20L, 20L);
         getServer().getScheduler().runTaskTimer(this, this::applyTeamEffects, 40L, 40L);
+        getServer().getScheduler().runTaskTimer(this, this::sendHeartbeat, 200L,
+                Math.max(20L, config.heartbeatSeconds() * 20L));
+        getServer().getScheduler().runTaskTimer(this, this::refreshLeaderboards, 400L,
+                Math.max(20L, config.leaderboardRefreshSeconds() * 20L));
 
         loadTemplate(template, config);
         reporter.reportReady(config.serverId(), config.arenaGroup(), template, game.id());
@@ -212,9 +227,57 @@ public final class BedwarsRecodedPlugin extends JavaPlugin {
             this.statsRepository = new StatsRepository(database, LOG, 1000);
             this.leaderboardCache = new LeaderboardCache(database, LOG, 100);
             this.quickBuyRepository = new QuickBuyRepository(database, LOG);
+            this.matchResultPersister = new MatchResultPersister(new EloCalculator(config.kFactor()));
         } catch (RuntimeException e) {
             LOG.error("Persistence unavailable; running without stats", e);
         }
+    }
+
+    /** Persists the finished match's stat deltas and ELO exactly once. */
+    private void persistResults() {
+        if (resultsPersisted || matchResultPersister == null || statsRepository == null || game == null) {
+            return;
+        }
+        resultsPersisted = true;
+        matchResultPersister.persist(game.results(), statsRepository)
+                .thenRun(() -> LOG.info("match_results_persisted game={}", game.id()))
+                .exceptionally(error -> {
+                    LOG.error("Failed to persist match results for {}", game.id(), error);
+                    return null;
+                });
+    }
+
+    /** Reports TPS, player count and phase so the controller can scrape pod health. */
+    private void sendHeartbeat() {
+        if (game == null) {
+            return;
+        }
+        reporter.heartbeat(new PodHeartbeat(config.serverId(), game.id(), tpsMeter.tps(),
+                game.playerCount(), game.phase(), System.currentTimeMillis() - startedAtMillis));
+    }
+
+    private void refreshLeaderboards() {
+        if (leaderboardCache != null) {
+            leaderboardCache.refresh();
+        }
+    }
+
+    /**
+     * Config hot-reload: re-reads {@code config.yml} and {@code arena.yml} and
+     * applies the values that can change safely mid-match (shop, upgrade tree,
+     * start items, countdown, sudden death). Arena geometry needs a pod restart —
+     * which is the pod-per-match model anyway.
+     */
+    public void reloadConfiguration() {
+        reloadConfig();
+        PluginConfig fresh = PluginConfig.from(getConfig(), config.serverId());
+        this.config = fresh;
+        ArenaDefinition arena = loadArenaDefinition(fresh);
+        this.shop = arena != null ? arena.shop() : defaultShop();
+        this.startItems = arena != null ? arena.startItems() : List.of();
+        this.upgradeCatalog = arena != null ? arena.upgrades() : defaultUpgradeCatalog;
+        LOG.info("config_reloaded shop={} upgrades={} startItems={}",
+                shop.id(), upgradeCatalog == defaultUpgradeCatalog ? "defaults" : "arena.yml", startItems.size());
     }
 
     private void loadTemplate(TemplateDescriptor template, PluginConfig config) {
@@ -311,7 +374,9 @@ public final class BedwarsRecodedPlugin extends JavaPlugin {
     // ---- tick loop -------------------------------------------------------
 
     private void tick() {
+        tpsMeter.tick();
         if (game.state().isTerminal()) {
+            persistResults();
             return;
         }
         long now = System.currentTimeMillis();
@@ -461,6 +526,7 @@ public final class BedwarsRecodedPlugin extends JavaPlugin {
     @Override
     public void onDisable() {
         if (game != null) {
+            persistResults();
             reporter.reportDraining(config.serverId(), game.id(), game.activePlayerCount());
             if (game.state() == GameState.RUNNING) {
                 game.endGame(game.winnerTeamId(), System.currentTimeMillis());

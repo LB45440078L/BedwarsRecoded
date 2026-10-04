@@ -9,10 +9,14 @@ import dev.bedwars.core.shop.Price;
 import dev.bedwars.core.shop.Shop;
 import dev.bedwars.core.shop.ShopCategory;
 import dev.bedwars.core.shop.ShopItem;
+import dev.bedwars.core.upgrade.UpgradeCatalog;
+import dev.bedwars.core.upgrade.UpgradeTier;
+import dev.bedwars.core.upgrade.UpgradeType;
 import org.yaml.snakeyaml.Yaml;
 
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -57,7 +61,33 @@ public final class ArenaConfigLoader {
         for (Object item : list(root.getOrDefault("start-items", List.of()))) {
             startItems.add(str(item));
         }
-        return new ArenaDefinition(group, beds, spawns, generators, shop, startItems);
+        UpgradeCatalog upgrades = parseUpgrades(map(root.getOrDefault("upgrades", Map.of())));
+        return new ArenaDefinition(group, beds, spawns, generators, shop, startItems, upgrades);
+    }
+
+    /** Parses the per-group upgrade trees; falls back to the built-in defaults. */
+    private UpgradeCatalog parseUpgrades(Map<String, Object> upgrades) {
+        Map<UpgradeType, List<UpgradeTier>> byType = new EnumMap<>(UpgradeType.class);
+        for (Map.Entry<String, Object> entry : upgrades.entrySet()) {
+            UpgradeType type;
+            try {
+                type = UpgradeType.valueOf(entry.getKey().toUpperCase());
+            } catch (IllegalArgumentException ex) {
+                continue; // ignore unknown upgrade names rather than failing the whole config
+            }
+            List<UpgradeTier> tiers = new ArrayList<>();
+            for (Object tierObj : list(entry.getValue())) {
+                Map<String, Object> tier = map(tierObj);
+                tiers.add(new UpgradeTier(
+                        type,
+                        intVal(tier.get("level")),
+                        new Price(Currency.valueOf(str(tier.get("currency")).toUpperCase()), intVal(tier.get("amount"))),
+                        doubleVal(tier.getOrDefault("effect", 0)),
+                        str(tier.getOrDefault("description", type.displayName()))));
+            }
+            byType.put(type, tiers);
+        }
+        return byType.isEmpty() ? UpgradeCatalog.defaults() : new UpgradeCatalog(byType);
     }
 
     private ArenaGroup parseGroup(Map<String, Object> g) {

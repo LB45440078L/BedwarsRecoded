@@ -78,16 +78,22 @@ All coordination goes through the controller; pods never talk to each other.
 | `/pods/ready` | template loaded, accepting players |
 | `/pods/started` | match began |
 | `/pods/ended` | structured `GameResult` JSON (winner, duration, stat deltas, bed-break times) |
-| `/pods/heartbeat` | TPS, player count, phase |
-| `/pods/draining` | SIGTERM drain in progress |
+| `/pods/heartbeat` | TPS, player count, phase, uptime (periodic) |
+| `/pods/draining` | SIGTERM drain in progress; **removes the pod from the ready pool** |
+
+A pod that reports `draining` or `ended` carries its `podId`, and the controller
+immediately drops it from the ready pool — otherwise a later `/lobby/queue` could be
+dispatched to a pod that no longer exists.
 
 **Lobby/Velocity → controller**:
 
 | Endpoint | Purpose |
 |---|---|
 | `POST /lobby/queue` | request a slot; returns `DispatchResult` (pod address + members) or a retry hint |
-| `GET /queue/depth` | per-group queue depth (for lobby NPC displays) |
+| `GET /queue/depth` | per-group queue depth |
+| `GET /lobby/arena-status` | per-group `{ready, queued}` for lobby NPC/sign displays |
 | `GET /healthz` | liveness |
+| `GET /metrics` | Prometheus exposition KEDA scales on |
 
 ### Queue semantics
 
@@ -116,6 +122,33 @@ All coordination goes through the controller; pods never talk to each other.
 - HikariCP pools, one per component, sized per config.
 - Writes are **additive** (`SET col = col + ?`) keyed by UUID, so concurrent pods and
   proxies cannot clobber each other.
+
+### Match persistence path
+
+`Core` produces a `GameResult`; `MatchResultPersister` turns it into database writes:
+
+1. load current stats for every participant (async, batched);
+2. apply each player's additive `PlayerStatDelta`;
+3. recompute ELO team-vs-team — mean rating of the winning side against the mean of the
+   losing side — and `updateElo` for each player. Draws skip ELO.
+
+It completes as a `CompletableFuture` and never runs on the tick thread. This is the
+only path that writes match stats; the plugin calls it exactly once per match (guarded
+by a flag, so `onDisable` cannot double-write).
+
+## Observability
+
+- **Heartbeats** (`TpsMeter`) report TPS, player count, phase and uptime every
+  `controller.heartbeat-seconds`.
+- **Metrics** — `/metrics` exposes `bedwars_queue_depth{group}` and
+  `bedwars_ready_pods{group}`, the gauges KEDA scales on.
+- **Structured logging** — with `logging.json: true` (`StructuredLog`), gameplay events
+  are emitted as one JSON object per line carrying `event` plus `game_id`,
+  `player_uuid`, `team_id`, etc., so Loki/ELK can index them without text parsing.
+- **Config hot-reload** — `/bw reload` re-reads `config.yml` + `arena.yml` and
+  re-applies shop, upgrade tree, start items and countdown **without restarting the
+  game**. Arena geometry needs a pod restart, which the pod-per-match model gives for
+  free.
 
 ## Ranking
 

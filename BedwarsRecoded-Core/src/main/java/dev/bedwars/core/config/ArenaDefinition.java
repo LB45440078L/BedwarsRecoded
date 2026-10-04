@@ -3,6 +3,7 @@ package dev.bedwars.core.config;
 import dev.bedwars.core.domain.ArenaGroup;
 import dev.bedwars.core.domain.Vec3;
 import dev.bedwars.core.shop.Shop;
+import dev.bedwars.core.upgrade.UpgradeCatalog;
 
 import java.util.List;
 import java.util.Map;
@@ -19,11 +20,13 @@ public record ArenaDefinition(
         Map<String, Vec3> teamSpawns,
         List<GeneratorSpec> generators,
         Shop shop,
-        List<String> startItems
+        List<String> startItems,
+        UpgradeCatalog upgrades
 ) {
     public ArenaDefinition {
         Objects.requireNonNull(group, "group");
         Objects.requireNonNull(shop, "shop");
+        Objects.requireNonNull(upgrades, "upgrades");
         teamBeds = Map.copyOf(teamBeds);
         teamSpawns = Map.copyOf(teamSpawns);
         generators = List.copyOf(generators);

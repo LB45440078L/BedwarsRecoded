@@ -20,7 +20,8 @@ template:
   name: "Glacier"
   version: "1.0.0"
   source: "LOCAL"        # S3 | LOCAL
-  local-path: "templates/Glacier"
+  # Directory CONTAINING templates (one sub-directory per template name).
+  local-path: "templates"
   s3:
     endpoint: "http://minio:9000"
     bucket: "bedwars-templates"

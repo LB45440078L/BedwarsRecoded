@@ -10,6 +10,7 @@ import java.util.UUID;
  */
 public record PlayerStatDelta(
         UUID uuid,
+        String username,
         int kills,
         int finalKills,
         int deaths,
@@ -21,5 +22,6 @@ public record PlayerStatDelta(
 ) {
     public PlayerStatDelta {
         Objects.requireNonNull(uuid, "uuid");
+        Objects.requireNonNull(username, "username");
     }
 }

@@ -397,7 +397,7 @@ public final class Game {
         List<PlayerStatDelta> deltas = new ArrayList<>();
         for (PlayerSession s : sessions.values()) {
             boolean winner = winnerTeamId != null && winnerTeamId.equals(s.teamId().orElse(null));
-            deltas.add(new PlayerStatDelta(s.uuid(), s.kills(), s.finalKills(), s.deaths(), s.finalDeaths(),
+            deltas.add(new PlayerStatDelta(s.uuid(), s.username(), s.kills(), s.finalKills(), s.deaths(), s.finalDeaths(),
                     s.bedsBroken(), s.bedsLost(), winner, s.experienceGained(winner)));
         }
         return new GameResult(id, group.id(), template, startedAtMillis,
