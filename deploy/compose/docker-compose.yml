@@ -39,7 +39,10 @@ services:
     networks: [bedwars]
 
   minio:
-    image: quay.io/minio/minio:latest
+    image: ${BEDWARS_MINIO_IMAGE:-quay.io/minio/minio:latest}
+    # Dev stack: run as root so a freshly-created (root-owned) named volume is
+    # writable regardless of which MinIO image is used.
+    user: "0:0"
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${BEDWARS_S3_ACCESS_KEY:-minioadmin}
@@ -54,20 +57,23 @@ services:
   # Creates the template bucket and makes it readable for the dev-only anonymous
   # template GET. Retries until MinIO is reachable (no fragile healthcheck).
   minio-init:
-    image: quay.io/minio/mc:latest
+    image: ${BEDWARS_MC_IMAGE:-quay.io/minio/mc:latest}
     depends_on:
       minio:
         condition: service_started
-    entrypoint: >
-      /bin/sh -c "
-      until mc alias set local http://minio:9000
-        ${BEDWARS_S3_ACCESS_KEY:-minioadmin} ${BEDWARS_S3_SECRET_KEY:-minioadmin}; do
-        echo 'waiting for minio...'; sleep 2;
-      done;
-      mc mb --ignore-existing local/${BEDWARS_S3_BUCKET:-bedwars-templates};
-      mc anonymous set download local/${BEDWARS_S3_BUCKET:-bedwars-templates};
-      echo 'minio bucket ready';
-      "
+    entrypoint: ["/bin/sh", "-c"]
+    environment:
+      S3_USER: ${BEDWARS_S3_ACCESS_KEY:-minioadmin}
+      S3_PASS: ${BEDWARS_S3_SECRET_KEY:-minioadmin}
+      S3_BUCKET: ${BEDWARS_S3_BUCKET:-bedwars-templates}
+    command:
+      - |
+        until mc alias set local http://minio:9000 "$$S3_USER" "$$S3_PASS"; do
+          echo 'waiting for minio...'; sleep 2;
+        done
+        mc mb --ignore-existing "local/$$S3_BUCKET"
+        mc anonymous set download "local/$$S3_BUCKET"
+        echo 'minio bucket ready'
     networks: [bedwars]
 
   controller:
