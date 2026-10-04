@@ -1,0 +1,91 @@
+{{- if .Values.gameServerSet.enabled }}
+apiVersion: game.kruise.io/v1alpha1
+kind: GameServerSet
+metadata:
+  name: {{ .Values.gameServerSet.name }}
+  labels:
+    app.kubernetes.io/name: gameserverset
+    {{- include "bedwars.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.gameServerSet.replicas }}
+  serviceName: {{ .Values.gameServerSet.name }}
+  gameServerTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gameserverset
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.gameServerSet.terminationGracePeriodSeconds }}
+      containers:
+        - name: paper
+          image: {{ include "bedwars.image" (dict "name" "bedwars-spigot" "root" .) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: minecraft
+              containerPort: 25565
+          env:
+            - name: BEDWARS_SERVER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: BEDWARS_ARENA_GROUP
+              value: {{ .Values.arena.group | quote }}
+            - name: BEDWARS_CONTROLLER_URL
+              value: {{ include "bedwars.controllerUrl" . | quote }}
+            - name: BEDWARS_TEMPLATE_NAME
+              value: {{ .Values.arena.templateName | default "Glacier" | quote }}
+            - name: BEDWARS_TEMPLATE_VERSION
+              value: {{ .Values.arena.templateVersion | default "1.0.0" | quote }}
+            - name: BEDWARS_TEMPLATE_S3_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: bedwars-s3
+                  key: endpoint
+            - name: BEDWARS_TEMPLATE_S3_BUCKET
+              valueFrom:
+                configMapKeyRef:
+                  name: bedwars-s3
+                  key: bucket
+            - name: BEDWARS_TEMPLATE_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bedwars-s3-credentials
+                  key: access-key
+            - name: BEDWARS_TEMPLATE_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bedwars-s3-credentials
+                  key: secret-key
+            - name: BEDWARS_DB_HOST
+              value: "mysql"
+            - name: BEDWARS_DB_NAME
+              value: {{ .Values.mysql.database | quote }}
+            - name: BEDWARS_DB_USER
+              value: {{ .Values.mysql.username | quote }}
+            - name: BEDWARS_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: bedwars-mysql
+                  key: password
+          resources:
+            requests:
+              cpu: {{ .Values.gameServerSet.cpuRequest | quote }}
+              memory: {{ .Values.gameServerSet.memoryRequest | quote }}
+            limits:
+              cpu: {{ .Values.gameServerSet.cpuLimit | quote }}
+              memory: {{ .Values.gameServerSet.memoryLimit | quote }}
+          readinessProbe:
+            tcpSocket:
+              port: 25565
+            initialDelaySeconds: 20
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 25565
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            failureThreshold: 4
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
+{{- end }}

@@ -1,0 +1,35 @@
+# Overrides for a local minikube verification of the persistent tier.
+#   minikube image load bedwars-controller:1.0.0 bedwars-velocity:1.0.0
+#   helm install bedwars deploy/helm/bedwars -n bedwars --create-namespace -f deploy/helm/values-minikube.yaml
+image:
+  tag: "1.0.0"
+  # Images are loaded into the minikube node, not pulled from a registry.
+  pullPolicy: Never
+
+controller:
+  replicas: 1
+velocity:
+  replicas: 1
+mcRouter:
+  replicas: 1
+  service:
+    type: NodePort
+
+mysql:
+  storage: 1Gi
+# MinIO is disabled here only because this sandbox cannot pull quay.io/minio/minio
+# anonymously. The manifest (deploy/k8s/52-minio.yaml, minio.yaml template) is
+# correct for clusters that can; or point s3.endpoint at an external store.
+minio:
+  enabled: false
+
+# No Prometheus Operator / KEDA in a bare minikube; the GameServerSet CRD comes
+# from OpenKruise (installed separately). Replicas stay 0 so no Paper pod is
+# created.
+serviceMonitor:
+  enabled: false
+keda:
+  enabled: false
+gameServerSet:
+  enabled: true
+  replicas: 0

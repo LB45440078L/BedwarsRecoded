@@ -14,8 +14,10 @@ resources:
   - 20-mc-router.yaml
   - 30-velocity.yaml
   - 40-controller.yaml
-commonLabels:
-  app.kubernetes.io/part-of: bedwars-recoded
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: bedwars-recoded
+    includeSelectors: false
 images:
   - name: bedwars-spigot
     newTag: "1.0.0"

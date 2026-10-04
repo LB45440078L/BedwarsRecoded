@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mc-router
+  labels:
+    app: mc-router
+    {{- include "bedwars.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.mcRouter.replicas }}
+  selector:
+    matchLabels:
+      app: mc-router
+  template:
+    metadata:
+      labels:
+        app: mc-router
+    spec:
+      serviceAccountName: mc-router
+      containers:
+        - name: mc-router
+          image: itzg/mc-router:1.27.0
+          args:
+            - "--api-binding=:8080"
+            - "--in-kube-cluster"
+            - "--mapping={{ .Values.mcRouter.mapping }}"
+          ports:
+            - name: minecraft
+              containerPort: 25565
+            - name: api
+              containerPort: 8080
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mc-router
+  labels:
+    app: mc-router
+    {{- include "bedwars.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.mcRouter.service.type }}
+  selector:
+    app: mc-router
+  ports:
+    - name: minecraft
+      port: 25565
+      targetPort: 25565
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mc-router
+  labels:
+    {{- include "bedwars.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mc-router
+  labels:
+    {{- include "bedwars.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mc-router
+  labels:
+    {{- include "bedwars.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: mc-router
+roleRef:
+  kind: Role
+  name: mc-router
+  apiGroup: rbac.authorization.k8s.io

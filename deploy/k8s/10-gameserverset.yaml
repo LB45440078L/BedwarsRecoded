@@ -10,6 +10,9 @@ spec:
   replicas: 0
   serviceName: bedwars-solo
   gameServerTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gameserverset
     spec:
       containers:
         - name: paper

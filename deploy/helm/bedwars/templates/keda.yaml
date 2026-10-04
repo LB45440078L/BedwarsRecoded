@@ -1,0 +1,42 @@
+{{- if and .Values.keda.enabled .Values.gameServerSet.enabled }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ .Values.gameServerSet.name }}
+  labels:
+    {{- include "bedwars.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: game.kruise.io/v1alpha1
+    kind: GameServerSet
+    name: {{ .Values.gameServerSet.name }}
+  minReplicaCount: {{ .Values.keda.minReplicas }}
+  maxReplicaCount: {{ .Values.keda.maxReplicas }}
+  pollingInterval: {{ .Values.keda.pollingInterval }}
+  cooldownPeriod: {{ .Values.keda.cooldownPeriod }}
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: {{ .Values.keda.prometheusAddress | quote }}
+        metricName: bedwars_queue_depth
+        query: sum(bedwars_queue_depth{group="{{ .Values.arena.group }}"})
+        threshold: "1"
+{{- end }}
+{{- if .Values.karpenter.enabled }}
+---
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: {{ .Values.karpenter.nodePool }}
+spec:
+  disruption:
+    consolidationPolicy: WhenEmpty
+    consolidateAfter: 30s
+  template:
+    spec:
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+      expireAfter: 2h
+{{- end }}

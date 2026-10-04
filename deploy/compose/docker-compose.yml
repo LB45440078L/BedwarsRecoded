@@ -39,7 +39,7 @@ services:
     networks: [bedwars]
 
   minio:
-    image: minio/minio:latest
+    image: quay.io/minio/minio:latest
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${BEDWARS_S3_ACCESS_KEY:-minioadmin}
@@ -54,7 +54,7 @@ services:
   # Creates the template bucket and makes it readable for the dev-only anonymous
   # template GET. Retries until MinIO is reachable (no fragile healthcheck).
   minio-init:
-    image: minio/mc:latest
+    image: quay.io/minio/mc:latest
     depends_on:
       minio:
         condition: service_started
@@ -96,7 +96,7 @@ services:
       dockerfile: deploy/docker/spigot.Dockerfile
       args:
         PAPER_VERSION: ${PAPER_VERSION:-26.2}
-        PAPER_BUILD: ${PAPER_BUILD:-129}
+        PAPER_BUILD: ${PAPER_BUILD:-latest}
     environment:
       BEDWARS_SERVER_ID: "pod-local-1"
       BEDWARS_ARENA_GROUP: "solo"

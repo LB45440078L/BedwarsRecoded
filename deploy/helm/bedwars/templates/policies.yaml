@@ -1,0 +1,110 @@
+{{- if .Values.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: bedwars-controller
+  labels:
+    release: prometheus
+    {{- include "bedwars.labels" . | nindent 4 }}
+spec:
+  namespaceSelector:
+    matchNames: [{{ .Release.Namespace | quote }}]
+  selector:
+    matchLabels:
+      app: bedwars-controller
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 10s
+{{- end }}
+{{- if .Values.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  labels:
+    {{- include "bedwars.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: controller-ingress
+  labels:
+    {{- include "bedwars.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: bedwars-controller
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: game-pod-ingress
+  labels:
+    {{- include "bedwars.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: gameserverset
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: mc-router
+        - podSelector:
+            matchLabels:
+              app: velocity
+      ports:
+        - protocol: TCP
+          port: 25565
+{{- end }}
+{{- if .Values.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: velocity
+  labels:
+    {{- include "bedwars.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: velocity
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: bedwars-controller
+  labels:
+    {{- include "bedwars.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: bedwars-controller
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: mc-router
+  labels:
+    {{- include "bedwars.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: mc-router
+{{- end }}

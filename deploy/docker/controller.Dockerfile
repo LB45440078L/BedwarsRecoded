@@ -5,6 +5,9 @@ FROM maven:3.9-eclipse-temurin-25 AS build
 WORKDIR /src
 COPY pom.xml .
 COPY BedwarsRecoded-API BedwarsRecoded-API
+COPY BedwarsRecoded-Core BedwarsRecoded-Core
+COPY BedwarsRecoded-Spigot BedwarsRecoded-Spigot
+COPY BedwarsRecoded-Velocity BedwarsRecoded-Velocity
 COPY BedwarsRecoded-Controller BedwarsRecoded-Controller
 RUN mvn -q -pl BedwarsRecoded-Controller -am -DskipTests package
 

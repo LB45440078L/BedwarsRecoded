@@ -1,0 +1,13 @@
+apiVersion: v2
+name: bedwars
+description: Kubernetes-native Bedwars — persistent proxy/controller tier plus ephemeral per-match game pods.
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - minecraft
+  - bedwars
+  - gameserverset
+  - keda
+maintainers:
+  - name: BedwarsRecoded

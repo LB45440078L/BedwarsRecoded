@@ -1,14 +1,12 @@
-# Velocity: the persistent, single entry point. Players always connect here first;
-# the proxy asks the controller where to send them.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: velocity
-  namespace: bedwars
   labels:
     app: velocity
+    {{- include "bedwars.labels" . | nindent 4 }}
 spec:
-  replicas: 2
+  replicas: {{ .Values.velocity.replicas }}
   selector:
     matchLabels:
       app: velocity
@@ -19,13 +17,19 @@ spec:
     spec:
       containers:
         - name: velocity
-          image: bedwars-velocity:1.0.0
+          image: {{ include "bedwars.image" (dict "name" "bedwars-velocity" "root" .) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
             - name: CONTROLLER_URL
-              value: "http://bedwars-controller:8080"
+              value: {{ include "bedwars.controllerUrl" . | quote }}
           ports:
             - name: proxy
               containerPort: 25565
+          readinessProbe:
+            tcpSocket:
+              port: 25565
+            initialDelaySeconds: 10
+            periodSeconds: 10
           resources:
             requests:
               cpu: "500m"
@@ -38,7 +42,9 @@ apiVersion: v1
 kind: Service
 metadata:
   name: velocity
-  namespace: bedwars
+  labels:
+    app: velocity
+    {{- include "bedwars.labels" . | nindent 4 }}
 spec:
   selector:
     app: velocity

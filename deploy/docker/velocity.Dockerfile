@@ -5,23 +5,25 @@ FROM maven:3.9-eclipse-temurin-25 AS build
 WORKDIR /src
 COPY pom.xml .
 COPY BedwarsRecoded-API BedwarsRecoded-API
+COPY BedwarsRecoded-Core BedwarsRecoded-Core
+COPY BedwarsRecoded-Spigot BedwarsRecoded-Spigot
 COPY BedwarsRecoded-Velocity BedwarsRecoded-Velocity
+COPY BedwarsRecoded-Controller BedwarsRecoded-Controller
 RUN mvn -q -pl BedwarsRecoded-Velocity -am -DskipTests package
 
 FROM eclipse-temurin:25-jre AS runtime
 
-ARG VELOCITY_VERSION=3.4.0
-ARG VELOCITY_URL=https://api.papermc.io/v2/projects/velocity
+ARG VELOCITY_VERSION=4.2.0
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl jq \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /proxy
-RUN JAR="velocity-${VELOCITY_VERSION}.jar" \
-    && curl -fsSL -o velocity.jar \
-       "https://fill.papermc.io/v3/projects/velocity/versions/${VELOCITY_VERSION}/builds/latest/downloads/${JAR}" \
-    || curl -fsSL -o velocity.jar \
-       "https://api.papermc.io/v2/projects/velocity/versions/${VELOCITY_VERSION}/builds"
+# Fetch the latest stable build for VELOCITY_VERSION via the PaperMC fill v3 API.
+RUN curl -fsSL "https://fill.papermc.io/v3/projects/velocity/versions/${VELOCITY_VERSION}/builds/latest" -o /tmp/velocity.json \
+    && curl -fsSL "$(jq -r '.downloads["server:default"].url' /tmp/velocity.json)" -o velocity.jar \
+    && rm /tmp/velocity.json \
+    && ls -l velocity.jar
 
 COPY --from=build /src/BedwarsRecoded-Velocity/target/BedwarsRecoded-Velocity-*.jar /proxy/plugins/BedwarsRecoded-Velocity.jar
 

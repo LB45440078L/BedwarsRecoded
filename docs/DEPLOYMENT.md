@@ -119,3 +119,64 @@ curl -s localhost:8080/metrics | grep bedwars_
   scaled or the pod is still booting.
 - **JAR size gate fails** — a dependency was shaded into the plugin; move it to
   `plugin.yml` `libraries` or mark it `provided`.
+
+## Verifying on a real cluster (minikube)
+
+Verified end-to-end with Docker Desktop + minikube (Kubernetes v1.37, containerd).
+
+1. Cluster and prerequisites:
+
+```bash
+minikube start --profile bedwars --driver=docker --cpus=2 --memory=4096
+helm repo add openkruise https://openkruise.github.io/charts/
+helm install kruise      openkruise/kruise      -n kruise-system --create-namespace --wait
+# GameServerSet lives in OpenKruise-Game, a separate chart:
+helm install kruise-game openkruise/kruise-game -n openkruise-game-system --create-namespace --wait
+```
+
+2. Build and load the images into the node:
+
+```bash
+docker build -f deploy/docker/controller.Dockerfile -t bedwars-controller:1.0.0 .
+docker build -f deploy/docker/velocity.Dockerfile   -t bedwars-velocity:1.0.0 .
+minikube -p bedwars image load bedwars-controller:1.0.0 bedwars-velocity:1.0.0
+```
+
+3. Install:
+
+```bash
+helm install bedwars deploy/helm/bedwars -n bedwars --create-namespace -f deploy/helm/values-minikube.yaml
+```
+
+Observed result: `bedwars-controller`, `velocity`, `mc-router` and `mysql` all `1/1
+Running`; `gameserverset.game.kruise.io/bedwars-solo` present; and the controller API
+works end-to-end:
+
+```
+GET  /healthz      -> ok
+POST /pods/ready   -> {"accepted":true}
+POST /lobby/queue  -> {"podAddress":"pod-minikube-1","members":["..."],"retryAfterMillis":0}
+GET  /metrics      -> bedwars_queue_depth / bedwars_ready_pods
+```
+
+MinIO is disabled in the minikube overlay because this sandbox cannot pull
+`quay.io/minio/minio` anonymously; the manifest is correct for clusters that can, or
+point `s3.endpoint` at an external store.
+
+### Windows-hosted WSL tooling
+
+Here docker/kubectl/helm/minikube/kubeconform are Windows binaries, and WSL does not
+inherit the user PATH — which breaks docker's credential helper and minikube's docker
+lookup. `deploy/tools/winrun.sh` regenerates a `.bat` that prepends the Docker
+Desktop (and Helm/kubeconform/minikube) bin directories and forwards arguments:
+
+```bash
+deploy/tools/winrun.sh docker.exe build -t app:1 .
+HELM="deploy/tools/winrun.sh helm.exe" \
+KUBECTL="deploy/tools/winrun.sh kubectl.exe" \
+KUBECONFORM="deploy/tools/winrun.sh kubeconform.exe" \
+  deploy/verify_k8s.sh
+```
+
+Run these from a `/mnt/c/...` path and set `BEDWARS_K8S_TMP` to a `/mnt/c` directory:
+Windows tools cannot read WSL paths, nor run with a UNC working directory.

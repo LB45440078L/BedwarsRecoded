@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bedwars-s3
+  labels:
+    {{- include "bedwars.labels" . | nindent 4 }}
+data:
+  endpoint: {{ .Values.s3.endpoint | quote }}
+  bucket: {{ .Values.s3.bucket | quote }}
+  region: {{ .Values.s3.region | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bedwars-s3-credentials
+  labels:
+    {{- include "bedwars.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  access-key: {{ .Values.s3.accessKey | quote }}
+  secret-key: {{ .Values.s3.secretKey | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bedwars-mysql
+  labels:
+    {{- include "bedwars.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  password: {{ .Values.mysql.password | quote }}
+  root-password: {{ .Values.mysql.rootPassword | quote }}

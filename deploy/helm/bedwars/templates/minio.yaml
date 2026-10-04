@@ -1,12 +1,11 @@
-# Dev-only S3 (MinIO) so a cluster can run without external object storage.
-# Production should point BEDWARS_S3_* at a managed S3-compatible store instead.
+{{- if .Values.minio.enabled }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: minio
-  namespace: bedwars
   labels:
     app: minio
+    {{- include "bedwars.labels" . | nindent 4 }}
 spec:
   serviceName: minio
   replicas: 1
@@ -20,7 +19,7 @@ spec:
     spec:
       containers:
         - name: minio
-          image: quay.io/minio/minio:latest
+          image: {{ .Values.minio.image }}
           args: ["server", "/data", "--console-address", ":9001"]
           env:
             - name: MINIO_ROOT_USER
@@ -61,13 +60,15 @@ spec:
         accessModes: ["ReadWriteOnce"]
         resources:
           requests:
-            storage: 5Gi
+            storage: {{ .Values.minio.storage }}
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: minio
-  namespace: bedwars
+  labels:
+    app: minio
+    {{- include "bedwars.labels" . | nindent 4 }}
 spec:
   selector:
     app: minio
@@ -78,3 +79,4 @@ spec:
     - name: console
       port: 9001
       targetPort: 9001
+{{- end }}

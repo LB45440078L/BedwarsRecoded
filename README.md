@@ -67,10 +67,15 @@ Honest list of what is modelled but not fully wired, or absent:
 - **Config hot-reload** — not implemented (config is read at boot).
 - **Structured JSON logging** — logs carry fields (game-id/pod-id) but are not emitted
   as JSON.
-- **Integration test mode** (docker-compose: MySQL + local S3 + one pod) — not built.
 - **gRPC** — controller communication is HTTP only.
 - **NPC via Citizens** — join NPCs use a named entity, not a Citizens hook.
 - **MockBukkit** — no release exists for Paper 26.x; Core is kept Bukkit-free instead.
+
+Verified on a real cluster: the Compose stack and Helm chart are wired and the
+controller API was exercised end-to-end on minikube (see `docs/DEPLOYMENT.md`). The
+K8s manifests were schema-validated with `kubeconform` and rendered with `helm` +
+`kustomize`. Docker Compose itself was not run here (no Compose invocation in this
+sandbox); its assets are validated structurally.
 
 ## Targets (verified)
 
@@ -142,6 +147,10 @@ Dockerfiles for each component.
 Runs `mvn verify` (unit + real HTTP integration tests for the controller), the
 deployment-asset verifier (`deploy/verify_deploy.py` — parses every manifest and
 the compose file, 70 structural checks), and the 4 MB JAR gate.
+
+`deploy/verify_k8s.sh` additionally lints and renders the Helm chart, renders the
+Kustomize base, and schema-validates both with `kubeconform` (set `HELM`, `KUBECTL`,
+`KUBECONFORM`; on Windows-hosted WSL use `deploy/tools/winrun.sh`).
 
 ## Hard constraints honoured
 
