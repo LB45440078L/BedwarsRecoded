@@ -1,7 +1,6 @@
 package dev.bedwars.spigot.listener;
 
-import dev.bedwars.core.domain.Game;
-import dev.bedwars.core.manager.GameManager;
+import dev.bedwars.spigot.game.JoinService;
 import org.bukkit.ChatColor;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.Sign;
@@ -12,18 +11,16 @@ import org.bukkit.event.block.Action;
 import org.bukkit.event.player.PlayerInteractEvent;
 
 /**
- * Sign join: right-clicking a sign whose first line is {@code [bedwars]} adds the
- * player to this pod's match. (In production, join happens in the lobby and the
- * player is routed by Velocity; this is the in-pod join path.)
+ * Sign join: right-clicking a sign whose first line is {@code [bedwars]} joins a match
+ * on this server. (In production the lobby does matchmaking and Velocity routes the
+ * player to this server; the sign is the in-server join path.)
  */
 public final class JoinSignListener implements Listener {
 
-    private final GameManager gameManager;
-    private final Game game;
+    private final JoinService joinService;
 
-    public JoinSignListener(GameManager gameManager, Game game) {
-        this.gameManager = gameManager;
-        this.game = game;
+    public JoinSignListener(JoinService joinService) {
+        this.joinService = joinService;
     }
 
     @EventHandler
@@ -40,15 +37,11 @@ public final class JoinSignListener implements Listener {
             return;
         }
         Player player = event.getPlayer();
-        if (game.session(player.getUniqueId()).isPresent()) {
+        if (joinService.isPlaying(player)) {
             return;
         }
-        try {
-            game.addPlayer(player.getUniqueId(), player.getName());
-            gameManager.trackPlayer(player.getUniqueId(), game.id());
-            player.sendMessage(ChatColor.GREEN + "Joined the match.");
-        } catch (IllegalStateException e) {
-            player.sendMessage(ChatColor.RED + "Cannot join right now: " + e.getMessage());
+        if (joinService.join(player).isEmpty()) {
+            player.sendMessage(ChatColor.RED + "No free match on this server right now.");
         }
     }
 }

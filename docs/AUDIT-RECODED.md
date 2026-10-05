@@ -27,11 +27,11 @@ pod, and pod destruction is the reset.** Five modules:
 - `Velocity` — the proxy that asks the controller where to route players.
 - `Controller` — queue + capacity service (originally Kubernetes-only).
 
-This is a different concrete architecture from the brief's sketch (which implied a
-persistent lobby and many games per long-lived server). Both are valid; the pod-per-match
-model is what was actually built and tested. Rather than discard a working, tested design
-for an unproven one, this pass **keeps the pod-per-match model** and fixes the real
-defects in it. The divergence is called out honestly under "Remaining limitations".
+This started as a Kubernetes-native, one-match-per-pod interpretation of the brief. The
+brief's sketch implied a persistent lobby and many games per long-lived server; both are
+valid. Rather than discard a working, tested design, the pod-per-match model was kept
+while the real defects were fixed — and multi-match hosting (many games per server) was
+then added on top, so the same jar now supports either topology. See "Decisions".
 
 ## Findings
 
@@ -63,12 +63,14 @@ session cannot NPE the elimination path.
 
 ## Decisions
 
-- **Keep pod-per-match; add the provisioner seam rather than replace the architecture.**
-  Rationale: correctness first, and the existing design was already tested end-to-end.
-  Rewriting it into a lobby + multi-game-per-server network is a multi-week effort with
-  no test evidence yet; the brief's *reachable* infrastructure requirements (replaceable
-  provisioner, Docker + Kubernetes, min/max capacity, idle scale-down, authentication) are
-  implemented without that rewrite.
+- **Add the provisioner seam first, then implement multi-match hosting on a server.**
+  The original design was one-match-per-pod and already tested end-to-end, so the
+  provisioner abstraction (Docker + Kubernetes, min/max capacity, idle scale-down,
+  authentication) was added without disturbing it. Multi-match hosting (`GameHost` +
+  `GameFactory` + `GameWorldService`) was then built on the Bukkit-free core and verified
+  live: a server with `games-per-server: 3` created three independent matches, each in
+  its own world, reported its free match slots, and reclaimed them when matches ended.
+  Both topologies ship in the same jar, selected by config.
 - **Delete MockBukkit rather than keep Paper test-scoped.** The only MockBukkit test
   tested MockBukkit itself, not project code; removing it makes "Spigot-only" true on
   every classpath and is enforced by a build-failing guard.
@@ -80,8 +82,8 @@ session cannot NPE the elimination path.
 
 ## Verification performed
 
-- `mvn clean install`: **174 tests, 0 failures** (Core 92, Spigot 26, Controller 51,
-  API 5). JAR gate passes; jar is 244 KB.
+- `mvn clean install`: **187 tests, 0 failures** (Core 99, Spigot 26, Controller 57,
+  API 5). JAR gate passes; jar is 264 KB.
 - **Real Spigot 26.3 server**: plugin loads, bootstraps to STANDALONE, loads libraries,
   logs `pod_ready`, no stack traces.
 - **RCON on the live server**: `/bw help`, `/bw status`, `/bw start` exercised. After
@@ -89,13 +91,21 @@ session cannot NPE the elimination path.
   `RUNNING` forever) — the fix is live, not only unit-tested.
 - **Real Docker daemon**: `DockerProvisionerIntegrationTest` provisions an actual
   container, health-checks it, reclaims it, and asserts the host is left clean.
+- **Live multi-match run (Spigot 26.3, RCON)**: with `games-per-server: 3`, `/bw create 2`
+  created `match-1`/`match-2` (`2/3`, free slots `1`), each match loaded its own
+  `bw-match-N` world; `/bw start all` ran the countdown → begin → end path and the
+  finished matches were pruned with their worlds released; `/bw stop all` returned the
+  server to `0` matches and `3` free slots. `/bw status`, `/bw create`, `/bw stop` and a
+  graceful `stop` (`game_server_shutdown complete`) were exercised.
 
 ## Remaining limitations
 
-- **Lobby and multi-game-per-server are not implemented.** The system routes players via
-  Velocity to a per-match pod, not to a matchmaking lobby that fills N games on a shared
-  server. The controller's queue is the matchmaker. `games-per-server` is modelled and
-  reported but the runtime still treats one pod as one match.
+- **Multi-game-per-server is implemented and verified live; a separate long-lived lobby
+  server is not.** The controller's queue is still the matchmaker and Velocity routes the
+  dispatched group to a game server. The *player-facing* lobby (`/bw join` on a dedicated
+  lobby that then transfers through Velocity) is configured, but its proxy-transfer hop
+  was not run in this environment (no Velocity + bot client here). Multi-match hosting on
+  one server — the substantive part of the model — is done and tested.
 - **Full multiplayer gameplay scenarios (A/D with 8 bot players) were not run live.** The
   win condition is verified by unit tests against the real `Game` code and by the live
   `start → ENDED` transition, but a bot-driven end-to-end match was not executed here.

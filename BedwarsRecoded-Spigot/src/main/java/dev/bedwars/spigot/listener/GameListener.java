@@ -4,6 +4,7 @@ import dev.bedwars.core.domain.Game;
 import dev.bedwars.core.domain.Team;
 import dev.bedwars.core.domain.Vec3;
 import dev.bedwars.core.manager.GameManager;
+import dev.bedwars.spigot.game.JoinService;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
@@ -19,26 +20,32 @@ import org.bukkit.event.player.PlayerRespawnEvent;
 import java.util.Optional;
 
 /**
- * Thin listener: every handler resolves the owning {@link Game} first, then
- * delegates. No gameplay state lives here — that is the whole point of the
- * manager-centric design.
+ * Thin listener: every handler resolves the owning {@link Game} first, then delegates.
+ * No gameplay state lives here — that is the whole point of the manager-centric design.
+ *
+ * <p>On join, an unassigned player is placed into a match automatically (a dedicated
+ * game server's players arrive already routed by Velocity, so connecting <em>is</em>
+ * joining). With several matches per server the roomiest one is chosen.
  */
 public final class GameListener implements Listener {
 
     private final GameManager gameManager;
+    private final JoinService joinService;
 
-    public GameListener(GameManager gameManager) {
+    public GameListener(GameManager gameManager, JoinService joinService) {
         this.gameManager = gameManager;
+        this.joinService = joinService;
     }
 
-    @EventHandler(priority = EventPriority.MONITOR)
+    @EventHandler(priority = EventPriority.HIGH)
     public void onJoin(PlayerJoinEvent event) {
-        gameManager.byPlayer(event.getPlayer().getUniqueId()).ifPresent(game -> {
-            if (game.session(event.getPlayer().getUniqueId()).isEmpty()) {
-                game.addPlayer(event.getPlayer().getUniqueId(), event.getPlayer().getName());
-                gameManager.trackPlayer(event.getPlayer().getUniqueId(), game.id());
-            }
-        });
+        if (gameManager.byPlayer(event.getPlayer().getUniqueId()).isPresent()) {
+            return;
+        }
+        if (joinService.join(event.getPlayer()).isEmpty()) {
+            event.getPlayer().sendMessage(org.bukkit.ChatColor.RED
+                    + "This server is full right now - please try again shortly.");
+        }
     }
 
     @EventHandler(priority = EventPriority.MONITOR)

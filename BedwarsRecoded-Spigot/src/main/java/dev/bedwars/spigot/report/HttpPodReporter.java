@@ -90,6 +90,14 @@ public final class HttpPodReporter implements PodReporter {
                 "phase", "DRAINING"));
     }
 
+    @Override
+    public void reportCapacity(String podId, int freeSlots, int capacity) {
+        post("/pods/capacity", fields(
+                "podId", podId,
+                "freeSlots", freeSlots,
+                "capacity", capacity));
+    }
+
     /** Null-tolerant map builder ({@code Map.of} rejects a null podId, e.g. a local run). */
     private static Map<String, Object> fields(Object... keyValuePairs) {
         Map<String, Object> map = new LinkedHashMap<>();

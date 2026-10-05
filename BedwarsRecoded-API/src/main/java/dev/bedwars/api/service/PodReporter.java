@@ -23,4 +23,11 @@ public interface PodReporter {
 
     /** Best-effort final report during SIGTERM drain; removes the pod from the pool. */
     void reportDraining(String podId, String gameId, int remainingPlayers);
+
+    /**
+     * Reports free match slots so the controller's capacity model stays accurate as
+     * matches start and end on this server. Default no-op for other reporters.
+     */
+    default void reportCapacity(String podId, int freeSlots, int capacity) {
+    }
 }

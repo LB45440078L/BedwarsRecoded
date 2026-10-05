@@ -2,7 +2,7 @@ package dev.bedwars.controller;
 
 import dev.bedwars.controller.config.ControllerConfig;
 import dev.bedwars.controller.http.WebhookServer;
-import dev.bedwars.controller.pod.ReadyPodRegistry;
+import dev.bedwars.controller.pod.ServerRegistry;
 import dev.bedwars.controller.provision.ProvisionerFactory;
 import dev.bedwars.controller.provision.ScaleDownPolicy;
 import dev.bedwars.controller.provision.ServerProvisioner;
@@ -34,7 +34,7 @@ public final class ControllerMain {
 
     public static void main(String[] args) throws Exception {
         ControllerConfig config = ControllerConfig.fromEnv();
-        ReadyPodRegistry registry = new ReadyPodRegistry();
+        ServerRegistry registry = new ServerRegistry();
         ServerProvisioner provisioner = ProvisionerFactory.create(config);
 
         QueueManager queueManager = new QueueManager(group -> {
@@ -75,7 +75,7 @@ public final class ControllerMain {
      * an allocated pod leaves the ready pool the moment it is dispatched.
      */
     private static void startScaleDownLoop(ControllerConfig config, QueueManager queueManager,
-                                           ReadyPodRegistry registry, ServerProvisioner provisioner,
+                                           ServerRegistry registry, ServerProvisioner provisioner,
                                            ScheduledExecutorService scheduler) {
         ControllerConfig.Provisioning p = config.provisioning();
         ScaleDownPolicy policy = new ScaleDownPolicy(p.scaleDownEnabled(), p.minServers(), p.idleMillis());
@@ -89,9 +89,9 @@ public final class ControllerMain {
                     idleSince.set(now);
                     return;
                 }
-                int ready = registry.readyByGroup().values().stream().mapToInt(Integer::intValue).sum();
+                int idle = registry.idleServers();
                 int current = provisioner.currentServers();
-                ScaleDownPolicy.Decision decision = policy.evaluate(current, ready, depth, now - idleSince.get());
+                ScaleDownPolicy.Decision decision = policy.evaluate(current, idle, depth, now - idleSince.get());
                 if (decision.scaleDown()) {
                     int target = policy.nextTarget(current);
                     LOG.info("Scaling down {} -> {} ({})", current, target, decision.reason());

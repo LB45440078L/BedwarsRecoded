@@ -1,7 +1,7 @@
 # 🏰 BedwarsRecoded
 
 <p align="center">
-  <b>Kubernetes-native Bedwars — every match runs in its own ephemeral pod, and pod destruction is the reset.</b>
+  <b>Kubernetes-native Bedwars — a lobby matchmakes, dedicated servers host many concurrent matches, and servers are provisioned on demand and reclaimed when idle.</b>
 </p>
 
 <p align="center">
@@ -12,15 +12,18 @@
   <a href="https://kubernetes.io/"><img src="https://img.shields.io/badge/Kubernetes-native-326CE5?logo=kubernetes&amp;logoColor=white" alt="Kubernetes"></a>
   <a href="https://helm.sh/"><img src="https://img.shields.io/badge/Helm-chart-0F1689?logo=helm&amp;logoColor=white" alt="Helm chart"></a>
   <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-images-2496ED?logo=docker&amp;logoColor=white" alt="Docker images"></a>
-  <a href="#-testing"><img src="https://img.shields.io/badge/tests-174%20passing-brightgreen" alt="Tests"></a>
+  <a href="#-testing"><img src="https://img.shields.io/badge/tests-187%20passing-brightgreen" alt="Tests"></a>
   <a href="#-build"><img src="https://img.shields.io/badge/plugin%20JAR-%3C%204%20MB-brightgreen" alt="Plugin JAR under 4 MB"></a>
   <a href="https://github.com/LB45440078L/BedwarsRecoded/issues"><img src="https://img.shields.io/badge/PRs-welcome-blueviolet" alt="PRs welcome"></a>
 </p>
 
 A production-grade recode of the Spigot Bedwars plugin
 ([LB45440078L/Bedwars](https://github.com/LB45440078L/Bedwars), `top.cmarco.bedwars`)
-into a **Kubernetes-native, pods-as-cattle** architecture: every match runs in its
-own ephemeral pod, and **pod destruction is the reset**.
+into a **Kubernetes-native** architecture: a **lobby** matchmakes, **dedicated
+servers host many concurrent matches each** (`arena.games-per-server`), and further
+servers are **provisioned on demand and reclaimed when idle**. One match per server
+(the Kubernetes default) is still a supported configuration — with
+`games-per-server: 1` the plugin keeps its original single-match behaviour.
 
 This is a clean rewrite. The original 17k-LOC single-module plugin is replaced by a
 multi-module Maven project with a Bukkit-free domain core, a platform-neutral API,
@@ -59,6 +62,10 @@ Gameplay (Core, unit-tested, Bukkit-free):
   enters its base, with cooldown; each trap's effects are described by `TrapEffect`.
 - Quick-buy persistence (`QuickBuyRepository` + `quick_buy` table) for cross-pod sync.
 - Start items per arena group.
+- **Multi-match hosting** (`GameHost` + `GameFactory`) — one dedicated server runs up to
+  `arena.games-per-server` concurrent matches. Joiners fill the emptiest match before a
+  new one is created, matches are fully independent, each may run in its own world
+  (`GameWorldService`), and the server reports its free **match slots** to the controller.
 - **Match persistence** (`MatchResultPersister`): on match end every player's additive
   stat delta is written and team-aware ELO is recalculated — this is the code path that
   actually writes to MySQL (previously the repositories were constructed but never called).
@@ -150,16 +157,20 @@ by Paper at startup, so they are never shaded.
 ## 🧪 Testing
 
 JUnit 5 + AssertJ. `Core` is deliberately Bukkit-free, so game logic is tested with
-plain JUnit — no server, no mocking framework. The suite is **174 tests**:
+plain JUnit — no server, no mocking framework. The suite is **187 tests**:
 
-- **Core (92)** — game lifecycle, and the win condition in particular
+- **Core (99)** — game lifecycle, and the win condition in particular
   (`WinConditionTest`): a match must reach a single survivor even when the arena
   declares more teams than were filled, and when a team is abandoned by disconnects.
+  `GameHostTest` covers many matches on one server: players fill a match before a new
+  one is created, the configured `games-per-server` is never exceeded, created matches
+  consume slots, and finished matches are pruned and unregistered.
 - **Spigot (26)** — config, reporting, template sources, and `SpigotOnlyApiTest`,
   which enforces the Spigot-only constraint.
-- **Controller (51)** — queue dispatch over real HTTP (`WebhookServerTest`), token
-  authentication (`WebhookServerAuthTest`), `DockerProvisionerTest` (fake runner),
-  `ScaleDownPolicyTest`, and an opt-in `DockerProvisionerIntegrationTest` that drives a
+- **Controller (57)** — queue dispatch over real HTTP (`WebhookServerTest`), token
+  authentication (`WebhookServerAuthTest`), the match-slot capacity model
+  (`ServerRegistryTest`), `DockerProvisionerTest` (fake runner), `ScaleDownPolicyTest`,
+  and an opt-in `DockerProvisionerIntegrationTest` that drives a
   **real** Docker daemon: it provisions an actual container, health-checks it, reclaims
   it, and asserts nothing is left behind (self-skips when no daemon is present).
 
@@ -189,7 +200,7 @@ Running it:
 
 ```bash
 # A. plain server (any OS) - simplest way to test gameplay
-java -Xms1G -Xmx2G -jar paper.jar --nogui
+java -Xms1G -Xmx2G -jar spigot.jar --nogui
 
 # B. the whole stack on one machine
 cd deploy/compose && docker compose up -d
@@ -242,20 +253,21 @@ Kustomize base, and schema-validates both with `kubeconform` (set `HELM`, `KUBEC
 
 ## 🔒 Hard constraints honoured
 
-1. No per-game arenas on disk — templates live in S3 as Slime files.
-2. No block-by-block rollback — pod destruction is the reset.
+1. No per-game arenas on disk — templates live in S3 as Slime files (or a local copy for
+   development); a match's world is a throwaway clone.
+2. No block-by-block rollback — a match's world is discarded and re-cloned.
 3. Not Folia.
-4. No player stats inside a pod — all persistence goes to MySQL.
-5. Every pod has strict resource requests and limits (`deploy/k8s/10-gameserverset.yaml`).
-6. A game pod never outlives its game.
-7. No pod is special or long-lived.
+4. No player stats inside a server — all persistence goes to MySQL.
+5. Every provisioned server has strict resource requests and limits (`deploy/k8s/10-gameserverset.yaml`).
+6. A provisioned server is reclaimed only when it holds no match and no players.
+7. No server is special; the configured minimum pool size is the only long-lived guarantee.
 
 ## 🗂️ Repository layout
 
 ```
 BedwarsRecoded-API/         public contracts
 BedwarsRecoded-Core/        domain + persistence
-BedwarsRecoded-Spigot/      Paper plugin
+BedwarsRecoded-Spigot/      Spigot plugin
 BedwarsRecoded-Velocity/    proxy plugin
 BedwarsRecoded-Controller/  k8s controller service
 deploy/k8s/                 manifests

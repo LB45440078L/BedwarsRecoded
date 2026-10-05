@@ -1,7 +1,7 @@
 package dev.bedwars.controller.http;
 
 import dev.bedwars.controller.config.ControllerConfig;
-import dev.bedwars.controller.pod.ReadyPodRegistry;
+import dev.bedwars.controller.pod.ServerRegistry;
 import dev.bedwars.controller.provision.NoopProvisioner;
 import dev.bedwars.controller.queue.QueueManager;
 import org.junit.jupiter.api.AfterEach;
@@ -37,7 +37,7 @@ class WebhookServerAuthTest {
         try (ServerSocket probe = new ServerSocket(0)) {
             port = probe.getLocalPort();
         }
-        ReadyPodRegistry registry = new ReadyPodRegistry();
+        ServerRegistry registry = new ServerRegistry();
         QueueManager queue = new QueueManager(registry::allocate, 500, 10_000);
         ControllerConfig config = WebhookServerTest.config(TOKEN, port);
         server = new WebhookServer(port, queue, registry, config,
@@ -112,7 +112,7 @@ class WebhookServerAuthTest {
         assertThat(get("/metrics").body()).doesNotContain("pod-evil");
         // And an authenticated one does.
         post("/pods/ready", "{\"podId\":\"pod-good\",\"arenaGroup\":\"solo\"}", TOKEN, null);
-        assertThat(get("/metrics").body()).contains("bedwars_ready_pods{group=\"solo\"} 1");
+        assertThat(get("/metrics").body()).contains("bedwars_free_slots{group=\"solo\"} 25");
     }
 
     @Test

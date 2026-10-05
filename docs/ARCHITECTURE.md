@@ -1,44 +1,66 @@
 # Architecture
 
-## Model: pods-as-cattle
+## Model: a lobby, dedicated servers, and many matches per server
 
-Every Bedwars match runs in **its own ephemeral pod**. There are no static arenas,
-no multi-arena-per-machine, no BungeeCord. When a game ends, the pod is deleted —
-that deletion *is* the world reset.
+The network has three kinds of component: a **lobby**, one or more **dedicated game
+servers**, and a **Velocity** proxy in front of both. Players never type an IP.
 
 ```
-player/party ──► Velocity ──► controller /lobby/queue
-                                    │
-                                    ▼
-                          GameServerSet scales 0→1   (KEDA / controller pre-warm)
-                                    │
-                                    ▼
-                    Paper pod boots, pulls Slime template from S3
-                                    │
-                         POST /pods/ready ──► controller
-                                    │
-                          DispatchResult(podAddress) ──► Velocity routes players
-                                    │
-                              game runs isolated
-                                    │
-                       POST /pods/ended ──► controller ──► pod deleted
+Player ──► Velocity ──► Lobby
+                          │  /bw join  (matchmaking: queue until a match can start)
+                          ▼
+                   controller /lobby/queue
+                          │  reserve a match slot
+                          ▼
+        existing server with a free slot? ──yes──► route players there
+                          │no
+                          ▼
+        provision a new server (Docker / Kubernetes) → health check → READY
+                          │
+                          ▼
+        Velocity transfers players to the game server
+                          │
+                          ▼
+        the match runs; a server hosts up to N matches at once
+                          │
+                          ▼
+        match ends → players return to the lobby; idle servers are reclaimed
 ```
 
-## Pod lifecycle
+Two topologies are supported by the *same* jar, selected by `arena.games-per-server`:
 
-Mirrors OpenKruise `GameServerSet` state (`dev.bedwars.api.dto.PodPhase`):
+- **`games-per-server: 1`** (Kubernetes default) — one match per server. This keeps the
+  original behaviour: a game server is a disposable pod, and pod destruction is the
+  world reset.
+- **`games-per-server: N > 1`** — a long-lived dedicated server hosts up to N concurrent
+  matches. Each match gets its own world (`GameWorldService`) and its own `Game`; the
+  old "one pod = one match" assumption no longer holds. The server reports its free
+  **match slots** to the controller, so matchmaking capacity is
+  `servers × games-per-server`, never a hard-coded number.
 
-`PENDING → READY → ALLOCATED → DRAINING → TERMINATING → DESTROYED`
+The lobby holds **no game state** — it only queues, matchmakes and asks the controller
+for capacity. Gameplay lives entirely on the game servers.
 
-- **PENDING** — scheduled, Paper booting, template downloading.
-- **READY** — plugin booted and reported `POST /pods/ready`; pod is in the
-  controller's `ReadyPodRegistry`, eligible for allocation.
-- **ALLOCATED** — a queue request was satisfied; the pod is removed from the ready
-  pool (never reused) and players are routed in.
-- **DRAINING** — SIGTERM received; plugin reports `POST /pods/draining`, finishes the
-  current game if possible, reports final results, then exits within the hard
-  `terminationGracePeriodSeconds`.
-- **TERMINATING/DESTROYED** — K8s removes the pod.
+## Server lifecycle
+
+A dedicated server mirrors OpenKruise `GameServerSet` state
+(`dev.bedwars.api.dto.PodPhase`) for its own life, independent of the matches it hosts:
+
+`PENDING → READY → ACTIVE → DRAINING → TERMINATING → DESTROYED`
+
+- **PENDING** — scheduled, booting, template downloading.
+- **READY** — plugin booted and reported `POST /pods/ready` with its match capacity;
+  the server is in the controller's `ServerRegistry`, eligible for allocation.
+- **ACTIVE** — one or more match slots are reserved or running on it. A slot is never
+  handed out twice: allocation is atomic — the slot is decremented *before* the players
+  are routed.
+- **DRAINING** — SIGTERM received; the plugin reports `POST /pods/draining`, aborts its
+  matches, flushes results, then exits within the hard `terminationGracePeriodSeconds`.
+- **TERMINATING/DESTROYED** — K8s removes the pod (or an idle Docker container is
+  reclaimed by scale-down).
+
+An individual **match** has its own smaller state machine
+(`WAITING → COUNTDOWN → RUNNING → SUDDEN_DEATH → ENDED`), owned by `Game`.
 
 ## Manager-centric design
 
@@ -50,6 +72,14 @@ matches: teams, beds, generators, player sessions, kill attribution. A single
 one thing first: resolve the owning `Game` via `GameManager.byPlayer(uuid)`, then
 delegate. No gameplay state is held on a listener. This is what makes the code
 testable and prevents cross-match leakage.
+
+**The host owns many matches.** `GameHost` is the registry a server's entrypoint talks
+to: `join` fills the emptiest accepting match, creating a new one only when none can
+take the player and the server is still below `games-per-server`; `freeSlots` reports
+remaining capacity; `pruneFinished` drops ended matches so their slots and worlds are
+reclaimed; and the matches are fully independent of each other. `GameFactory` builds a
+match from the arena template. Both classes are Bukkit-free and unit-tested
+(`GameHostTest`).
 
 ## Module boundaries
 
@@ -75,15 +105,17 @@ All coordination goes through the controller; pods never talk to each other.
 
 | Endpoint | Purpose |
 |---|---|
-| `/pods/ready` | template loaded, accepting players |
+| `/pods/ready` | template loaded; reports the server's match capacity |
+| `/pods/capacity` | current free match slots (sent when they change) |
 | `/pods/started` | match began |
 | `/pods/ended` | structured `GameResult` JSON (winner, duration, stat deltas, bed-break times) |
 | `/pods/heartbeat` | TPS, player count, phase, uptime (periodic) |
 | `/pods/draining` | SIGTERM drain in progress; **removes the pod from the ready pool** |
 
-A pod that reports `draining` or `ended` carries its `podId`, and the controller
-immediately drops it from the ready pool — otherwise a later `/lobby/queue` could be
-dispatched to a pod that no longer exists.
+A server that reports `draining` carries its `podId`, and the controller immediately
+drops it from the pool — otherwise a later `/lobby/queue` could be dispatched to a
+server that no longer exists. A `/pods/ended` (one match finishing) does **not** remove
+the server: it frees that match's slot and the server stays available.
 
 **Lobby/Velocity → controller**:
 
@@ -91,7 +123,7 @@ dispatched to a pod that no longer exists.
 |---|---|
 | `POST /lobby/queue` | request a slot; returns `DispatchResult` (pod address + members) or a retry hint |
 | `GET /queue/depth` | per-group queue depth |
-| `GET /lobby/arena-status` | per-group `{ready, queued}` for lobby NPC/sign displays |
+| `GET /lobby/arena-status` | per-group `{freeSlots, queued}` for lobby displays |
 | `GET /healthz` | liveness |
 | `GET /metrics` | Prometheus exposition KEDA scales on |
 
@@ -111,7 +143,9 @@ dispatched to a pod that no longer exists.
 - **KEDA** watches queue depth (Prometheus `bedwars_queue_depth`) and adjusts
   GameServerSet replicas horizontally, including scale-from-zero.
 - **Karpenter** provisions nodes when pod demand exceeds capacity.
-- 50 concurrent games = 50 pods across N nodes. No manual server configuration.
+- Capacity is `servers × games-per-server`. With `games-per-server: 25`, 50 concurrent
+  games fit on **2** servers; with the default `1` they need 50. No manual server
+  configuration either way.
 
 ## Persistence
 
@@ -140,15 +174,15 @@ by a flag, so `onDisable` cannot double-write).
 
 - **Heartbeats** (`TpsMeter`) report TPS, player count, phase and uptime every
   `controller.heartbeat-seconds`.
-- **Metrics** — `/metrics` exposes `bedwars_queue_depth{group}` and
-  `bedwars_ready_pods{group}`, the gauges KEDA scales on.
+- **Metrics** — `/metrics` exposes `bedwars_queue_depth{group}`, `bedwars_free_slots{group}`
+  and `bedwars_servers`, the gauges KEDA scales on.
 - **Structured logging** — with `logging.json: true` (`StructuredLog`), gameplay events
   are emitted as one JSON object per line carrying `event` plus `game_id`,
   `player_uuid`, `team_id`, etc., so Loki/ELK can index them without text parsing.
 - **Config hot-reload** — `/bw reload` re-reads `config.yml` + `arena.yml` and
   re-applies shop, upgrade tree, start items and countdown **without restarting the
-  game**. Arena geometry needs a pod restart, which the pod-per-match model gives for
-  free.
+  game**. Arena geometry and `games-per-server` need a server restart; individual
+  matches come and go without one.
 
 ## Ranking
 

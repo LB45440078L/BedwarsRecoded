@@ -1,7 +1,7 @@
 package dev.bedwars.spigot.gui;
 
-import dev.bedwars.core.domain.Game;
-import dev.bedwars.core.manager.GameManager;
+import dev.bedwars.core.manager.GameHost;
+import dev.bedwars.spigot.game.JoinService;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Material;
@@ -16,31 +16,41 @@ import org.bukkit.inventory.meta.ItemMeta;
 
 import java.util.List;
 
-/** A one-button GUI to join the pod's match. */
+/** A one-button GUI to join a match on this server. */
 public final class JoinMenu implements InventoryHolder, Listener {
 
     private static final String TITLE = ChatColor.DARK_GREEN + "Join Bedwars";
+    private static final int BUTTON_SLOT = 13;
 
-    private final GameManager gameManager;
-    private final Game game;
+    private final JoinService joinService;
+    private final GameHost host;
     private final Inventory inventory;
 
-    public JoinMenu(GameManager gameManager, Game game) {
-        this.gameManager = gameManager;
-        this.game = game;
+    public JoinMenu(JoinService joinService, GameHost host) {
+        this.joinService = joinService;
+        this.host = host;
         this.inventory = Bukkit.createInventory(this, 27, TITLE);
-        ItemStack button = new ItemStack(Material.EMERALD_BLOCK);
-        ItemMeta meta = button.getItemMeta();
+        inventory.setItem(BUTTON_SLOT, button());
+    }
+
+    /** Rebuilt on each open so the player/capacity line is current. */
+    private ItemStack button() {
+        int players = host.games().stream().mapToInt(g -> g.playerCount()).sum();
+        int capacity = host.maxGames() * host.arena().group().playersPerTeam() * host.arena().group().teamCount();
+        ItemStack item = new ItemStack(Material.EMERALD_BLOCK);
+        ItemMeta meta = item.getItemMeta();
         if (meta != null) {
-            meta.setDisplayName(ChatColor.GREEN + "Click to join");
-            meta.setLore(List.of(ChatColor.GRAY + "Players: " + game.playerCount()
-                    + "/" + game.group().capacity()));
-            button.setItemMeta(meta);
+            meta.setDisplayName(ChatColor.GREEN + "Click to play");
+            meta.setLore(List.of(
+                    ChatColor.GRAY + "Players: " + players + "/" + capacity,
+                    ChatColor.GRAY + "Open matches: " + host.joinableGames()));
+            item.setItemMeta(meta);
         }
-        inventory.setItem(13, button);
+        return item;
     }
 
     public void open(Player player) {
+        inventory.setItem(BUTTON_SLOT, button());
         player.openInventory(inventory);
     }
 
@@ -50,20 +60,16 @@ public final class JoinMenu implements InventoryHolder, Listener {
             return;
         }
         event.setCancelled(true);
-        if (event.getSlot() != 13 || !(event.getWhoClicked() instanceof Player player)) {
+        if (event.getSlot() != BUTTON_SLOT || !(event.getWhoClicked() instanceof Player player)) {
             return;
         }
         player.closeInventory();
-        if (game.session(player.getUniqueId()).isPresent()) {
-            player.sendMessage(ChatColor.YELLOW + "You are already in the match.");
+        if (joinService.isPlaying(player)) {
+            player.sendMessage(ChatColor.YELLOW + "You are already in a match.");
             return;
         }
-        try {
-            game.addPlayer(player.getUniqueId(), player.getName());
-            gameManager.trackPlayer(player.getUniqueId(), game.id());
-            player.sendMessage(ChatColor.GREEN + "Joined the match.");
-        } catch (IllegalStateException e) {
-            player.sendMessage(ChatColor.RED + "Cannot join: " + e.getMessage());
+        if (joinService.join(player).isEmpty()) {
+            player.sendMessage(ChatColor.RED + "No free match on this server right now.");
         }
     }
 

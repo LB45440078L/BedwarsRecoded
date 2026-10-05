@@ -8,7 +8,7 @@ import dev.bedwars.api.dto.QueueRequest;
 import dev.bedwars.api.json.JsonSupport;
 import dev.bedwars.api.service.DispatchResult;
 import dev.bedwars.controller.config.ControllerConfig;
-import dev.bedwars.controller.pod.ReadyPodRegistry;
+import dev.bedwars.controller.pod.ServerRegistry;
 import dev.bedwars.controller.provision.ServerProvisioner;
 import dev.bedwars.controller.queue.QueueManager;
 import org.slf4j.Logger;
@@ -51,7 +51,7 @@ public final class WebhookServer {
 
     private final int port;
     private final QueueManager queueManager;
-    private final ReadyPodRegistry registry;
+    private final ServerRegistry registry;
     private final ServerProvisioner provisioner;
     private final ControllerConfig config;
     private final Gson gson = JsonSupport.gson();
@@ -59,7 +59,7 @@ public final class WebhookServer {
     private HttpServer server;
     private ExecutorService executor;
 
-    public WebhookServer(int port, QueueManager queueManager, ReadyPodRegistry registry,
+    public WebhookServer(int port, QueueManager queueManager, ServerRegistry registry,
                          ControllerConfig config, ServerProvisioner provisioner, Logger log) {
         this.port = port;
         this.queueManager = queueManager;
@@ -74,8 +74,9 @@ public final class WebhookServer {
         executor = Executors.newVirtualThreadPerTaskExecutor();
         server.setExecutor(executor);
         server.createContext("/pods/ready", exchange -> handle(exchange, this::podReady));
+        server.createContext("/pods/capacity", exchange -> handle(exchange, this::podCapacity));
         server.createContext("/pods/started", exchange -> handle(exchange, this::logOnly));
-        server.createContext("/pods/ended", exchange -> handle(exchange, this::podGone));
+        server.createContext("/pods/ended", exchange -> handle(exchange, this::podEnded));
         server.createContext("/pods/heartbeat", exchange -> handle(exchange, this::logOnly));
         server.createContext("/pods/draining", exchange -> handle(exchange, this::podGone));
         server.createContext("/lobby/queue", exchange -> handle(exchange, this::lobbyQueue));
@@ -102,13 +103,30 @@ public final class WebhookServer {
         }
     }
 
+    /** A server reports it is up and can host {@code gamesPerServer} matches. */
     private String podReady(JsonObject body) {
         String podId = body.get("podId").getAsString();
         String group = body.has("arenaGroup") && !body.get("arenaGroup").isJsonNull()
                 ? body.get("arenaGroup").getAsString() : "any";
-        registry.registerReady(podId, group);
-        log.info("Pod {} READY for group {}", podId, group);
+        int capacity = body.has("capacity") && !body.get("capacity").isJsonNull()
+                ? body.get("capacity").getAsInt() : config.provisioning().gamesPerServer();
+        registry.register(podId, group, capacity);
+        log.info("Server {} READY for group {} (capacity {} matches)", podId, group, capacity);
         queueManager.drain(); // new capacity: try to place waiting players
+        return "{\"accepted\":true}";
+    }
+
+    /** A running server reports how many match slots it currently has free. */
+    private String podCapacity(JsonObject body) {
+        if (!body.has("podId") || body.get("podId").isJsonNull()) {
+            throw new IllegalArgumentException("podId required");
+        }
+        String podId = body.get("podId").getAsString();
+        int free = body.has("freeSlots") && !body.get("freeSlots").isJsonNull()
+                ? body.get("freeSlots").getAsInt() : 0;
+        registry.updateFreeSlots(podId, free);
+        log.info("Server {} capacity report: {} free match slots", podId, free);
+        queueManager.drain();
         return "{\"accepted\":true}";
     }
 
@@ -117,15 +135,28 @@ public final class WebhookServer {
         return "{\"accepted\":true}";
     }
 
+    /** A match ended on the server: the slot is free again; the server stays in the pool. */
+    private String podEnded(JsonObject body) {
+        if (body.has("podId") && !body.get("podId").isJsonNull()) {
+            String podId = body.get("podId").getAsString();
+            registry.releaseSlot(podId);
+            log.info("Match ended on {}; slot released. {}", podId, body);
+            queueManager.drain();
+        } else {
+            log.info("Controller received (no podId): {}", body);
+        }
+        return "{\"accepted\":true}";
+    }
+
     /**
-     * A pod that reports draining or ended is leaving the pool: remove it so a
-     * later queue request is never dispatched to a pod that no longer exists.
+     * A server that reports draining is leaving the pool: remove it so a later queue
+     * request is never dispatched to a server that is shutting down.
      */
     private String podGone(JsonObject body) {
         if (body.has("podId") && !body.get("podId").isJsonNull()) {
             String podId = body.get("podId").getAsString();
             registry.markGone(podId);
-            log.info("Pod {} removed from the ready pool; {}", podId, body);
+            log.info("Server {} removed from the pool; {}", podId, body);
         } else {
             log.info("Controller received (no podId): {}", body);
         }
@@ -205,13 +236,16 @@ public final class WebhookServer {
         sb.append("# TYPE bedwars_queue_depth gauge\n");
         queueManager.depthByGroup().forEach((group, depth) ->
                 sb.append("bedwars_queue_depth{group=\"").append(group).append("\"} ").append(depth).append('\n'));
-        sb.append("# HELP bedwars_ready_pods READY pods available per arena group.\n");
-        sb.append("# TYPE bedwars_ready_pods gauge\n");
-        registry.readyByGroup().forEach((group, count) ->
-                sb.append("bedwars_ready_pods{group=\"").append(group).append("\"} ").append(count).append('\n'));
+        sb.append("# HELP bedwars_free_slots Free match slots per arena group.\n");
+        sb.append("# TYPE bedwars_free_slots gauge\n");
+        registry.freeSlotsByGroup().forEach((group, free) ->
+                sb.append("bedwars_free_slots{group=\"").append(group).append("\"} ").append(free).append('\n'));
         sb.append("# HELP bedwars_servers Provisioned game servers.\n");
         sb.append("# TYPE bedwars_servers gauge\n");
         sb.append("bedwars_servers ").append(provisioner.currentServers()).append('\n');
+        sb.append("# HELP bedwars_idle_servers Servers with no match running.\n");
+        sb.append("# TYPE bedwars_idle_servers gauge\n");
+        sb.append("bedwars_idle_servers ").append(registry.idleServers()).append('\n');
         sb.append("# HELP bedwars_game_capacity Total concurrent game slots.\n");
         sb.append("# TYPE bedwars_game_capacity gauge\n");
         sb.append("bedwars_game_capacity ").append(provisioner.totalGameCapacity()).append('\n');
@@ -224,6 +258,8 @@ public final class WebhookServer {
         status.put("provisioner", provisioner.kind().name());
         status.put("description", provisioner.describe());
         status.put("servers", provisioner.currentServers());
+        status.put("registeredServers", registry.serverCount());
+        status.put("freeSlots", registry.totalFreeSlots());
         status.put("minServers", provisioner.minimumServers());
         status.put("maxServers", provisioner.maximumServers());
         status.put("gamesPerServer", provisioner.gamesPerServer());
@@ -238,14 +274,14 @@ public final class WebhookServer {
      * this so NPCs show current counts without querying the game pods.
      */
     private Map<String, Map<String, Integer>> arenaStatus() {
-        Map<String, Integer> ready = registry.readyByGroup();
+        Map<String, Integer> free = registry.freeSlotsByGroup();
         Map<String, Integer> depth = queueManager.depthByGroup();
-        Set<String> groups = new TreeSet<>(ready.keySet());
+        Set<String> groups = new TreeSet<>(free.keySet());
         groups.addAll(depth.keySet());
         Map<String, Map<String, Integer>> status = new LinkedHashMap<>();
         for (String group : groups) {
             status.put(group, Map.of(
-                    "ready", ready.getOrDefault(group, 0),
+                    "freeSlots", free.getOrDefault(group, 0),
                     "queued", depth.getOrDefault(group, 0)));
         }
         return status;

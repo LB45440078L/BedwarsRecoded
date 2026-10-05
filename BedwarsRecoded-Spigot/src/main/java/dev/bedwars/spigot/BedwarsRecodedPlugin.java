@@ -1,39 +1,34 @@
 package dev.bedwars.spigot;
 
+import dev.bedwars.api.dto.GamePhase;
 import dev.bedwars.api.dto.TemplateDescriptor;
-import dev.bedwars.api.service.PodReporter;
+import dev.bedwars.api.service.PodHeartbeat;
 import dev.bedwars.api.service.TemplateSource;
 import dev.bedwars.core.config.ArenaConfigLoader;
 import dev.bedwars.core.config.ArenaDefinition;
-import dev.bedwars.core.config.DatabaseConfig;
 import dev.bedwars.core.domain.ArenaGroup;
-import dev.bedwars.core.domain.Bed;
 import dev.bedwars.core.domain.Game;
 import dev.bedwars.core.domain.GameState;
-import dev.bedwars.core.domain.Generator;
-import dev.bedwars.core.domain.GeneratorTier;
 import dev.bedwars.core.domain.GeneratorType;
-import dev.bedwars.core.domain.Team;
 import dev.bedwars.core.domain.TeamColor;
 import dev.bedwars.core.domain.Vec3;
 import dev.bedwars.core.event.EventBus;
 import dev.bedwars.core.i18n.LanguageService;
 import dev.bedwars.core.i18n.MessageCatalog;
+import dev.bedwars.core.logging.CorrelationContext;
+import dev.bedwars.core.manager.GameHost;
 import dev.bedwars.core.manager.GameManager;
 import dev.bedwars.core.persistence.Database;
 import dev.bedwars.core.persistence.LeaderboardCache;
 import dev.bedwars.core.persistence.Migrations;
+import dev.bedwars.core.persistence.QuickBuyRepository;
 import dev.bedwars.core.persistence.SchemaMigrator;
 import dev.bedwars.core.persistence.StatsRepository;
-import dev.bedwars.core.persistence.QuickBuyRepository;
-import dev.bedwars.core.upgrade.TeamEffectCalculator;
-import dev.bedwars.core.upgrade.TrapTriggerService;
-import dev.bedwars.spigot.effects.UpgradeEffectApplier;
-import dev.bedwars.spigot.gui.JoinMenu;
-import dev.bedwars.spigot.listener.NpcJoinListener;
-import dev.bedwars.spigot.listener.QuickBuyListener;
-import dev.bedwars.spigot.listener.QuickBuySyncListener;
-import dev.bedwars.spigot.listener.TrapTriggerListener;
+import dev.bedwars.core.ranking.EloCalculator;
+import dev.bedwars.core.ranking.MatchResultPersister;
+import dev.bedwars.core.reporting.DeploymentMode;
+import dev.bedwars.core.reporting.ReportingPolicy;
+import dev.bedwars.core.reporting.WhitelistEnforcement;
 import dev.bedwars.core.shop.Currency;
 import dev.bedwars.core.shop.Price;
 import dev.bedwars.core.shop.QuickBuyStore;
@@ -41,29 +36,29 @@ import dev.bedwars.core.shop.Shop;
 import dev.bedwars.core.shop.ShopCategory;
 import dev.bedwars.core.shop.ShopItem;
 import dev.bedwars.core.shop.ShopService;
+import dev.bedwars.core.upgrade.TeamEffectCalculator;
+import dev.bedwars.core.upgrade.TrapTriggerService;
 import dev.bedwars.core.upgrade.UpgradeCatalog;
 import dev.bedwars.core.upgrade.UpgradeService;
-import dev.bedwars.core.logging.CorrelationContext;
-import dev.bedwars.core.logging.StructuredLog;
-import dev.bedwars.core.ranking.EloCalculator;
-import dev.bedwars.core.ranking.MatchResultPersister;
-import dev.bedwars.api.service.PodHeartbeat;
-import dev.bedwars.spigot.util.TpsMeter;
 import dev.bedwars.spigot.command.BedwarsCommand;
 import dev.bedwars.spigot.config.PluginConfig;
+import dev.bedwars.spigot.effects.UpgradeEffectApplier;
+import dev.bedwars.spigot.game.JoinService;
+import dev.bedwars.spigot.gui.JoinMenu;
 import dev.bedwars.spigot.listener.DomainEventBridge;
 import dev.bedwars.spigot.listener.GameListener;
 import dev.bedwars.spigot.listener.JoinSignListener;
+import dev.bedwars.spigot.listener.NpcJoinListener;
 import dev.bedwars.spigot.listener.ProtectionListener;
+import dev.bedwars.spigot.listener.QuickBuyListener;
+import dev.bedwars.spigot.listener.QuickBuySyncListener;
 import dev.bedwars.spigot.listener.ShopListener;
 import dev.bedwars.spigot.listener.SpectatorListener;
+import dev.bedwars.spigot.listener.TrapTriggerListener;
 import dev.bedwars.spigot.listener.UpgradeListener;
 import dev.bedwars.spigot.listener.VoidKillListener;
 import dev.bedwars.spigot.report.ControllerProbe;
 import dev.bedwars.spigot.report.HttpPodReporter;
-import dev.bedwars.core.reporting.DeploymentMode;
-import dev.bedwars.core.reporting.ReportingPolicy;
-import dev.bedwars.core.reporting.WhitelistEnforcement;
 import dev.bedwars.spigot.scoreboard.ScoreboardRenderer;
 import dev.bedwars.spigot.template.AspSlimeWorldBridge;
 import dev.bedwars.spigot.template.AspSlimeWorldProvider;
@@ -71,8 +66,12 @@ import dev.bedwars.spigot.template.FallbackWorldProvider;
 import dev.bedwars.spigot.template.LocalTemplateSource;
 import dev.bedwars.spigot.template.S3TemplateSource;
 import dev.bedwars.spigot.template.SlimeWorldProvider;
+import dev.bedwars.spigot.util.TpsMeter;
+import dev.bedwars.spigot.world.GameWorldService;
 import com.infernalsuite.aswm.api.AdvancedSlimePaperAPI;
 import com.infernalsuite.aswm.api.loaders.SlimeLoader;
+import org.bukkit.ChatColor;
+import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.entity.Player;
@@ -85,7 +84,7 @@ import java.io.InputStream;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -94,12 +93,15 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Game-pod entrypoint. One pod = one match. On boot the plugin loads its template,
- * wires Core services, and reports READY to the controller. On shutdown it reports
- * DRAINING and flushes results. There is no persistent arena state on disk
- * (constraint #1); the pod itself is the reset (constraint #2).
+ * Game-server entrypoint.
  *
- * <p>Not {@code final}: MockBukkit subclasses the plugin to load it in tests.
+ * <p>A dedicated server hosts up to {@code arena.games-per-server} concurrent matches
+ * (default 1). The {@link GameHost} owns their lifecycle; the {@link JoinService} seats
+ * players; the {@link GameWorldService} gives each match its own world when more than one
+ * is allowed. On boot the server loads its template and reports its free <em>match slots</em>
+ * to the controller; on shutdown it reports DRAINING and flushes results.
+ *
+ * <p>Not {@code final}: test harnesses may subclass the plugin.
  */
 public class BedwarsRecodedPlugin extends JavaPlugin {
 
@@ -110,10 +112,10 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
     private LeaderboardCache leaderboardCache;
     private EventBus eventBus;
     private GameManager gameManager;
-    // Concrete type (not the PodReporter interface) so the bootstrap can log the
-    // effective reporting policy in the startup summary.
+    private GameHost host;
+    private GameWorldService worlds;
+    private JoinService joinService;
     private HttpPodReporter reporter;
-    private Game game;
     private PluginConfig config;
 
     private final MessageCatalog catalog = new MessageCatalog();
@@ -126,10 +128,10 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
     private final TpsMeter tpsMeter = new TpsMeter();
     private MatchResultPersister matchResultPersister;
     private SlimeWorldProvider worldProvider;
-    /** Resolved once at boot: POD (talks to a controller) or STANDALONE (does not). */
     private DeploymentMode effectiveMode = DeploymentMode.AUTO;
     private long startedAtMillis;
-    private boolean resultsPersisted;
+    private final Set<String> persistedGames = ConcurrentHashMap.newKeySet();
+    private int lastReportedFreeSlots = -1;
     private final QuickBuyStore quickBuy = new QuickBuyStore();
     private final Map<UUID, Set<String>> ownedItems = new ConcurrentHashMap<>();
     private final ScoreboardRenderer scoreboardRenderer = new ScoreboardRenderer();
@@ -138,7 +140,7 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
     private JoinMenu joinMenu;
     private List<String> startItems = List.of();
 
-    private int countdownRemaining = -1;
+    private final Map<String, Integer> countdownRemaining = new ConcurrentHashMap<>();
 
     @Override
     public void onEnable() {
@@ -146,7 +148,7 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         try {
             saveResource("arena.yml", false);
         } catch (IllegalArgumentException ignored) {
-            // No bundled sample arena; config-derived arena will be used.
+            // No bundled sample arena; a config-derived arena will be used.
         }
         this.config = PluginConfig.from(getConfig(), defaultServerId());
         this.effectiveMode = DeploymentMode.resolve(config.mode(), probeController(config));
@@ -168,21 +170,25 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         bootPersistence(config);
 
         ArenaDefinition arena = loadArenaDefinition(config);
-        this.shop = arena != null ? arena.shop() : defaultShop();
-        this.startItems = arena != null ? arena.startItems() : List.of();
-        this.upgradeCatalog = arena != null ? arena.upgrades() : defaultUpgradeCatalog;
-        this.game = buildGame(config, template, arena);
-        gameManager.register(game);
+        if (arena == null) {
+            arena = defaultArena(config);
+        }
+        this.shop = arena.shop();
+        this.startItems = arena.startItems();
+        this.upgradeCatalog = arena.upgrades();
 
-        this.joinMenu = new JoinMenu(gameManager, game);
+        Path templateDir = getDataFolder().toPath().resolve(config.localTemplatePath()).resolve(config.templateName());
+        this.worlds = new GameWorldService(this, templateDir, config.gamesPerServer() > 1, LOG);
+        this.host = new GameHost(arena, template, eventBus, gameManager,
+                config.gamesPerServer(), 5, "match");
+        this.joinService = new JoinService(host, worlds);
+
+        this.joinMenu = new JoinMenu(joinService, host);
         registerListeners();
         getCommand("bedwars").setExecutor(new BedwarsCommand(this));
         getServer().getScheduler().runTaskTimer(this, this::tick, 20L, 20L);
-        // TPS is measured per server tick (20/s). Ticking the meter from the 1-second
-        // game loop reported ~1.0 TPS on a perfectly healthy server.
         getServer().getScheduler().runTaskTimer(this, tpsMeter::tick, 0L, 1L);
         getServer().getScheduler().runTaskTimer(this, this::applyTeamEffects, 40L, 40L);
-        // Heartbeats only make sense when this really is a pod talking to a controller.
         if (effectiveMode.reportsToController()) {
             getServer().getScheduler().runTaskTimer(this, this::sendHeartbeat, 200L,
                     Math.max(20L, config.heartbeatSeconds() * 20L));
@@ -195,23 +201,24 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         } else {
             LOG.info("template_disabled (template.enabled: false) - keeping the server's existing world");
         }
-        reporter.reportReady(config.serverId(), config.arenaGroup(), template, game.id());
-        LOG.info("pod_ready pod={} game={} template={} shop={}", config.serverId(), game.id(),
-                template.coordinate(), shop.id());
+        reporter.reportReady(config.serverId(), config.arenaGroup(), template, host.gameCount() + " matches");
+        reportCapacityIfChanged(true);
+        LOG.info("server_ready server={} arena_group={} games_per_server={} shop={}",
+                config.serverId(), config.arenaGroup(), config.gamesPerServer(), shop.id());
     }
 
     // ---- wiring ----------------------------------------------------------
 
     private void registerListeners() {
         var pm = getServer().getPluginManager();
-        pm.registerEvents(new GameListener(gameManager), this);
+        pm.registerEvents(new GameListener(gameManager, joinService), this);
         pm.registerEvents(new ShopListener(), this);
         pm.registerEvents(new UpgradeListener(), this);
         pm.registerEvents(new VoidKillListener(gameManager), this);
         pm.registerEvents(new ProtectionListener(gameManager), this);
         pm.registerEvents(new SpectatorListener(gameManager, this), this);
-        pm.registerEvents(new JoinSignListener(gameManager, game), this);
-        pm.registerEvents(new NpcJoinListener(gameManager, game), this);
+        pm.registerEvents(new JoinSignListener(joinService), this);
+        pm.registerEvents(new NpcJoinListener(joinService), this);
         pm.registerEvents(new TrapTriggerListener(gameManager, trapTriggers), this);
         pm.registerEvents(new QuickBuyListener(), this);
         pm.registerEvents(joinMenu, this);
@@ -220,23 +227,24 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         }
     }
 
-    /** Periodically applies team upgrade effects to every participant's gear and buffs. */
+    /** Applies each participant's team upgrade effects to their gear and buffs. */
     private void applyTeamEffects() {
-        if (game.state() != GameState.RUNNING && game.state() != GameState.SUDDEN_DEATH) {
-            return;
-        }
         for (Player player : getServer().getOnlinePlayers()) {
-            game.session(player.getUniqueId()).ifPresent(session ->
-                    session.teamId().flatMap(game::team).ifPresent(team -> {
-                        var effects = TeamEffectCalculator.forTeam(team.upgrades());
-                        boolean inBase = new Vec3(player.getLocation().getX(), player.getLocation().getY(),
-                                player.getLocation().getZ()).isWithin(team.bed().position(), 8.0);
-                        UpgradeEffectApplier.apply(player, effects, inBase);
-                    }));
+            gameManager.byPlayer(player.getUniqueId()).ifPresent(game -> {
+                if (game.state() != GameState.RUNNING && game.state() != GameState.SUDDEN_DEATH) {
+                    return;
+                }
+                game.session(player.getUniqueId()).flatMap(session -> session.teamId().flatMap(game::team))
+                        .ifPresent(team -> {
+                            var effects = TeamEffectCalculator.forTeam(team.upgrades());
+                            boolean inBase = new Vec3(player.getLocation().getX(), player.getLocation().getY(),
+                                    player.getLocation().getZ()).isWithin(team.bed().position(), 8.0);
+                            UpgradeEffectApplier.apply(player, effects, inBase);
+                        });
+            });
         }
     }
 
-    /** Best-effort one-line cause for a wrapped connection failure. */
     private static String rootCause(Throwable error) {
         Throwable cause = error;
         while (cause.getCause() != null && cause.getCause() != cause) {
@@ -245,10 +253,6 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         return cause.getMessage() == null ? cause.getClass().getSimpleName() : cause.getMessage();
     }
 
-    /**
-     * The pod name: the Downward API sets HOSTNAME in Kubernetes; on a plain machine
-     * we fall back to the local hostname so a standalone server still has an identity.
-     */
     private static String defaultServerId() {
         String hostname = System.getenv("HOSTNAME");
         if (hostname == null || hostname.isBlank()) {
@@ -261,10 +265,9 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
                 hostname = "local";
             }
         }
-        return "pod-" + hostname;
+        return "server-" + hostname;
     }
 
-    /** {@code AUTO} mode asks the controller whether it is there before reporting to it. */
     private boolean probeController(PluginConfig cfg) {
         if (cfg.mode() == DeploymentMode.POD) {
             return true;
@@ -277,13 +280,6 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         return reachable;
     }
 
-    /**
-     * A game pod must be joinable: its access control is the controller's queue, not
-     * the server whitelist. Some server builds switch the whitelist on by their own
-     * default, and an empty {@code whitelist.json} then rejects every player with
-     * "You are not whitelisted on this server!". In POD mode we therefore switch it
-     * off explicitly. Configurable: {@code server.force-whitelist-off: AUTO|OFF|LEAVE}.
-     */
     private void applyWhitelistPolicy() {
         if (!WhitelistEnforcement.shouldDisable(config.whitelistEnforcement(), effectiveMode)) {
             return;
@@ -291,36 +287,35 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         if (getServer().hasWhitelist()) {
             getServer().setWhitelist(false);
             LOG.info("whitelist_disabled it was enabled (by the server's own default or by an operator); "
-                    + "a game pod accepts the players the controller routes to it "
-                    + "(server.force-whitelist-off={} mode={})",
-                    config.whitelistEnforcement(), effectiveMode);
+                    + "a game server accepts the players routed to it "
+                    + "(server.force-whitelist-off={} mode={})", config.whitelistEnforcement(), effectiveMode);
         } else {
             LOG.info("whitelist_ok already off (mode={})", effectiveMode);
         }
     }
 
-    /** One block that states exactly which setup this server is running as. */
     private void logStartupSummary() {
         String reporting = effectiveMode.reportsToController()
                 ? reporter.policy().describe()
                 : "not used (not a pod)";
         LOG.info("bedwars_setup mode={} (configured {}) controller_reporting={} controller_url={}",
                 effectiveMode, config.mode(), reporting, config.controllerBaseUrl());
-        LOG.info("bedwars_setup server_id={} arena_group={} teams={}x{} template={} persistence={} json_logs={}",
+        LOG.info("bedwars_setup server_id={} arena_group={} teams={}x{} games_per_server={} template={} persistence={} json_logs={}",
                 config.serverId(), config.arenaGroup(), config.teamCount(), config.playersPerTeam(),
+                config.gamesPerServer(),
                 config.templateEnabled() ? config.templateName() + "@" + config.templateVersion() + "("
                         + config.templateSource() + ")" : "disabled",
                 config.persistenceEnabled() ? config.database().host() : "disabled",
                 config.jsonLogs());
     }
 
-    private void giveStartItems() {
-        World world = getServer().getWorlds().isEmpty() ? null : getServer().getWorlds().getFirst();
-        if (world == null || startItems.isEmpty()) {
+    private void giveStartItems(Game game) {
+        if (startItems.isEmpty()) {
             return;
         }
-        for (Player player : getServer().getOnlinePlayers()) {
-            if (game.session(player.getUniqueId()).isEmpty()) {
+        for (UUID uuid : game.sessions().keySet()) {
+            Player player = getServer().getPlayer(uuid);
+            if (player == null) {
                 continue;
             }
             for (String materialName : startItems) {
@@ -347,41 +342,71 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
             LOG.info("persistence_ready host={}:{} database={}", cfg.database().host(), cfg.database().port(),
                     cfg.database().database());
         } catch (RuntimeException | LinkageError e) {
-            // One concise line: the full HikariCP stack is noise for an operator who
-            // simply has no database yet. The cause is kept in the message.
-            // LinkageError covers a server that did not provide the plugin libraries
-            // (e.g. stock Spigot without `libraries:` support): the JDBC classes are
-            // then absent at runtime, and persistence must disable rather than crash.
             LOG.warn("persistence_unavailable running without stats ({}). "
                     + "Set persistence.enabled: false to silence this.", rootCause(e));
         }
     }
 
-    /** Persists the finished match's stat deltas and ELO exactly once. */
+    /** Persists each finished match's stat deltas and ELO exactly once. */
     private void persistResults() {
-        if (resultsPersisted || matchResultPersister == null || statsRepository == null || game == null) {
+        if (matchResultPersister == null || statsRepository == null) {
             return;
         }
-        resultsPersisted = true;
-        matchResultPersister.persist(game.results(), statsRepository)
-                .thenRun(() -> LOG.info("match_results_persisted game={}", game.id()))
-                .exceptionally(error -> {
-                    LOG.error("Failed to persist match results for {}", game.id(), error);
-                    return null;
-                });
+        for (Game game : host.games()) {
+            if (!game.state().isTerminal() || !persistedGames.add(game.id())) {
+                continue;
+            }
+            matchResultPersister.persist(game.results(), statsRepository)
+                    .thenRun(() -> LOG.info("match_results_persisted game={}", game.id()))
+                    .exceptionally(error -> {
+                        LOG.error("Failed to persist match results for {}", game.id(), error);
+                        return null;
+                    });
+        }
     }
 
-    /** Reports TPS, player count and phase so the controller can scrape pod health. */
-    private void sendHeartbeat() {
-        if (game == null) {
+    /** Reports free match slots (only when they change) so the controller can route players. */
+    private void reportCapacityIfChanged(boolean force) {
+        if (host == null || !effectiveMode.reportsToController()) {
             return;
         }
-        PodHeartbeat beat = new PodHeartbeat(config.serverId(), game.id(), tpsMeter.tps(),
-                game.playerCount(), game.phase(), System.currentTimeMillis() - startedAtMillis);
+        int free = host.freeSlots();
+        if (!force && free == lastReportedFreeSlots) {
+            return;
+        }
+        lastReportedFreeSlots = free;
+        reporter.reportCapacity(config.serverId(), free, host.maxGames());
+    }
+
+    private void sendHeartbeat() {
+        int players = 0;
+        for (Game game : host.games()) {
+            players += game.playerCount();
+        }
+        PodHeartbeat beat = new PodHeartbeat(config.serverId(), "matches=" + host.gameCount(), tpsMeter.tps(),
+                players, phaseFor(host), System.currentTimeMillis() - startedAtMillis);
         reporter.heartbeat(beat);
-        LOG.info("heartbeat pod={} game={} tps={} players={} phase={} uptime={}ms",
-                beat.podId(), beat.gameId(), String.format("%.1f", beat.tps()), beat.playerCount(),
-                beat.phase(), beat.uptimeMillis());
+        reportCapacityIfChanged(false);
+        LOG.info("heartbeat server={} matches={} in_progress={} free_slots={} tps={} players={}",
+                beat.podId(), host.gameCount(), host.inProgressGames(), host.freeSlots(),
+                String.format("%.1f", beat.tps()), players);
+    }
+
+    private static GamePhase phaseFor(GameHost host) {
+        boolean running = false;
+        boolean countdown = false;
+        for (Game game : host.games()) {
+            switch (game.state()) {
+                case RUNNING, SUDDEN_DEATH -> running = true;
+                case COUNTDOWN -> countdown = true;
+                default -> {
+                }
+            }
+        }
+        if (running) {
+            return GamePhase.RUNNING;
+        }
+        return countdown ? GamePhase.COUNTDOWN : GamePhase.WAITING;
     }
 
     private void refreshLeaderboards() {
@@ -390,21 +415,17 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         }
     }
 
-    /**
-     * Config hot-reload: re-reads {@code config.yml} and {@code arena.yml} and
-     * applies the values that can change safely mid-match (shop, upgrade tree,
-     * start items, countdown, sudden death). Arena geometry needs a pod restart —
-     * which is the pod-per-match model anyway.
-     */
     public void reloadConfiguration() {
         reloadConfig();
         PluginConfig fresh = PluginConfig.from(getConfig(), config.serverId());
         this.config = fresh;
         ArenaDefinition arena = loadArenaDefinition(fresh);
-        this.shop = arena != null ? arena.shop() : defaultShop();
-        this.startItems = arena != null ? arena.startItems() : List.of();
-        this.upgradeCatalog = arena != null ? arena.upgrades() : defaultUpgradeCatalog;
-        LOG.info("config_reloaded shop={} upgrades={} startItems={}",
+        if (arena != null) {
+            this.shop = arena.shop();
+            this.startItems = arena.startItems();
+            this.upgradeCatalog = arena.upgrades();
+        }
+        LOG.info("config_reloaded shop={} upgrades={} startItems={} (games-per-server applies after restart)",
                 shop.id(), upgradeCatalog == defaultUpgradeCatalog ? "defaults" : "arena.yml", startItems.size());
     }
 
@@ -425,11 +446,9 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
                     loadWorld(template, path);
                 })
                 .exceptionally(error -> {
-                    // A missing template is an operator configuration issue, not a crash:
-                    // one actionable line beats a wall of CompletionException trace.
                     LOG.warn("template_load_failed template={} reason={}. "
-                            + "Provide the world under template.local-path, or set template.enabled: false. "
-                            + "The server keeps its current world until then.",
+                                    + "Provide the world under template.local-path, or set template.enabled: false. "
+                                    + "The server keeps its current world until then.",
                             template.coordinate(), rootCause(error));
                     if (LOG.isDebugEnabled()) {
                         LOG.debug("template_load_failed detail", error);
@@ -438,15 +457,10 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
                 });
     }
 
-    /**
-     * Hands the staged archive to the world loader. Production uses AdvancedSlimePaper
-     * (the template is read read-only and cloned per match, so the pod never mutates
-     * the shared template); without ASP the documented non-production fallback is used.
-     */
-    private void loadWorld(TemplateDescriptor template, java.nio.file.Path archive) {
+    private void loadWorld(TemplateDescriptor template, Path archive) {
         SlimeWorldProvider provider = worldProvider();
         try {
-            boolean ok = provider.load(archive, template.name(), "match-" + game.id());
+            boolean ok = provider.load(archive, template.name(), "match");
             if (!ok) {
                 LOG.warn("world_load_incomplete loader={} template={}", provider.backend(), template.coordinate());
             }
@@ -466,7 +480,6 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         return worldProvider;
     }
 
-    /** Builds the ASP world loader when AdvancedSlimePaper is installed; null otherwise. */
     private SlimeWorldProvider resolveAspProvider() {
         try {
             if (getServer().getPluginManager().getPlugin("AdvancedSlimePaper") == null) {
@@ -486,11 +499,6 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         }
     }
 
-    /**
-     * The ASP API artifact exposes {@link SlimeLoader} but not the server's configured
-     * loaders, so one reflective hop reaches the loader the server built for the given
-     * data source (file/S3/MySQL). This is an integration seam, not bytecode patching.
-     */
     private SlimeLoader resolveAspLoader(String dataSource) throws Exception {
         org.bukkit.plugin.Plugin asp = getServer().getPluginManager().getPlugin("AdvancedSlimePaper");
         if (asp == null) {
@@ -500,7 +508,6 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         return loader instanceof SlimeLoader slime ? slime : null;
     }
 
-    /** Loads {@code arena.yml} if present (the template's bed/spawn/generator/shop layout). */
     private ArenaDefinition loadArenaDefinition(PluginConfig config) {
         Path arenaFile = getDataFolder().toPath().resolve("arena.yml");
         if (!Files.isRegularFile(arenaFile)) {
@@ -509,146 +516,129 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         try (InputStream in = Files.newInputStream(arenaFile)) {
             return new ArenaConfigLoader().load(in);
         } catch (Exception e) {
-            LOG.error("Failed to load arena.yml; falling back to config-derived arena", e);
+            LOG.error("Failed to load arena.yml; falling back to a config-derived arena", e);
             return null;
         }
     }
 
-    private Game buildGame(PluginConfig config, TemplateDescriptor template, ArenaDefinition arena) {
-        ArenaGroup group = arena != null ? arena.group() : new ArenaGroup(
-                config.arenaGroup(), config.teamCount(), config.playersPerTeam(),
-                config.countdownSeconds(), config.suddenDeathAfterSeconds(),
-                config.voidY(), config.islandRadius(), config.bedProtectionRadius(),
+    /** Arena built from config when no arena.yml is present. */
+    private ArenaDefinition defaultArena(PluginConfig config) {
+        ArenaGroup group = new ArenaGroup(config.arenaGroup(), config.teamCount(), config.playersPerTeam(),
+                config.countdownSeconds(), config.suddenDeathAfterSeconds(), config.voidY(),
+                config.islandRadius(), config.bedProtectionRadius(),
                 List.of(GeneratorType.IRON, GeneratorType.GOLD, GeneratorType.DIAMOND, GeneratorType.EMERALD));
-
-        List<Team> teams = new ArrayList<>();
-        List<Generator> generators = new ArrayList<>();
-        long now = System.currentTimeMillis();
-
-        if (arena != null) {
-            for (Map.Entry<String, Vec3> entry : arena.teamBeds().entrySet()) {
-                String id = entry.getKey();
-                TeamColor color = colorFor(id, teams.size());
-                teams.add(new Team(id, color, new Bed(id, entry.getValue(), group.bedProtectionRadius()),
-                        group.playersPerTeam()));
-            }
-            for (var spec : arena.generators()) {
-                generators.add(new Generator(spec.id(), spec.type(), spec.tier(), spec.position(), now));
-            }
-        } else {
-            TeamColor[] colors = TeamColor.values();
-            for (int i = 0; i < group.teamCount(); i++) {
-                TeamColor color = colors[i % colors.length];
-                String id = color.name().toLowerCase();
-                Vec3 bedPos = new Vec3(i * 40.0, 64.0, 0.0);
-                teams.add(new Team(id, color, new Bed(id, bedPos, group.bedProtectionRadius()), group.playersPerTeam()));
-            }
+        Map<String, Vec3> beds = new LinkedHashMap<>();
+        TeamColor[] colors = TeamColor.values();
+        for (int i = 0; i < group.teamCount(); i++) {
+            String id = colors[i % colors.length].name().toLowerCase();
+            beds.put(id, new Vec3(i * 40.0, 64.0, 0.0));
         }
-
-        for (Team team : teams) {
-            boolean hasGenerator = generators.stream()
-                    .anyMatch(g -> g.id().startsWith(team.id() + "-"));
-            if (!hasGenerator) {
-                generators.add(new Generator(team.id() + "-iron", GeneratorType.IRON, GeneratorTier.I,
-                        team.bed().position(), now));
-                generators.add(new Generator(team.id() + "-gold", GeneratorType.GOLD, GeneratorTier.I,
-                        team.bed().position(), now));
-            }
-        }
-        if (generators.stream().noneMatch(g -> g.type() == GeneratorType.DIAMOND)) {
-            generators.add(new Generator("center-diamond", GeneratorType.DIAMOND, GeneratorTier.I, new Vec3(0, 64, 0), now));
-        }
-        if (generators.stream().noneMatch(g -> g.type() == GeneratorType.EMERALD)) {
-            generators.add(new Generator("center-emerald", GeneratorType.EMERALD, GeneratorTier.I, new Vec3(0, 64, 0), now));
-        }
-
-        return new Game("game-" + UUID.randomUUID(), group, template, teams, generators, eventBus, 5, now);
-    }
-
-    private static TeamColor colorFor(String id, int index) {
-        for (TeamColor color : TeamColor.values()) {
-            if (color.name().equalsIgnoreCase(id)) {
-                return color;
-            }
-        }
-        return TeamColor.values()[index % TeamColor.values().length];
+        return new ArenaDefinition(group, beds, Map.of(), List.of(), defaultShop(), List.of(),
+                defaultUpgradeCatalog);
     }
 
     // ---- tick loop -------------------------------------------------------
 
     private void tick() {
-        // Correlate everything this tick does (logs, persistence, webhooks) with the
-        // match and the pod via scoped values; the binding is restored automatically.
-        CorrelationContext.run(game.id(), config.serverId(), this::tickGame);
+        for (Game game : host.games()) {
+            CorrelationContext.run(game.id(), config.serverId(), () -> tickGame(game));
+        }
+        updateScoreboards();
+        persistResults();
+        pruneFinished();
     }
 
-    private void tickGame() {
+    private void tickGame(Game game) {
         if (game.state().isTerminal()) {
-            persistResults();
             return;
         }
         long now = System.currentTimeMillis();
-        spawnGeneratorItems(now);
-        handleCountdown();
-        handleSuddenDeath(now);
-        updateScoreboards();
+        spawnGeneratorItems(game, now);
+        handleCountdown(game);
+        handleSuddenDeath(game, now);
     }
 
-    private void spawnGeneratorItems(long now) {
-        World world = getServer().getWorlds().isEmpty() ? null : getServer().getWorlds().getFirst();
+    private void spawnGeneratorItems(Game game, long now) {
+        World world = worlds.worldFor(game.id());
         if (world == null) {
             return;
         }
         for (Game.GeneratorSpawn spawn : game.tickGenerators(now)) {
             Material material = materialFor(spawn.type());
             if (material != null) {
-                world.dropItemNaturally(new org.bukkit.Location(world,
+                world.dropItemNaturally(new Location(world,
                         spawn.position().x(), spawn.position().y(), spawn.position().z()),
                         new ItemStack(material, spawn.itemCount()));
             }
         }
     }
 
-    private void handleCountdown() {
+    private void handleCountdown(Game game) {
         if (game.state() == GameState.WAITING) {
             if (game.playerCount() >= game.group().teamCount()) {
                 game.startCountdown();
-                countdownRemaining = game.group().countdownSeconds();
+                countdownRemaining.put(game.id(), game.group().countdownSeconds());
+                broadcastTo(game, "&eMatch starting in &c" + game.group().countdownSeconds() + "&e...");
             }
             return;
         }
         if (game.state() == GameState.COUNTDOWN) {
-            countdownRemaining--;
-            if (countdownRemaining <= 0) {
+            int remaining = countdownRemaining.merge(game.id(), -1, Integer::sum);
+            if (remaining <= 0) {
                 game.beginMatch(System.currentTimeMillis());
-                giveStartItems();
-            } else if (countdownRemaining <= 5) {
-                broadcast("&eStarting in &c" + countdownRemaining + "&e...");
+                giveStartItems(game);
+                broadcastTo(game, "&a&lThe match has begun!");
+            } else if (remaining <= 5) {
+                broadcastTo(game, "&eStarting in &c" + remaining + "&e...");
             }
         }
     }
 
-    private void handleSuddenDeath(long now) {
+    private void handleSuddenDeath(Game game, long now) {
         int after = game.group().suddenDeathAfterSecs();
         if (game.state() == GameState.RUNNING && after > 0 && game.startedAtMillis() > 0
                 && now - game.startedAtMillis() >= after * 1000L) {
             game.enterSuddenDeath(now);
-            broadcast("&4Sudden death! All beds have been destroyed.");
+            broadcastTo(game, "&4Sudden death! All beds have been destroyed.");
         }
     }
 
     private void updateScoreboards() {
         for (Player player : getServer().getOnlinePlayers()) {
-            if (gameManager.byPlayer(player.getUniqueId()).isPresent()) {
-                scoreboardRenderer.update(player, game);
-            }
+            gameManager.byPlayer(player.getUniqueId())
+                    .ifPresent(game -> scoreboardRenderer.update(player, game));
         }
     }
 
-    private void broadcast(String legacyMessage) {
-        String coloured = org.bukkit.ChatColor.translateAlternateColorCodes('&', legacyMessage);
-        for (Player player : getServer().getOnlinePlayers()) {
-            player.sendMessage(coloured);
+    /** A match that has finished is returned to the pool and its world reclaimed. */
+    private void pruneFinished() {
+        List<String> finished = host.games().stream()
+                .filter(game -> game.state().isTerminal())
+                .map(Game::id)
+                .toList();
+        if (finished.isEmpty()) {
+            return;
+        }
+        for (String id : finished) {
+            host.byId(id).ifPresent(game -> {
+                broadcastTo(game, "&eThis match has ended.");
+                for (UUID uuid : game.sessions().keySet()) {
+                    scoreboardRenderer.forget(uuid);
+                }
+            });
+        }
+        host.pruneFinished();
+        finished.forEach(worlds::release);
+        reportCapacityIfChanged(false);
+    }
+
+    private void broadcastTo(Game game, String legacyMessage) {
+        String coloured = ChatColor.translateAlternateColorCodes('&', legacyMessage);
+        for (UUID uuid : game.sessions().keySet()) {
+            Player player = getServer().getPlayer(uuid);
+            if (player != null) {
+                player.sendMessage(coloured);
+            }
         }
     }
 
@@ -687,12 +677,20 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
 
     // ---- accessors -------------------------------------------------------
 
-    public Game game() {
-        return game;
+    public GameHost host() {
+        return host;
     }
 
     public GameManager gameManager() {
         return gameManager;
+    }
+
+    public JoinService joinService() {
+        return joinService;
+    }
+
+    public GameWorldService worlds() {
+        return worlds;
     }
 
     public LanguageService languageService() {
@@ -733,13 +731,18 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
-        if (game != null) {
-            persistResults();
-            reporter.reportDraining(config.serverId(), game.id(), game.activePlayerCount());
-            if (game.state() == GameState.RUNNING) {
-                game.endGame(game.winnerTeamId(), System.currentTimeMillis());
+        if (host != null) {
+            int players = 0;
+            for (Game game : host.games()) {
+                players += game.activePlayerCount();
+                if (!game.state().isTerminal()) {
+                    game.abort();
+                }
             }
-            reporter.reportGameEnded(config.serverId(), game.results());
+            persistResults();
+            // Release every match world so a restart does not leave orphans behind.
+            host.games().forEach(game -> worlds.release(game.id()));
+            reporter.reportDraining(config.serverId(), host.gameCount() + " matches", players);
         }
         if (statsRepository != null) {
             statsRepository.close();
@@ -753,6 +756,6 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         if (database != null) {
             database.close();
         }
-        LOG.info("pod_shutdown complete");
+        LOG.info("game_server_shutdown complete");
     }
 }

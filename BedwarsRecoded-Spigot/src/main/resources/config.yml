@@ -36,6 +36,11 @@ server-id: "pod-${HOSTNAME}"
 # -----------------------------------------------------------------------------
 arena:
   group: "solo"
+  # How many concurrent BedWars matches this server may host. 1 (the default) means the
+  # server runs a single match on its existing world. Values above 1 give each match its
+  # own world, copied from the template below (or, in K8s, its own Slime world), and the
+  # server reports the resulting free match slots to the controller.
+  games-per-server: 1
   team-count: 2
   players-per-team: 2
   countdown-seconds: 15

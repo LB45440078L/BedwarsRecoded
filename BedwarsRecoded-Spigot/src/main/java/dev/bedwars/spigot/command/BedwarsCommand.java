@@ -10,13 +10,24 @@ import org.bukkit.ChatColor;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
+import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
- * {@code /bw status|start|stop|join|shop|upgrades|lang}. Uses legacy colour codes
- * so the plugin compiles and runs against the Spigot API.
+ * {@code /bw ...}. Uses legacy colour codes so it compiles and runs against the plain
+ * Spigot API.
+ *
+ * <p>Because a server can host several matches, {@code status} lists them all and
+ * {@code start}/{@code stop} accept a match id or {@code all}.
  */
-public final class BedwarsCommand implements CommandExecutor {
+public final class BedwarsCommand implements CommandExecutor, TabCompleter {
+
+    private static final List<String> SUBCOMMANDS = List.of(
+            "help", "status", "join", "leave", "start", "stop", "create", "gui", "shop", "quickbuy",
+            "upgrades", "lang", "reload");
 
     private final BedwarsRecodedPlugin plugin;
 
@@ -26,32 +37,15 @@ public final class BedwarsCommand implements CommandExecutor {
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-        Game game = plugin.game();
-        String sub = args.length == 0 ? "status" : args[0].toLowerCase();
+        String sub = args.length == 0 ? "help" : args[0].toLowerCase();
         switch (sub) {
-            case "status" -> sender.sendMessage(ChatColor.YELLOW + "game=" + game.id() + " state=" + game.state()
-                    + " players=" + game.playerCount() + " teams=" + game.teams().size());
-            case "start" -> {
-                if (!requireAdmin(sender)) {
-                    return true;
-                }
-                try {
-                    game.startCountdown();
-                    game.beginMatch(System.currentTimeMillis());
-                    sender.sendMessage(ChatColor.GREEN + "Match started.");
-                } catch (IllegalStateException e) {
-                    sender.sendMessage(ChatColor.RED + "Cannot start: " + e.getMessage());
-                }
-            }
-            case "stop" -> {
-                if (!requireAdmin(sender)) {
-                    return true;
-                }
-                game.abort();
-                plugin.gameManager().unregister(game.id());
-                sender.sendMessage(ChatColor.YELLOW + "Match aborted.");
-            }
+            case "help" -> help(sender);
+            case "status" -> status(sender);
+            case "start" -> start(sender, args);
+            case "stop" -> stop(sender, args);
+            case "create" -> create(sender, args);
             case "join" -> join(sender);
+            case "leave" -> leave(sender);
             case "shop" -> shop(sender, args);
             case "quickbuy" -> quickBuy(sender);
             case "upgrades" -> upgrades(sender);
@@ -64,23 +58,102 @@ public final class BedwarsCommand implements CommandExecutor {
                 plugin.reloadConfiguration();
                 sender.sendMessage(ChatColor.GREEN + "Configuration reloaded.");
             }
-            default -> sender.sendMessage(ChatColor.RED
-                    + "Usage: /bw status|start|stop|join|gui|shop|quickbuy|upgrades|lang|reload");
+            default -> sender.sendMessage(ChatColor.RED + "Unknown subcommand. Try /bw help.");
         }
         return true;
     }
 
-    /**
-     * Gate for administrative subcommands. Deliberately per-subcommand rather than on
-     * the whole {@code /bw} command, so regular players can still join, shop and talk.
-     * Console/RCON senders always pass.
-     */
-    private boolean requireAdmin(CommandSender sender) {
+    private void help(CommandSender sender) {
+        sender.sendMessage(ChatColor.GOLD + "Bedwars commands");
+        sender.sendMessage(ChatColor.YELLOW + "/bw status" + ChatColor.GRAY + " - list matches on this server");
+        sender.sendMessage(ChatColor.YELLOW + "/bw join" + ChatColor.GRAY + " - join a match");
+        sender.sendMessage(ChatColor.YELLOW + "/bw leave" + ChatColor.GRAY + " - leave your match");
+        sender.sendMessage(ChatColor.YELLOW + "/bw gui|shop|quickbuy|upgrades|lang" + ChatColor.GRAY
+                + " - player menus");
         if (!(sender instanceof Player) || sender.hasPermission("bedwars.admin")) {
-            return true;
+            sender.sendMessage(ChatColor.YELLOW + "/bw start <id|all>" + ChatColor.GRAY + " - force-start a match");
+            sender.sendMessage(ChatColor.YELLOW + "/bw stop <id|all>" + ChatColor.GRAY + " - abort a match");
+            sender.sendMessage(ChatColor.YELLOW + "/bw create <n>" + ChatColor.GRAY
+                    + " - pre-warm n matches ahead of demand");
+            sender.sendMessage(ChatColor.YELLOW + "/bw reload" + ChatColor.GRAY + " - reload config.yml / arena.yml");
         }
-        sender.sendMessage(ChatColor.RED + "No permission.");
-        return false;
+    }
+
+    private void status(CommandSender sender) {
+        List<Game> games = plugin.host().games();
+        if (games.isEmpty()) {
+            sender.sendMessage(ChatColor.YELLOW + "No matches running. Capacity: "
+                    + plugin.host().maxGames() + " (free slots: " + plugin.host().freeSlots() + ")");
+            return;
+        }
+        sender.sendMessage(ChatColor.GOLD + "Matches on this server (" + games.size() + "/"
+                + plugin.host().maxGames() + ", free slots " + plugin.host().freeSlots() + "):");
+        for (Game game : games) {
+            sender.sendMessage(ChatColor.YELLOW + "  " + game.id() + ChatColor.GRAY + " state=" + game.state()
+                    + " players=" + game.playerCount() + " teams=" + game.teams().size());
+        }
+    }
+
+    private void start(CommandSender sender, String[] args) {
+        if (!requireAdmin(sender)) {
+            return;
+        }
+        String target = args.length > 1 ? args[1] : "all";
+        int started = 0;
+        for (Game game : select(target)) {
+            try {
+                game.startCountdown();
+                game.beginMatch(System.currentTimeMillis());
+                started++;
+            } catch (IllegalStateException e) {
+                sender.sendMessage(ChatColor.RED + "Cannot start " + game.id() + ": " + e.getMessage());
+            }
+        }
+        sender.sendMessage(started == 0 ? ChatColor.RED + "No matching match to start."
+                : ChatColor.GREEN + "Started " + started + " match(es).");
+    }
+
+    private void stop(CommandSender sender, String[] args) {
+        if (!requireAdmin(sender)) {
+            return;
+        }
+        String target = args.length > 1 ? args[1] : "all";
+        int stopped = 0;
+        for (Game game : select(target)) {
+            game.abort();
+            stopped++;
+        }
+        sender.sendMessage(stopped == 0 ? ChatColor.RED + "No matching match to stop."
+                : ChatColor.YELLOW + "Aborted " + stopped + " match(es).");
+    }
+
+    private void create(CommandSender sender, String[] args) {
+        if (!requireAdmin(sender)) {
+            return;
+        }
+        int count = 1;
+        if (args.length > 1) {
+            try {
+                count = Math.max(1, Integer.parseInt(args[1]));
+            } catch (NumberFormatException e) {
+                sender.sendMessage(ChatColor.RED + "Usage: /bw create <n>");
+                return;
+            }
+        }
+        int created = 0;
+        while (created < count && plugin.host().gameCount() < plugin.host().maxGames()) {
+            plugin.host().createGame(System.currentTimeMillis());
+            created++;
+        }
+        sender.sendMessage(ChatColor.GREEN + "Created " + created + " match(es). Now "
+                + plugin.host().gameCount() + "/" + plugin.host().maxGames() + " on this server.");
+    }
+
+    private List<Game> select(String target) {
+        if ("all".equalsIgnoreCase(target)) {
+            return plugin.host().games();
+        }
+        return plugin.host().byId(target).map(List::of).orElse(List.of());
     }
 
     private void join(CommandSender sender) {
@@ -88,13 +161,26 @@ public final class BedwarsCommand implements CommandExecutor {
             sender.sendMessage(ChatColor.RED + "Players only.");
             return;
         }
-        try {
-            plugin.game().addPlayer(player.getUniqueId(), player.getName());
-            plugin.gameManager().trackPlayer(player.getUniqueId(), plugin.game().id());
-            player.sendMessage(ChatColor.GREEN + "Joined the match.");
-        } catch (IllegalStateException e) {
-            player.sendMessage(ChatColor.RED + "Cannot join: " + e.getMessage());
+        if (plugin.joinService().isPlaying(player)) {
+            player.sendMessage(ChatColor.YELLOW + "You are already in a match.");
+            return;
         }
+        if (plugin.joinService().join(player).isEmpty()) {
+            player.sendMessage(ChatColor.RED + "No free match on this server right now.");
+        }
+    }
+
+    private void leave(CommandSender sender) {
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(ChatColor.RED + "Players only.");
+            return;
+        }
+        if (!plugin.joinService().isPlaying(player)) {
+            player.sendMessage(ChatColor.YELLOW + "You are not in a match.");
+            return;
+        }
+        plugin.joinService().leave(player);
+        player.sendMessage(ChatColor.GREEN + "You left the match.");
     }
 
     private void shop(CommandSender sender, String[] args) {
@@ -131,13 +217,17 @@ public final class BedwarsCommand implements CommandExecutor {
             sender.sendMessage(ChatColor.RED + "Players only.");
             return;
         }
-        Team team = plugin.game().teamOf(player.getUniqueId())
-                .flatMap(plugin.game()::team).orElse(null);
+        Game game = plugin.gameManager().byPlayer(player.getUniqueId()).orElse(null);
+        if (game == null) {
+            player.sendMessage(ChatColor.RED + "You are not in a match.");
+            return;
+        }
+        Team team = game.teamOf(player.getUniqueId()).flatMap(game::team).orElse(null);
         if (team == null) {
             player.sendMessage(ChatColor.RED + "You are not on a team.");
             return;
         }
-        UpgradeMenu.open(player, plugin.game(), team, plugin.upgradeCatalog(), plugin.upgradeService());
+        UpgradeMenu.open(player, game, team, plugin.upgradeCatalog(), plugin.upgradeService());
     }
 
     private void language(CommandSender sender, String[] args) {
@@ -155,5 +245,34 @@ public final class BedwarsCommand implements CommandExecutor {
         } else {
             player.sendMessage(ChatColor.RED + "Unknown language: " + args[1]);
         }
+    }
+
+    private boolean requireAdmin(CommandSender sender) {
+        if (!(sender instanceof Player) || sender.hasPermission("bedwars.admin")) {
+            return true;
+        }
+        sender.sendMessage(ChatColor.RED + "No permission.");
+        return false;
+    }
+
+    @Override
+    public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
+        if (args.length == 1) {
+            return SUBCOMMANDS.stream().filter(s -> s.startsWith(args[0].toLowerCase())).toList();
+        }
+        if (args.length == 2 && (args[0].equalsIgnoreCase("start") || args[0].equalsIgnoreCase("stop"))) {
+            List<String> options = new ArrayList<>();
+            options.add("all");
+            plugin.host().games().forEach(game -> options.add(game.id()));
+            return options.stream().filter(s -> s.startsWith(args[1].toLowerCase())).toList();
+        }
+        if (args.length == 2 && args[0].equalsIgnoreCase("create")) {
+            return List.of("1", "2", "3", "5");
+        }
+        if (args.length == 2 && args[0].equalsIgnoreCase("shop")) {
+            return plugin.shop().categories().stream().map(c -> c.id())
+                    .filter(id -> id.startsWith(args[1].toLowerCase())).toList();
+        }
+        return List.of();
     }
 }

@@ -4,7 +4,7 @@ import com.google.gson.JsonObject;
 import dev.bedwars.api.dto.QueueRequest;
 import dev.bedwars.api.json.JsonSupport;
 import dev.bedwars.controller.config.ControllerConfig;
-import dev.bedwars.controller.pod.ReadyPodRegistry;
+import dev.bedwars.controller.pod.ServerRegistry;
 import dev.bedwars.controller.provision.NoopProvisioner;
 import dev.bedwars.controller.provision.ProvisionerKind;
 import dev.bedwars.controller.queue.QueueManager;
@@ -41,7 +41,7 @@ class WebhookServerTest {
         try (ServerSocket probe = new ServerSocket(0)) {
             port = probe.getLocalPort();
         }
-        ReadyPodRegistry registry = new ReadyPodRegistry();
+        ServerRegistry registry = new ServerRegistry();
         QueueManager queue = new QueueManager(registry::allocate, 500, 10_000);
         ControllerConfig config = config("", port);
         server = new WebhookServer(port, queue, registry, config, new NoopProvisioner(LoggerFactory.getLogger("test")),
@@ -114,34 +114,58 @@ class WebhookServerTest {
     }
 
     @Test
-    void metricsExposeQueueDepthAndReadyPods() throws Exception {
+    void metricsExposeQueueDepthAndFreeSlots() throws Exception {
         post("/pods/ready", "{\"podId\":\"pod-9\",\"arenaGroup\":\"doubles\"}");
         HttpResponse<String> metrics = get("/metrics");
 
         assertThat(metrics.statusCode()).isEqualTo(200);
         assertThat(metrics.body()).contains("bedwars_queue_depth");
-        assertThat(metrics.body()).contains("bedwars_ready_pods{group=\"doubles\"} 1");
+        assertThat(metrics.body()).contains("bedwars_free_slots{group=\"doubles\"} 25");
     }
 
     @Test
-    void drainingPodIsRemovedFromReadyPool() throws Exception {
+    void drainingServerIsRemovedFromThePool() throws Exception {
         post("/pods/ready", "{\"podId\":\"pod-x\",\"arenaGroup\":\"solo\"}");
-        assertThat(get("/metrics").body()).contains("bedwars_ready_pods{group=\"solo\"} 1");
+        assertThat(get("/metrics").body()).contains("bedwars_free_slots{group=\"solo\"} 25");
 
         post("/pods/draining", "{\"podId\":\"pod-x\",\"gameId\":\"g\",\"remainingPlayers\":0}");
 
-        assertThat(get("/metrics").body()).contains("bedwars_ready_pods{group=\"solo\"} 0");
+        // The drained server is gone from the pool, so its group no longer appears.
+        assertThat(get("/metrics").body()).doesNotContain("bedwars_free_slots{group=\"solo\"}");
     }
 
     @Test
-    void arenaStatusReportsReadyAndQueuedPerGroup() throws Exception {
+    void aMatchEndingReleasesItsSlotWithoutDroppingTheServer() throws Exception {
+        post("/pods/ready", "{\"podId\":\"pod-c\",\"arenaGroup\":\"solo\",\"capacity\":4}");
+        assertThat(get("/metrics").body()).contains("bedwars_free_slots{group=\"solo\"} 4");
+        // Dispatch two matches: two slots consumed, server still present.
+        for (int i = 0; i < 2; i++) {
+            QueueRequest request = new QueueRequest(UUID.randomUUID(), "p" + i, 0,
+                    Optional.of("solo"), Optional.empty(), System.currentTimeMillis());
+            post("/lobby/queue", JsonSupport.gson().toJson(request));
+        }
+        assertThat(get("/metrics").body()).contains("bedwars_free_slots{group=\"solo\"} 2");
+
+        post("/pods/ended", "{\"podId\":\"pod-c\",\"gameId\":\"g\"}");
+        assertThat(get("/metrics").body()).contains("bedwars_free_slots{group=\"solo\"} 3");
+    }
+
+    @Test
+    void capacityReportUpdatesFreeSlots() throws Exception {
+        post("/pods/ready", "{\"podId\":\"pod-cap\",\"arenaGroup\":\"solo\",\"capacity\":10}");
+        post("/pods/capacity", "{\"podId\":\"pod-cap\",\"freeSlots\":3}");
+        assertThat(get("/metrics").body()).contains("bedwars_free_slots{group=\"solo\"} 3");
+    }
+
+    @Test
+    void arenaStatusReportsFreeSlotsAndQueueDepthPerGroup() throws Exception {
         post("/pods/ready", "{\"podId\":\"pod-status\",\"arenaGroup\":\"solo\"}");
 
         HttpResponse<String> status = get("/lobby/arena-status");
 
         assertThat(status.statusCode()).isEqualTo(200);
         assertThat(status.body()).contains("\"solo\"");
-        assertThat(status.body()).contains("\"ready\":1");
+        assertThat(status.body()).contains("\"freeSlots\":25");
         assertThat(status.body()).contains("\"queued\":0");
     }
 
