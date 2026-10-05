@@ -1,187 +1,257 @@
-# Setup Guide — from a bare machine to a running match
+# Setup — from a bare machine to a Bedwars match
 
-This is the complete, ordered setup path. It goes from "nothing installed" to a
-Paper game pod that has booted, loaded the plugin, reported **Ready** to the
-controller, and received a dispatched player from `/lobby/queue`.
+This guide takes you from nothing installed to a server you can actually join and play.
+Every step says **what it does** and **how to check it worked**, so you are never
+copy-pasting blindly.
 
-Three paths are covered:
-
-| Path | Use it for | Cost |
-|---|---|---|
-| **A. Local JVM** | fastest smoke test of the plugin | ~2 min, no containers |
-| **B. Docker Compose** | integration stack (MySQL + MinIO + controller + one game pod) | ~5 min |
-| **C. Kubernetes (minikube)** | the real target: pods-as-cattle, GameServerSet, KEDA, mc-router, Velocity | ~15 min |
-
-Path C is the one that was verified end-to-end on a real cluster; A and B are
-supported and validated but were not exercised in this environment (no Compose
-invocation was possible here — see the note at the end).
+If words like *container*, *pod* or *GameServerSet* are new, read
+[`CONCEPTS.md`](CONCEPTS.md) first — it is a one-page explainer of every technology in
+this project and what each one is responsible for.
 
 ---
 
-## 0. Prerequisites
+## 0. Pick your path
 
-| Tool | Version used | Notes |
-|---|---|---|
-| JDK | **25+** (built with Temurin 27, `--release 25`) | required for records/pattern matching/virtual threads |
-| Maven | 3.9.16 | wrapper-less; any 3.9+ works |
-| Docker | Docker Desktop 4.x | only for paths B and C |
-| minikube | 1.39+ | path C; `docker` driver |
-| kubectl | 1.3x | path C |
-| helm | 3.x | path C |
+There are three ways to run this project. They are not versions of each other; they
+answer different questions.
 
-Everything Maven builds runs against the Spigot API `26.2-R0.1-SNAPSHOT` and the
-Velocity API `4.2.0`, both of which resolve from public repositories
-(`hub.spigotmc.org`, `repo.papermc.io`).
+| Path | What it gives you | Needs | Use it when |
+|---|---|---|---|
+| **A. Plain server** | The game, running on one long-lived Minecraft server. | Java + a server jar | you want to test **gameplay** (teams, beds, shop, scoreboard) |
+| **B. Docker Compose** | The whole stack on one machine: MySQL, MinIO, controller, one game pod. | Docker | you want to test **the integration** (stats, templates, controller) |
+| **C. Kubernetes** | The production shape: one disposable pod per match, autoscaling, scale-to-zero. | a cluster (minikube locally) | you want to test **the architecture** |
 
-> **Windows-hosted WSL note.** On this machine the build runs in WSL while Docker,
-> minikube, kubectl and helm are Windows binaries. `deploy/tools/winrun.sh` bridges
-> that gap — it invokes a Windows `.exe` from WSL and strips carriage returns:
-> ```bash
-> ~/projects/BedwarsRecoded/deploy/tools/winrun.sh minikube.exe -p bedwars status
-> ```
-> Windows binaries cannot read WSL `/tmp` paths; if a tool needs a temp directory,
-> point it at a `/mnt/c/...` path (e.g. `BEDWARS_K8S_TMP=/mnt/c/Users/<you>/bedwars-k8s/tmp`).
+**Recommended order:** A → B → C. Each path is a superset of understanding, and A is
+the fastest way to see the plugin work.
+
+Every path works on **Linux, macOS and Windows**. Path C is the only one with
+platform-specific notes, and they live in [§7](#7-appendix-windows--wsl) at the end —
+on Linux/macOS you can ignore that section entirely.
 
 ---
 
-## 1. Get the code and set up the toolchain
+## 1. Prerequisites
+
+| Tool | Version used | Needed for | Install |
+|---|---|---|---|
+| **JDK 25+** | built with Temurin 27, targets 25 | A, B, C | `apt install openjdk-25-jdk` / `brew install openjdk` / [Adoptium](https://adoptium.net) |
+| **Maven 3.9+** | 3.9.16 | building | `apt install maven` / `brew install maven` |
+| **Docker** | Docker Desktop / Engine 24+ | B, C | [docs.docker.com/get-docker](https://docs.docker.com/get-docker/) |
+| **kubectl** | 1.30+ | C | `apt install kubectl` / `brew install kubectl` |
+| **helm** | 3.x | C | `apt install helm` / `brew install helm` |
+| **minikube** | 1.39+ | C (local cluster) | `brew install minikube` / [minikube.sigs.k8s.io](https://minikube.sigs.k8s.io/docs/start/) |
+
+Optional: **Python 3** (for `deploy/verify_deploy.py` and `deploy/tools/rcon.py`) and
+**kubeconform** (for manifest validation).
+
+Check what you have:
 
 ```bash
-# The WSL copy is canonical; builds only run here.
-cd ~/projects/BedwarsRecoded
-
-# Project toolchain (JDK 27 + Maven 3.9.16) — sets JAVA_HOME/PATH
-source ~/.local/tools/env.sh
+java -version && mvn -v
+docker --version && kubectl version --client && helm version --short && minikube version
 ```
-
-If you cloned fresh instead:
-
-```bash
-git clone https://github.com/LB45440078L/BedwarsRecoded.git ~/projects/BedwarsRecoded
-```
-(the project is also mirrored to `C:\Users\<you>\projects\BedwarsRecoded`.)
 
 ---
 
-## 2. Build everything
+## 2. Build the project
+
+**What this does:** compiles the five modules, runs the test suite, and produces the
+jars. It is a plain Maven multi-module build; nothing platform-specific.
 
 ```bash
-cd ~/projects/BedwarsRecoded
-source ~/.local/tools/env.sh
-
-mvn clean install          # all 5 modules + full test suite
+git clone https://github.com/LB45440078L/BedwarsRecoded.git
+cd BedwarsRecoded
+mvn clean install
 ```
 
-Expected: `BUILD SUCCESS`, **72 tests**, 0 failures. The `verify` phase runs an Ant
-size gate that **fails the build if the plugin jar exceeds 4 MB**.
+**How to check it worked:** the build ends with `BUILD SUCCESS` and reports the test
+count (currently **130 tests, 0 failures**). The `verify` phase also fails the build if
+the plugin jar ever grows past **4 MB**.
 
-Module build only (faster loop):
-
-```bash
-mvn -pl BedwarsRecoded-Spigot -am package
-```
-
-Artifacts:
+Where the jars land:
 
 ```
 BedwarsRecoded-API/target/BedwarsRecoded-API-1.0.0-SNAPSHOT.jar
 BedwarsRecoded-Core/target/BedwarsRecoded-Core-1.0.0-SNAPSHOT.jar
-BedwarsRecoded-Spigot/target/BedwarsRecoded-Spigot-1.0.0-SNAPSHOT.jar   # the plugin
+BedwarsRecoded-Spigot/target/BedwarsRecoded-Spigot-1.0.0-SNAPSHOT.jar   <- the plugin
 BedwarsRecoded-Velocity/target/BedwarsRecoded-Velocity-1.0.0-SNAPSHOT.jar
 BedwarsRecoded-Controller/target/BedwarsRecoded-Controller-1.0.0-SNAPSHOT.jar
 ```
 
-Verify the size gate yourself:
+Only the Spigot jar is a Minecraft plugin; the others are used inside the containers.
+
+> **Why the jar is only ~230 KB.** The plugin does not bundle its dependencies.
+> `plugin.yml` declares a `libraries:` block (HikariCP, the MySQL driver), and the
+> server downloads those on first start. That is what keeps the jar far under the size
+> gate, and it is why the first boot needs network access.
+
+---
+
+## 3. Path A — run a plain server and join it
+
+This is the simplest path and the one to start with. You end up with a Minecraft server
+running the plugin, which you can join directly.
+
+### A.1 Get a server jar
+
+**What this does:** downloads the Minecraft server engine the plugin runs inside. This
+project targets **Spigot/Paper 26.x** and deliberately does **not** support Folia.
+
+Paper is recommended (faster, and what production uses). Grab a 26.3 build:
 
 ```bash
-ls -lh BedwarsRecoded-Spigot/target/*.jar     # ~210 KB, far under 4 MB
+mkdir -p ~/bedwars-local/server/plugins
+cd ~/bedwars-local/server
+# from https://papermc.io/downloads  (choose 26.3) - or, on any OS:
+curl -s -o paper.json https://fill.papermc.io/v3/projects/paper/versions/26.3/builds/latest
+curl -sL "$(grep -o 'https://[^"]*paper-26.3-[0-9]*\.jar' paper.json | head -1)" -o paper.jar
 ```
 
+**How to check:** `ls -lh paper.jar` shows a jar of roughly 50–90 MB.
+
+### A.2 Accept the EULA and install the plugin
+
+**What this does:** Minecraft servers refuse to start until you accept Mojang's EULA,
+and the plugin has to sit in the server's `plugins/` directory to be loaded.
+
+```bash
+cd ~/bedwars-local/server
+echo "eula=true" > eula.txt                       # required by Mojang, once
+cp ../../BedwarsRecoded/BedwarsRecoded-Spigot/target/BedwarsRecoded-Spigot-*.jar plugins/BedwarsRecoded.jar
+```
+
+### A.3 Start it
+
+```bash
+java -Xms1G -Xmx2G -jar paper.jar --nogui
+```
+
+**What to look for in the console.** On the very first boot the server downloads the
+plugin's runtime libraries, then enables it. You should see:
+
+```
+[SpigotLibraryLoader] [BedwarsRecoded] Loading 2 libraries... please wait
+[SpigotLibraryLoader] [BedwarsRecoded] Loaded library .../HikariCP-6.3.0.jar
+[BedwarsRecoded] Enabling BedwarsRecoded v1.0.0-SNAPSHOT
+bedwars_setup mode=STANDALONE (configured AUTO) controller_reporting=not used (not a pod) ...
+```
+
+...and then `Done (…)` and a `>` prompt.
+
+### A.4 Read the startup summary — it tells you which setup you are in
+
+That `bedwars_setup` line is the plugin telling you what it decided to be. This matters,
+because the same jar is designed to run both as a Kubernetes game pod and as an ordinary
+server:
+
+| Line | Meaning |
+|---|---|
+| `mode=STANDALONE` | Ordinary server. **No controller requests are made at all.** |
+| `mode=POD` | It is behaving as a game pod: reporting to a controller, using the template store. |
+| `configured AUTO` | You left `deployment.mode: AUTO`, so it probed the controller and decided. |
+
+If you are on a plain server and you were seeing repeated
+`report_failed … ConnectException` lines, that is the old behaviour — it is fixed. The
+plugin now probes once at boot and, if there is no controller, never calls it. The three
+settings that control this are in `plugins/BedwarsRecoded/config.yml`:
+
+```yaml
+deployment:
+  mode: "AUTO"          # POD | STANDALONE | AUTO
+  disable-reporting-after-failures: 5
+  failure-log-interval-seconds: 300
+persistence:
+  enabled: true         # false = never open a JDBC connection
+template:
+  enabled: true         # false = keep whatever world the server already has
+```
+
+Set `mode: STANDALONE`, `persistence.enabled: false` and `template.enabled: false` for a
+completely standalone, offline, zero-noise server.
+
+### A.5 Join and play
+
+Start your Minecraft client (26.3), connect to `localhost`, and run:
+
+```
+/bw join        join the match
+/bw status      game id, state, players, teams
+/bw gui         join menu
+/bw shop        item shop (shift-click an item to toggle quick buy)
+/bw upgrades    team upgrades
+/bw quickbuy    quick-buy editor
+/bw lang        your language
+```
+
+Operators additionally get:
+
+```
+/bw start       start the countdown
+/bw stop        abort the match
+/bw reload      re-read config.yml + arena.yml without restarting
+```
+
+**How to check it worked:** `/bw status` reports `players=1` after you join, and when a
+second player joins the countdown runs and the state moves to `RUNNING`.
+
+### A.6 Optional: a world that looks like an arena
+
+Out of the box the plugin uses whatever world the server generated, and `arena.yml`
+describes the bed/spawn/generator positions. On a fresh world those coordinates are
+empty space. Two ways to fix it for testing:
+
+- Edit `plugins/BedwarsRecoded/arena.yml` to use coordinates near spawn, or
+- Put a real world at `plugins/BedwarsRecoded/templates/<name>/` and keep
+  `template.source: LOCAL`.
+
+(Neither matters for Path C: there the world arrives as a Slime template from S3.)
+
 ---
 
-## Path A — Local JVM smoke test (no containers)
+## 4. Path B — the whole stack with Docker Compose
 
-1. Get a Paper server jar for 26.2:
+**What this gives you:** MySQL, MinIO (S3-compatible storage), the controller, and one
+game pod — the integration, on one machine. Same commands on Linux, macOS and Windows.
 
-   ```bash
-   mkdir -p ~/bedwars-local/server/plugins
-   cd ~/bedwars-local/server
-   # download the Paper 26.2 build from https://papermc.io/downloads
-   ```
+**What each service is:**
 
-2. Accept the EULA:
-
-   ```bash
-   echo "eula=true" > eula.txt
-   ```
-
-3. Install the plugin:
-
-   ```bash
-   cp ~/projects/BedwarsRecoded/BedwarsRecoded-Spigot/target/BedwarsRecoded-Spigot-*.jar plugins/
-   mkdir -p plugins/BedwarsRecoded/templates
-   # put a world template directory at plugins/BedwarsRecoded/templates/Glacier
-   ```
-
-4. Start the server:
-
-   ```bash
-   java -Xms1G -Xmx2G -jar paper-*.jar nogui
-   ```
-
-5. On first boot Paper downloads the **runtime `libraries:`** declared in `plugin.yml`
-   (HikariCP, mysql-connector-j) — this is why the jar stays tiny. You should see:
-
-   ```
-   [BedwarsRecoded] Loading server plugin BedwarsRecoded v1.0.0-SNAPSHOT
-   ```
-
-   With no MySQL reachable the plugin logs `Persistence unavailable; running without
-   stats` and keeps working — stats are simply not written.
-
-6. Drive the game in-game:
-
-   ```
-   /bw status      # game id, state, players, teams
-   /bw join        # join the match
-   /bw gui         # join GUI
-   /bw shop        # item shop (shift-click toggles quick buy)
-   /bw upgrades    # team upgrade merchant
-   /bw quickbuy    # quick-buy editor
-   /bw lang <code> # per-player language
-   /bw start       # start countdown
-   /bw reload      # hot-reload config.yml + arena.yml (needs bedwars.admin)
-   ```
-
----
-
-## Path B — Docker Compose integration stack
-
-The Compose stack brings up MySQL, MinIO, the controller, and (optionally) one game
-pod — enough to run the whole dispatch flow without Kubernetes.
+| Service | Role | Why it is here |
+|---|---|---|
+| `mysql` | player stats, ELO, leaderboards | proof that a pod holds no durable state |
+| `minio` | S3-compatible object storage | holds the Slime map template |
+| `controller` | queue + pod registry + `/metrics` | the piece that routes players to pods |
+| `game` | one Paper server running the plugin | a real game pod, locally |
 
 ### B.1 Configure
 
 ```bash
-cd ~/projects/BedwarsRecoded/deploy/compose
+cd deploy/compose
 cp .env.example .env
-$EDITOR .env        # set MYSQL_ROOT_PASSWORD, S3 creds; NEVER commit real secrets
+$EDITOR .env          # set MYSQL_ROOT_PASSWORD and S3 credentials
 ```
 
-### B.2 Start infra + controller
+**How to check:** `.env` exists and has non-empty passwords. Never commit it.
+
+### B.2 Start the infrastructure and the controller
 
 ```bash
 docker compose up -d mysql minio minio-init controller
 docker compose ps
 ```
 
-### B.3 Upload a Slime template to the local MinIO
+**How to check:** `docker compose ps` lists the four services as `running`/`exited (0)`
+(`minio-init` is a one-shot job that creates the bucket, so exiting 0 is success).
+
+### B.3 Put a template in the object store
+
+**What this does:** the game pod pulls its world from here, which is why no pod ever
+keeps an arena on disk.
 
 ```bash
-# minio-init creates the bucket; put your template here:
-#   s3://bedwars-templates/<name>/<version>/<name>-<version>.slime
 docker compose exec minio-init mc ls local/bedwars-templates
 ```
+
+A template lives at `templates/<name>/<version>.slime` inside that bucket.
 
 ### B.4 Start a game pod
 
@@ -190,24 +260,25 @@ docker compose --profile game up -d game
 docker compose logs -f game
 ```
 
-Look for the pod reporting ready to the controller:
+**How to check:** the log shows the plugin enabling and reporting ready:
 
 ```
-[bedwars-pod] pod_ready pod=game-1 game=... template=Glacier@1.0.0
+bedwars_setup mode=POD (configured AUTO) controller_reporting=enabled ...
+pod_ready pod=game-1 game=… template=Glacier@1.0.0
 ```
 
 ### B.5 Exercise the queue
 
 ```bash
-curl -s localhost:18080/healthz
-curl -s localhost:18080/metrics | grep bedwars_
-curl -s -XPOST localhost:18080/lobby/queue \
-     -H 'Content-Type: application/json' \
-     -d '{"player":"11111111-1111-1111-1111-111111111111","username":"Tester","priority":0,"preferredGroup":"solo","party":null,"requestedAtMillis":0}'
+curl -s localhost:8080/healthz
+curl -s localhost:8080/metrics | grep bedwars_
+curl -s localhost:8080/lobby/arena-status
+curl -s -XPOST localhost:8080/lobby/queue -H 'Content-Type: application/json' \
+  -d '{"player":"11111111-1111-1111-1111-111111111111","username":"Tester","priority":0,"preferredGroup":"solo","party":null,"requestedAtMillis":0}'
 ```
 
-A ready pod yields `{"podAddress":"...","members":[...]}`; no capacity yields a
-`retryAfterMillis` backoff instead.
+A ready pod answers with `{"podAddress":"…","members":[…]}`; with no capacity you get
+`{"podAddress":null,"retryAfterMillis":…}` telling the client to back off.
 
 ### B.6 Tear down
 
@@ -217,300 +288,256 @@ docker compose --profile game down -v
 
 ---
 
-## Path C — Kubernetes (minikube) — the real target
+## 5. Path C — Kubernetes (the production shape)
 
-### C.1 Start the cluster
+**What this gives you:** the real architecture — one ephemeral pod per match, a session
+of zero players costing nothing, and pods that are destroyed rather than reset. Read
+[`CONCEPTS.md`](CONCEPTS.md) §2–§4 if any of the object names below are unfamiliar.
+
+The commands below are plain POSIX. If you are on Windows/WSL, read
+[§7](#7-appendix-windows--wsl) first — the commands are the same, only how you reach the
+binaries changes.
+
+### C.1 Start a cluster
 
 ```bash
-# Windows-hosted WSL:
-~/projects/BedwarsRecoded/deploy/tools/winrun.sh minikube.exe start -p bedwars
-# native Linux/macOS:
-minikube start -p bedwars
+minikube start -p bedwars --cpus=4 --memory=6g
+kubectl get nodes
 ```
 
-Deploy from a **`/mnt/c` directory** (Windows `cmd.exe` cannot use a UNC working dir):
-
-```bash
-mkdir -p /mnt/c/Users/thevi/bedwars-k8s
-cd /mnt/c/Users/thevi/bedwars-k8s
-W=~/projects/BedwarsRecoded/deploy/tools/winrun.sh
-$W kubectl.exe get nodes
-```
+**What this does:** creates a single-node Kubernetes cluster inside a container.
+**How to check:** `kubectl get nodes` shows one node, `Ready`.
 
 ### C.2 Build and load the images
 
-Docker builds must run where the Docker daemon is (Windows side):
+**What this does:** builds the three images from `deploy/docker/` and pushes them into
+the cluster's image store. `minikube image load` is how a local cluster gets an image
+that is not in a registry.
 
 ```bash
-cd /mnt/c/Users/thevi/projects/BedwarsRecoded      # the mirror
-W=~/projects/BedwarsRecoded/deploy/tools/winrun.sh
+docker build -f deploy/docker/controller.Dockerfile -t bedwars-controller:1.0.0 .
+docker build -f deploy/docker/velocity.Dockerfile   -t bedwars-velocity:1.0.0   .
+docker build --build-arg PAPER_VERSION=26.3 \
+             -f deploy/docker/spigot.Dockerfile     -t bedwars-spigot:26.3     .
 
-$W docker.exe build -f deploy/docker/controller.Dockerfile -t bedwars-controller:1.0.0 .
-$W docker.exe build -f deploy/docker/velocity.Dockerfile   -t bedwars-velocity:1.0.0   .
-$W docker.exe build -f deploy/docker/spigot.Dockerfile     -t bedwars-spigot:1.0.0     .
-
-$W minikube.exe -p bedwars image load bedwars-controller:1.0.0 bedwars-velocity:1.0.0 bedwars-spigot:1.0.0
+minikube -p bedwars image load bedwars-controller:1.0.0 bedwars-velocity:1.0.0 bedwars-spigot:26.3
 ```
 
-### C.3 Install the Helm chart
+> The Minecraft version is a **build argument**: the game pod only accepts clients whose
+> protocol matches. Build `PAPER_VERSION=26.3` if you play on 26.3.
+
+**How to check:** `minikube -p bedwars image ls | grep bedwars` shows all three.
+
+### C.3 Install the stack
 
 ```bash
-cd /mnt/c/Users/thevi/bedwars-k8s
-$W helm.exe install bedwars ~/projects/BedwarsRecoded/deploy/helm/bedwars \
-   -f ~/projects/BedwarsRecoded/deploy/helm/bedwars/values-minikube.yaml \
-   -n bedwars --create-namespace
+helm install bedwars deploy/helm/bedwars \
+  -f deploy/helm/values-minikube.yaml \
+  -n bedwars --create-namespace
 ```
 
-`values-minikube.yaml` is required on a small machine: it shrinks the game-pod
-footprint to request `500m/512Mi`, limit `1/1536Mi`, and disables MinIO (whose image
-cannot be pulled anonymously in this sandbox). The base `values.yaml` ships the
-production footprint (**2 CPU / 4 GiB, hard requests *and* limits**).
+**What this does:** creates the namespace and installs every object: the controller, the
+mc-router, Velocity, MySQL, the GameServerSet, the KEDA scaling rule, the RBAC the
+controller needs, and the S3 configuration.
 
-Wait for the control plane:
+`values-minikube.yaml` is the **small-machine overlay**: it shrinks the game pod and
+disables MinIO. The base `values.yaml` ships the production footprint (2 CPU / 4 GiB per
+pod, requests *and* limits).
+
+**How to check:**
 
 ```bash
-$W kubectl.exe -n bedwars rollout status deploy/bedwars-controller --timeout=150s
+kubectl -n bedwars get pods
+kubectl -n bedwars get gameserversets
+```
+
+Expect the controller, mc-router, Velocity and MySQL `Running`. The GameServerSet shows
+**DESIRED 0** — that is correct: pods are created on demand.
+
+### C.4 Start a game pod and watch it boot
+
+```bash
+kubectl -n bedwars scale gameserversets bedwars-solo --replicas=1
+kubectl -n bedwars get pods -w          # Ctrl-C once bedwars-solo-0 is 1/1 Running
+```
+
+**What this does:** this is exactly what the controller does when a player queues — the
+replica count goes 0 → 1, and Kubernetes schedules a fresh pod.
+
+**How to check:** the pod reaches `1/1 Running` in roughly 30–60 seconds, and:
+
+```bash
+kubectl -n bedwars logs bedwars-solo-0 | grep bedwars_setup
+```
+
+shows `mode=POD … controller_reporting=enabled`. The controller log then records:
+
+```bash
+kubectl -n bedwars logs deploy/bedwars-controller | grep READY
+#  Pod bedwars-solo-0 READY for group solo
+```
+
+### C.5 Join the running server
+
+A game pod has no permanent public address — by design, it is created on demand and
+destroyed when its match ends. For local testing you tunnel in with `kubectl`:
+
+```bash
+deploy/tools/join-server.sh            # localhost:25565 -> the ready game pod
+# or a different local port:
+deploy/tools/join-server.sh 25570
+```
+
+Then connect your Minecraft client to **`localhost:25565`** (version 26.3).
+
+**What the script does:** finds the running game pod by its label, port-forwards the
+Minecraft port to your machine, and prints the address. `Ctrl-C` stops the tunnel; the
+pod keeps running. In production players never do this — they arrive through
+mc-router/Velocity.
+
+### C.6 Verify the routing story end to end
+
+```bash
+kubectl -n bedwars port-forward svc/bedwars-controller 8080:8080 &
+curl -s localhost:8080/metrics | grep bedwars_          # ready_pods{solo} 1
+curl -s localhost:8080/lobby/arena-status               # {"solo":{"ready":1,"queued":0}}
+# dispatch a player to that pod:
+curl -s -XPOST localhost:8080/lobby/queue -H 'Content-Type: application/json' \
+  -d '{"player":"11111111-1111-1111-1111-111111111111","username":"Tester","priority":0,"preferredGroup":"solo","party":null,"requestedAtMillis":0}'
+curl -s localhost:8080/metrics | grep bedwars_ready_pods  # now 0: the pod was consumed
+```
+
+Scaling back to zero removes the pod from the ready pool, which is the correct
+behaviour and is visible in the controller log:
+
+```bash
+kubectl -n bedwars scale gameserversets bedwars-solo --replicas=0
+kubectl -n bedwars logs deploy/bedwars-controller | tail -3
+#  Pod bedwars-solo-0 removed from the ready pool; {"phase":"DRAINING"}
+```
+
+### C.7 Tear down
+
+```bash
+helm uninstall bedwars -n bedwars
+minikube -p bedwars stop            # or: delete, to reclaim the disk
+```
+
+---
+
+## 6. Verify everything
+
+```bash
+./deploy/verify.sh              # tests + deployment-asset checks + the 4 MB jar gate
+./deploy/verify_k8s.sh          # render the chart/kustomize base, then schema-validate
+python3 deploy/verify_deploy.py # structural checks over manifests and the compose file
+```
+
+All three are portable. `verify_k8s.sh` takes `HELM`, `KUBECTL` and `KUBECONFORM` from
+the environment if your tools are not on `PATH`.
+
+Run the plugin's tests alone with:
+
+```bash
+mvn verify
+```
+
+---
+
+## 7. Appendix: Windows / WSL
+
+Ignore this whole section on Linux and macOS. It exists because on a Windows 11 machine
+Docker Desktop, minikube, kubectl and helm are **Windows binaries**, while a shell in
+WSL cannot call them directly and does not inherit the Windows `PATH`.
+
+The only Windows-specific tool is `deploy/tools/winrun.sh`, which runs a Windows `.exe`
+from WSL with a repaired `PATH`:
+
+```bash
+W=deploy/tools/winrun.sh
+$W docker.exe build -f deploy/docker/spigot.Dockerfile -t bedwars-spigot:26.3 .
+$W minikube.exe -p bedwars start
 $W kubectl.exe -n bedwars get pods
 ```
 
-Expect `controller`, `mc-router`, `velocity`, `mysql` all `1/1 Running`.
+Two consequences worth knowing:
 
-### C.4 Scale a game pod up and watch it boot
+- **Run it from a `/mnt/c/...` directory.** Windows `cmd.exe` cannot use a
+  `\\wsl.localhost\...` working directory, so set `BEDWARS_WIN_WORKDIR` or `cd` to a
+  path under `/mnt/c` first.
+- **WSL cannot reach a Windows service on `127.0.0.1`.** For `port-forward`/RCON use the
+  host address instead:
 
-```bash
-$W kubectl.exe -n bedwars get gameserversets
-$W kubectl.exe -n bedwars scale gameserversets bedwars-solo --replicas=1
-$W kubectl.exe -n bedwars get pod bedwars-solo-0 -w      # Ctrl-C once 1/1 Running
-```
+  ```bash
+  HOSTIP=$(ip route show default | awk '{print $3}')
+  python3 deploy/tools/rcon.py --server-dir /mnt/c/... --host "$HOSTIP" "bw status"
+  ```
 
-First boot takes ~60 s (Paper world load + runtime library download). In the log:
+If you are testing *without* a cluster (Path A), none of this applies — a plain
+`java -jar` server works the same in WSL as anywhere else.
 
-```
-Preparing level "world"
-Done preparing level (17.512s)
-Done (53.587s)! For help, type "help"
-[BedwarsRecoded] Loading server plugin BedwarsRecoded v1.0.0-SNAPSHOT
-```
+### Running low on memory
 
-### C.5 Verify the full dispatch loop
+A 16 GB laptop cannot hold everything at once. Rough budget:
 
-```bash
-# Forward the controller API
-$W kubectl.exe -n bedwars port-forward svc/bedwars-controller 18081:8080 &
-C=/mnt/c/Windows/System32/curl.exe
-
-# 1. the pod has reported Ready for its arena group
-"$C" -s http://localhost:18081/metrics | grep bedwars_
-#   bedwars_queue_depth{group="solo"} 0
-#   bedwars_ready_pods{group="solo"} 1      <-- the live Paper pod
-
-# 2. lobby NPC/sign state
-"$C" -s http://localhost:18081/lobby/arena-status
-#   {"solo":{"ready":1,"queued":0}}
-
-# 3. dispatch a player
-"$C" -s -XPOST http://localhost:18081/lobby/queue \
-     -H 'Content-Type: application/json' \
-     -d '{"player":"11111111-1111-1111-1111-111111111111","username":"Tester","priority":0,"preferredGroup":"solo","party":null,"requestedAtMillis":0}'
-#   {"podAddress":"bedwars-solo-0","members":["1111..."],"retryAfterMillis":0}
-
-# 4. the pod is consumed
-"$C" -s http://localhost:18081/metrics | grep bedwars_ready_pods
-#   bedwars_ready_pods{group="solo"} 0
-```
-
-Scaling back down removes the pod from the pool on SIGTERM:
-
-```bash
-$W kubectl.exe -n bedwars scale gameserversets bedwars-solo --replicas=0
-$W kubectl.exe -n bedwars logs deploy/bedwars-controller --tail=3
-#   Pod bedwars-solo-0 removed from the ready pool; {"podId":"bedwars-solo-0",...,"phase":"DRAINING"}
-```
-
-### C.6 Run the verification suites
-
-```bash
-cd /mnt/c/Users/thevi/projects/BedwarsRecoded     # scripts must run from the /mnt/c mirror
-./deploy/verify.sh                 # 72 tests + 70 deploy-asset checks + 4 MB gate
-./deploy/verify_k8s.sh             # helm lint/render + kustomize render + kubeconform
-```
-
-### C.7 Teardown
-
-```bash
-$W helm.exe uninstall bedwars -n bedwars
-$W minikube.exe -p bedwars stop        # or: delete
-```
-
----
-
-## 4. Configuration reference
-
-Precedence: **environment variable → `config.yml` → built-in default**.
-
-### `BedwarsRecoded-Spigot/src/main/resources/config.yml`
-
-| Key | Env var | Default | Meaning |
-|---|---|---|---|
-| `server-id` | `BEDWARS_SERVER_ID` | hostname | pod identity used in every webhook |
-| `arena.group` | `BEDWARS_ARENA_GROUP` | `solo` | arena group this pod serves |
-| `arena.team-count` | `BEDWARS_TEAM_COUNT` | `2` | teams in the match |
-| `arena.players-per-team` | `BEDWARS_PLAYERS_PER_TEAM` | `2` | players per team |
-| `arena.countdown-seconds` | `BEDWARS_COUNTDOWN_SECONDS` | `15` | pre-match countdown |
-| `arena.sudden-death-after-seconds` | `BEDWARS_SUDDEN_DEATH_SECONDS` | `300` | time until sudden death |
-| `arena.void-y-threshold` | — | `0.0` | Y below which a player is void-killed |
-| `arena.island-radius` | — | `30.0` | island protection/radius approximation |
-| `arena.bed-protection-radius` | — | `3.0` | radius around a bed that is protected |
-| `template.name` | `BEDWARS_TEMPLATE_NAME` | `Glacier` | template to load |
-| `template.version` | `BEDWARS_TEMPLATE_VERSION` | `1.0.0` | template semver (canary deploys) |
-| `template.source` | `BEDWARS_TEMPLATE_SOURCE` | `LOCAL` | `S3` (production) or `LOCAL` (dev) |
-| `template.local-path` | `BEDWARS_TEMPLATE_LOCAL_PATH` | `templates` | directory **containing** template dirs |
-| `template.s3.*` | — | minio defaults | endpoint/bucket/credentials |
-| `controller.base-url` | `BEDWARS_CONTROLLER_URL` | `http://bedwars-controller:8080` | webhook target |
-| `controller.heartbeat-seconds` | `BEDWARS_HEARTBEAT_SECONDS` | `15` | heartbeat period |
-| `database.*` | `BEDWARS_DB_*` | `localhost/bedwars` | host, port, name, user, password, pool-size |
-| `ranking.k-factor` | — | `32` | ELO K |
-| `ranking.leaderboard-refresh-seconds` | — | `60` | cached leaderboard refresh |
-| `logging.json` | — | `true` | emit JSON event lines |
-
-### `arena.yml`
-
-Defines this pod's arena group end-to-end: `group`, `teams` (bed + spawn), `generators`,
-`shop`, `start-items`, and the per-group `upgrades:` tree:
-
-```yaml
-upgrades:
-  SHARPNESS:
-    - level: 1
-      currency: DIAMOND
-      amount: 2
-      effect: 1
-      description: "Sharpness I"
-```
-
-If `upgrades:` is absent, `UpgradeCatalog.defaults()` is used.
-
----
-
-## 4b. Sizing on a small machine (16 GB RAM, Windows + WSL)
-
-The production footprint (**2 CPU / 4 GiB per game pod**) is correct for a real node,
-but it will wedge a 16 GB laptop. Concretely, on this machine the whole stack wedged the
-node — the API server stopped answering and the Paper pod was OOM-killed — until the
-game-pod footprint was reduced. Budget roughly:
-
-| Component | Typical RSS |
+| Component | RSS |
 |---|---|
-| Docker Desktop (WSL2 backend) | 1.0–1.5 GB |
+| Docker Desktop | 1.0–1.5 GB |
 | minikube control plane | ~1 GB |
 | MySQL | 300–500 MB |
 | controller + mc-router + Velocity | ~400 MB |
-| **one Paper game pod** | 700 MB–1.5 GB |
+| one Paper game pod | 700 MB–1.5 GB |
 
-That already consumes most of 16 GB once Windows itself is included. So:
+So: **run one heavy thing at a time**, always deploy Kubernetes with
+`values-minikube.yaml`, and stop what you are not using:
 
-- Always deploy with `-f values-minikube.yaml` (requests `500m/512Mi`, limits `1/1536Mi`,
-  MinIO disabled). The base `values.yaml` is for real clusters.
-- **Run one heavy thing at a time.** Do not keep minikube up while also running the
-  Compose stack or a big `docker build`.
-- Cap Docker Desktop (Settings → Resources) to ~6 GB, and WSL to ~4–6 GB via
-  `%UserProfile%\.wslconfig`:
-  ```ini
-  [wsl2]
-  memory=6GB
-  processors=4
-  swap=2GB
-  ```
-- **Free the disk before it fills.** The node wedges on a full disk as readily as on
-  OOM. `minikube delete -p bedwars` reclaims the node image cache; `docker system prune -a`
-  reclaims build layers (both cost a re-pull/rebuild).
-- Stop what you are not using:
-  ```bash
-  kubectl -n bedwars scale gameserversets bedwars-solo --replicas=0
-  minikube -p bedwars stop
-  ```
+```bash
+kubectl -n bedwars scale gameserversets bedwars-solo --replicas=0
+minikube -p bedwars stop
+docker compose down
+```
 
-Everything in this project that does **not** need a cluster can be verified without one:
-`mvn verify` is 112 tests including the in-JVM S3 fetch, the ASP loader sequence, the
-SigV4 vector and MockBukkit, and needs no Docker at all.
+Cap the memory WSL itself may take (`%UserProfile%\.wslconfig`):
 
-## 4c. Testing against a local Spigot server (bots + RCON)
+```ini
+[wsl2]
+memory=6GB
+processors=4
+swap=2GB
+```
 
-A plain Spigot server plus headless bot clients is the fastest way to exercise the
-plugin for real. Verified on **Spigot 26.3** with two protocol-777 (26.3) bots.
+Free disk as well as RAM — a full disk wedges a node just as thoroughly:
+`minikube -p bedwars delete` reclaims the node's image cache; `docker system prune -a`
+reclaims build layers.
 
-1. Install the plugin and a world template (so the staging + loader path runs):
-
-   ```bash
-   S=/mnt/c/Users/thevi/Desktop/BedwarsTest
-   mkdir -p "$S/plugins/BedwarsRecoded/templates"
-   cp BedwarsRecoded-Spigot/target/BedwarsRecoded-Spigot-*.jar "$S/plugins/BedwarsRecoded.jar"
-   cp -r "$S/world" "$S/plugins/BedwarsRecoded/templates/Glacier"
-   ```
-
-   `api-version: '26.2'` on a 26.3 server is fine — only a *newer* api-version is refused.
-
-2. Start it (a modest heap keeps a 16 GB machine alive):
-
-   ```bash
-   cd "$S" && java.exe -Xms1G -Xmx2G -jar spigot.jar --nogui
-   ```
-
-3. Drive it with the bundled RCON tool (`server.properties` needs `rcon.password`):
-
-   ```bash
-   # WSL cannot reach a Windows-hosted service on 127.0.0.1 — use the host IP.
-   HOSTIP=$(ip route show default | awk '{print $3}')
-   python3 deploy/tools/rcon.py --server-dir "$S" --host "$HOSTIP" "bw status"
-   ```
-
-4. Run bots. `deploy/tools/` has no bot, but the WinBot is a **GUI binary** with a
-   headless mode; the two things that matter:
-
-   - its **MSYS2 UCRT64 `bin` must be on `PATH`** (`zlib1.dll`), or it exits silently:
-     `set "PATH=C:\msys64\ucrt64\bin;%PATH%"`
-   - stdin must stay **open**: a file redirect hits EOF and the bot disconnects
-     immediately. Drive it with redirected pipes (see `botdrive.ps1` next to the server)
-     or type into a terminal.
-
-   A bot sends `/bw join` as chat, and the server treats a leading `/` as a command.
-
-5. Optional: point the plugin at a real MySQL to exercise migrations + persistence.
-
-   ```bash
-   # host in plugins/BedwarsRecoded/config.yml must be 127.0.0.1 (not the k8s "mysql")
-   docker run -d --name bedwars-test-mysql -p 3306:3306 \
-     -e MYSQL_ROOT_PASSWORD=rootpass -e MYSQL_DATABASE=bedwars \
-     -e MYSQL_USER=bedwars -e MYSQL_PASSWORD=bedwars mysql:8.4
-   ```
-
-   On boot the plugin logs `Schema at version 0, latest available 4` then applies v1–v4.
-   Join with two bots, `/bw stop`, and `player_stats` should carry a row per player.
-
-## 5. Troubleshooting
-
-| Symptom | Cause / fix |
-|---|---|
-| `Local template not found` | `template.local-path` must point at the *directory containing* template dirs; the template dir must be named exactly `template.name`. |
-| `ConnectException ... minio:9000` | `template.source: S3` but MinIO is not reachable in-cluster. Expected in the minikube overlay (MinIO disabled). |
-| Pod exits immediately | Missing `eula.txt` — the Dockerfile writes it, but a manual image won't. |
-| Controller never shows `bedwars_ready_pods` | The pod's `arena.group` must match the queue request's `preferredGroup`; check `READY for group <x>` in the controller log. |
-| `helm upgrade` didn't change pod env | Re-run `helm upgrade` **then** re-scale the GameServerSet; pods keep their creation-time env. |
-| Node OOM / API server timeouts | The production footprint is 2 CPU / 4 GiB per pod. On a small machine use `values-minikube.yaml`. |
-| `port-forward` shows nothing | A previous forward still holds the port. Kill it and use a different local port (e.g. 18081). |
-| Velocity pod never Ready | The probe port must match the listener (25565). |
+Everything except the cluster can be verified without any of this: `mvn verify` needs
+no Docker at all.
 
 ---
 
-## 6. What is verified vs. what is not
+## 8. Troubleshooting
 
-**Verified on a real cluster (minikube, K8s v1.37):** controller + velocity +
-mc-router + mysql running; a Paper game pod boots, loads the plugin, downloads its
-runtime libraries, connects to MySQL, reports **Ready for group `solo`**; a
-`/lobby/queue` request dispatches to that live pod; scaling to 0 removes it from the
-ready pool. `helm lint` clean; 51 manifest schemas valid; 72 tests green.
+| Symptom | Cause and fix |
+|---|---|
+| `report_failed … ConnectException` repeating | A controller was expected but is absent. This is now throttled and then disabled; to remove it entirely set `deployment.mode: STANDALONE`. |
+| `persistence_unavailable running without stats` | No MySQL reachable. Expected on a plain server; set `persistence.enabled: false` to silence it. |
+| `Public Key Retrieval is not allowed` | MySQL 8's default auth over a non-TLS link. The JDBC URL already sets `allowPublicKeyRetrieval=true`; if you changed it, put it back. |
+| `Local template not found` | `template.local-path` must be the directory *containing* template directories, and the directory must be named after `template.name`. |
+| Pod exits immediately | Missing `eula.txt`. The game image writes it; a manual image will not. |
+| Client cannot connect (protocol mismatch) | The pod's Minecraft version must match your client. Rebuild the image with `--build-arg PAPER_VERSION=<your version>`. |
+| `ready_pods` never appears | The pod's `arena.group` must equal the request's `preferredGroup`. Check `READY for group <x>` in the controller log. |
+| `helm upgrade` did not change pod env | Pods keep their creation-time environment. Re-run the upgrade, then re-scale the GameServerSet. |
+| Node OOM / API server timeouts | The production footprint is 2 CPU / 4 GiB per pod. Use `values-minikube.yaml` on a small machine. |
+| `port-forward` prints nothing | A previous forward still holds the port. Kill it, or pass a different local port. |
+| Pod never becomes Ready | Check `kubectl -n bedwars logs <pod>`. On a plain server the common cause is a missing world template. |
 
-**Not exercised here:** the Docker Compose stack (no Compose invocation available in
-this sandbox — assets are validated structurally), and the S3/MinIO template fetch
-(MinIO is disabled in the minikube overlay because its image cannot be pulled
-anonymously here).
+---
+
+## 9. Where to go next
+
+- [`CONCEPTS.md`](CONCEPTS.md) — containers, Kubernetes, pods, and every component's scope.
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — pod lifecycle, the controller protocol, the scaling model.
+- [`API.md`](API.md) — DTOs, events, services and the HTTP surface.
+- [`MIGRATIONS.md`](MIGRATIONS.md) — how to add a database migration.
+- [`DEPLOYMENT.md`](DEPLOYMENT.md) — deployment details and verification.
+- [`../deploy/tools/README.md`](../deploy/tools/README.md) — the tooling, and which parts are Windows-only.

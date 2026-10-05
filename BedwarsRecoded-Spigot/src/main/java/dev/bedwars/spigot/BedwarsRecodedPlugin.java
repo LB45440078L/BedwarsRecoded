@@ -59,7 +59,10 @@ import dev.bedwars.spigot.listener.ShopListener;
 import dev.bedwars.spigot.listener.SpectatorListener;
 import dev.bedwars.spigot.listener.UpgradeListener;
 import dev.bedwars.spigot.listener.VoidKillListener;
+import dev.bedwars.spigot.report.ControllerProbe;
 import dev.bedwars.spigot.report.HttpPodReporter;
+import dev.bedwars.core.reporting.DeploymentMode;
+import dev.bedwars.core.reporting.ReportingPolicy;
 import dev.bedwars.spigot.scoreboard.ScoreboardRenderer;
 import dev.bedwars.spigot.template.AspSlimeWorldBridge;
 import dev.bedwars.spigot.template.AspSlimeWorldProvider;
@@ -106,7 +109,9 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
     private LeaderboardCache leaderboardCache;
     private EventBus eventBus;
     private GameManager gameManager;
-    private PodReporter reporter;
+    // Concrete type (not the PodReporter interface) so the bootstrap can log the
+    // effective reporting policy in the startup summary.
+    private HttpPodReporter reporter;
     private Game game;
     private PluginConfig config;
 
@@ -120,6 +125,8 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
     private final TpsMeter tpsMeter = new TpsMeter();
     private MatchResultPersister matchResultPersister;
     private SlimeWorldProvider worldProvider;
+    /** Resolved once at boot: POD (talks to a controller) or STANDALONE (does not). */
+    private DeploymentMode effectiveMode = DeploymentMode.AUTO;
     private long startedAtMillis;
     private boolean resultsPersisted;
     private final QuickBuyStore quickBuy = new QuickBuyStore();
@@ -140,9 +147,13 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         } catch (IllegalArgumentException ignored) {
             // No bundled sample arena; config-derived arena will be used.
         }
-        this.config = PluginConfig.from(getConfig(), "pod-" + UUID.randomUUID());
-
-        this.reporter = new HttpPodReporter(config.controllerBaseUrl());
+        this.config = PluginConfig.from(getConfig(), defaultServerId());
+        this.effectiveMode = DeploymentMode.resolve(config.mode(), probeController(config));
+        this.reporter = new HttpPodReporter(config.controllerBaseUrl(), new ReportingPolicy(
+                effectiveMode.reportsToController(),
+                config.disableReportingAfterFailures(),
+                config.failureLogIntervalSeconds() * 1000L));
+        logStartupSummary();
         this.eventBus = new EventBus();
         this.eventBus.subscribe(new DomainEventBridge(LOG, reporter, config.jsonLogs()));
         this.gameManager = new GameManager();
@@ -152,7 +163,7 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         TemplateDescriptor template = new TemplateDescriptor(
                 config.templateName(), config.templateVersion(), config.templateSource(), Optional.empty());
 
-        bootPersistence(config.database());
+        bootPersistence(config);
 
         ArenaDefinition arena = loadArenaDefinition(config);
         this.shop = arena != null ? arena.shop() : defaultShop();
@@ -169,12 +180,19 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         // game loop reported ~1.0 TPS on a perfectly healthy server.
         getServer().getScheduler().runTaskTimer(this, tpsMeter::tick, 0L, 1L);
         getServer().getScheduler().runTaskTimer(this, this::applyTeamEffects, 40L, 40L);
-        getServer().getScheduler().runTaskTimer(this, this::sendHeartbeat, 200L,
-                Math.max(20L, config.heartbeatSeconds() * 20L));
+        // Heartbeats only make sense when this really is a pod talking to a controller.
+        if (effectiveMode.reportsToController()) {
+            getServer().getScheduler().runTaskTimer(this, this::sendHeartbeat, 200L,
+                    Math.max(20L, config.heartbeatSeconds() * 20L));
+        }
         getServer().getScheduler().runTaskTimer(this, this::refreshLeaderboards, 400L,
                 Math.max(20L, config.leaderboardRefreshSeconds() * 20L));
 
-        loadTemplate(template, config);
+        if (config.templateEnabled()) {
+            loadTemplate(template, config);
+        } else {
+            LOG.info("template_disabled (template.enabled: false) - keeping the server's existing world");
+        }
         reporter.reportReady(config.serverId(), config.arenaGroup(), template, game.id());
         LOG.info("pod_ready pod={} game={} template={} shop={}", config.serverId(), game.id(),
                 template.coordinate(), shop.id());
@@ -216,6 +234,62 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         }
     }
 
+    /** Best-effort one-line cause for a wrapped connection failure. */
+    private static String rootCause(Throwable error) {
+        Throwable cause = error;
+        while (cause.getCause() != null && cause.getCause() != cause) {
+            cause = cause.getCause();
+        }
+        return cause.getMessage() == null ? cause.getClass().getSimpleName() : cause.getMessage();
+    }
+
+    /**
+     * The pod name: the Downward API sets HOSTNAME in Kubernetes; on a plain machine
+     * we fall back to the local hostname so a standalone server still has an identity.
+     */
+    private static String defaultServerId() {
+        String hostname = System.getenv("HOSTNAME");
+        if (hostname == null || hostname.isBlank()) {
+            hostname = System.getenv("COMPUTERNAME");
+        }
+        if (hostname == null || hostname.isBlank()) {
+            try {
+                hostname = java.net.InetAddress.getLocalHost().getHostName();
+            } catch (Exception ignored) {
+                hostname = "local";
+            }
+        }
+        return "pod-" + hostname;
+    }
+
+    /** {@code AUTO} mode asks the controller whether it is there before reporting to it. */
+    private boolean probeController(PluginConfig cfg) {
+        if (cfg.mode() == DeploymentMode.POD) {
+            return true;
+        }
+        if (cfg.mode() == DeploymentMode.STANDALONE) {
+            return false;
+        }
+        boolean reachable = ControllerProbe.isReachable(cfg.controllerBaseUrl(), java.time.Duration.ofSeconds(2));
+        LOG.info("deployment_mode_auto controller={} reachable={}", cfg.controllerBaseUrl(), reachable);
+        return reachable;
+    }
+
+    /** One block that states exactly which setup this server is running as. */
+    private void logStartupSummary() {
+        String reporting = effectiveMode.reportsToController()
+                ? reporter.policy().describe()
+                : "not used (not a pod)";
+        LOG.info("bedwars_setup mode={} (configured {}) controller_reporting={} controller_url={}",
+                effectiveMode, config.mode(), reporting, config.controllerBaseUrl());
+        LOG.info("bedwars_setup server_id={} arena_group={} teams={}x{} template={} persistence={} json_logs={}",
+                config.serverId(), config.arenaGroup(), config.teamCount(), config.playersPerTeam(),
+                config.templateEnabled() ? config.templateName() + "@" + config.templateVersion() + "("
+                        + config.templateSource() + ")" : "disabled",
+                config.persistenceEnabled() ? config.database().host() : "disabled",
+                config.jsonLogs());
+    }
+
     private void giveStartItems() {
         World world = getServer().getWorlds().isEmpty() ? null : getServer().getWorlds().getFirst();
         if (world == null || startItems.isEmpty()) {
@@ -234,16 +308,25 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         }
     }
 
-    private void bootPersistence(DatabaseConfig databaseConfig) {
+    private void bootPersistence(PluginConfig cfg) {
+        if (!cfg.persistenceEnabled()) {
+            LOG.info("persistence_disabled (persistence.enabled: false) - running without stats");
+            return;
+        }
         try {
-            this.database = new Database(databaseConfig, LOG);
+            this.database = new Database(cfg.database(), LOG);
             new SchemaMigrator(database, LOG).migrate(Migrations.all());
             this.statsRepository = new StatsRepository(database, LOG, 1000);
             this.leaderboardCache = new LeaderboardCache(database, LOG, 100);
             this.quickBuyRepository = new QuickBuyRepository(database, LOG);
-            this.matchResultPersister = new MatchResultPersister(new EloCalculator(config.kFactor()));
+            this.matchResultPersister = new MatchResultPersister(new EloCalculator(cfg.kFactor()));
+            LOG.info("persistence_ready host={}:{} database={}", cfg.database().host(), cfg.database().port(),
+                    cfg.database().database());
         } catch (RuntimeException e) {
-            LOG.error("Persistence unavailable; running without stats", e);
+            // One concise line: the full HikariCP stack is noise for an operator who
+            // simply has no database yet. The cause is kept in the message.
+            LOG.warn("persistence_unavailable running without stats ({}). "
+                    + "Set persistence.enabled: false to silence this.", rootCause(e));
         }
     }
 

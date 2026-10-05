@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# =============================================================================
+#  WINDOWS / WSL ONLY - you do not need this file on Linux or macOS.
+# =============================================================================
 # Run a Windows tool (docker.exe, kubectl.exe, helm.exe, minikube.exe, ...) from
 # WSL with a usable Windows PATH.
 #
@@ -23,7 +26,10 @@ KUBECONFORM_BIN='C:\Users\thevi\AppData\Local\Microsoft\WinGet\Packages\YannHamo
 MINIKUBE_BIN='C:\Program Files\Kubernetes\Minikube'
 EXTRA_BIN="${DOCKER_BIN};${HELM_BIN};${KUBECONFORM_BIN};${MINIKUBE_BIN}"
 WORKDIR_WIN="${BEDWARS_WIN_WORKDIR:-C:\Users\thevi\bedwars-k8s}"
-BAT_LINUX="/mnt/c/Users/thevi/bedwars-k8s/.winrun.bat"
+# Unique per invocation: a fixed name breaks when two winrun.sh calls overlap
+# (the second overwrites the first's .bat mid-run, so cmd executes the wrong line).
+BAT_NAME=".winrun-$$.bat"
+BAT_LINUX="/mnt/c/Users/thevi/bedwars-k8s/${BAT_NAME}"
 
 if [ "$#" -eq 0 ]; then
   echo "usage: winrun.sh <windows-exe> [args...]" >&2
@@ -54,4 +60,4 @@ mkdir -p "$(dirname "$BAT_LINUX")"
   echo
 } > "$BAT_LINUX"
 
-exec /mnt/c/Windows/System32/cmd.exe /c "$WORKDIR_WIN\\.winrun.bat"
+exec /mnt/c/Windows/System32/cmd.exe /c "$WORKDIR_WIN\\${BAT_NAME}"

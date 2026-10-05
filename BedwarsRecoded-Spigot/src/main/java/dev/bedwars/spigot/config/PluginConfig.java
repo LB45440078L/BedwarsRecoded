@@ -2,6 +2,7 @@ package dev.bedwars.spigot.config;
 
 import dev.bedwars.api.dto.TemplateSource;
 import dev.bedwars.core.config.DatabaseConfig;
+import dev.bedwars.core.reporting.DeploymentMode;
 import org.bukkit.configuration.file.FileConfiguration;
 
 import java.util.regex.Pattern;
@@ -30,7 +31,12 @@ public record PluginConfig(
         int kFactor,
         int leaderboardRefreshSeconds,
         int leaderboardPageSize,
-        boolean jsonLogs
+        boolean jsonLogs,
+        DeploymentMode mode,
+        boolean persistenceEnabled,
+        boolean templateEnabled,
+        int disableReportingAfterFailures,
+        int failureLogIntervalSeconds
 ) {
 
     /** Matches {@code ${NAME}} placeholders in configuration values. */
@@ -73,7 +79,12 @@ public record PluginConfig(
                 c.getInt("ranking.k-factor", 32),
                 c.getInt("ranking.leaderboard-refresh-seconds", 60),
                 c.getInt("ranking.leaderboard-page-size", 100),
-                c.getBoolean("logging.json", true));
+                c.getBoolean("logging.json", true),
+                DeploymentMode.parse(env("BEDWARS_DEPLOYMENT_MODE", c.getString("deployment.mode", "AUTO"))),
+                c.getBoolean("persistence.enabled", true),
+                c.getBoolean("template.enabled", true),
+                Math.max(1, c.getInt("deployment.disable-reporting-after-failures", 5)),
+                Math.max(0, c.getInt("deployment.failure-log-interval-seconds", 300)));
     }
 
     /** Environment variable wins over the YAML value when set and non-blank. */

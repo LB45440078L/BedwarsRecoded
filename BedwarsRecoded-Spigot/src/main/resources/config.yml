@@ -1,52 +1,114 @@
-# BedwarsRecoded game-pod configuration.
-# This pod hosts exactly one match for exactly one arena group.
+# =============================================================================
+#  BedwarsRecoded - plugin configuration
+# =============================================================================
+#  The FIRST thing to decide is `deployment.mode` below: it controls whether this
+#  server behaves as an ephemeral Kubernetes game pod or as an ordinary, long-lived
+#  server. Nothing else in this file has a bigger effect.
+# =============================================================================
 
+deployment:
+  # POD        - an ephemeral, one-match-per-pod server on Kubernetes (production).
+  #              It reports its state to the controller, pulls its world from the
+  #              template store and writes stats to the shared database.
+  # STANDALONE - an ordinary server (a dev box, a single host, "basic mode").
+  #              The plugin makes NO controller requests at all, and there is no pod
+  #              lifecycle to participate in.
+  # AUTO       - DEFAULT. At boot the plugin probes <controller.base-url>/healthz and
+  #              picks POD if the controller answers, otherwise STANDALONE. Use this
+  #              when the same jar is deployed both ways.
+  mode: "AUTO"
+
+  # Reporting safety net (POD mode only). The FIRST failure to reach the controller is
+  # always logged with its reason; further failures are logged at most once every
+  # `failure-log-interval-seconds`; after `disable-reporting-after-failures` in a row,
+  # reporting stops for the session. This is what stops a down/missing controller from
+  # filling the console with connection errors on every heartbeat.
+  disable-reporting-after-failures: 5
+  failure-log-interval-seconds: 300
+
+# Identity of this server in every controller report. ${VAR} placeholders are
+# expanded from the environment (falling back to the local hostname for HOSTNAME /
+# COMPUTERNAME); in Kubernetes the Downward API sets HOSTNAME to the pod name.
 server-id: "pod-${HOSTNAME}"
 
-# The arena group this pod serves (solo, doubles, quads ...).
+# -----------------------------------------------------------------------------
+# The match this server hosts (exactly one match, one arena group, per pod).
+# -----------------------------------------------------------------------------
 arena:
   group: "solo"
   team-count: 2
   players-per-team: 2
   countdown-seconds: 15
   sudden-death-after-seconds: 300
+  # Y below which a falling player is counted as a void kill.
   void-y-threshold: 0.0
+  # Approximate island radius used for protection/void checks.
   island-radius: 30.0
+  # Radius around a team's bed that is protected from enemies.
   bed-protection-radius: 3.0
 
-# Where the map template comes from. Production uses S3 (Slime); local is a
-# documented dev-only fallback that copies a world directory on the same host.
+# -----------------------------------------------------------------------------
+# World template. Production reads a Slime world from S3-compatible storage and
+# loads it with AdvancedSlimePaper; LOCAL copies a plain world directory and is a
+# documented, NON-PRODUCTION fallback.
+# -----------------------------------------------------------------------------
 template:
+  # false = do not touch the world at all: the server keeps whatever world it has
+  # and the plugin just runs the game logic. Useful on a standalone server, and it
+  # removes template loading from the logs entirely.
+  enabled: true
   name: "Glacier"
   version: "1.0.0"
-  source: "LOCAL"        # S3 | LOCAL
-  # Directory CONTAINING templates (one sub-directory per template name).
+  source: "LOCAL"          # S3 (production) | LOCAL (dev only)
+  # Directory CONTAINING templates: one sub-directory per template name.
   local-path: "templates"
   s3:
     endpoint: "http://minio:9000"
     bucket: "bedwars-templates"
     region: "us-east-1"
+    # Leave blank for a public bucket. When set, requests are signed with
+    # AWS Signature Version 4 (works with AWS S3, MinIO, Ceph).
     access-key: ""
     secret-key: ""
 
-# Controller webhook. The pod reports readiness, heartbeats and game results here.
-controller:
-  base-url: "http://bedwars-controller:8080"
-  heartbeat-seconds: 15
+# -----------------------------------------------------------------------------
+# Persistence. Stats, leaderboards and quick-buy layouts all live outside the pod,
+# in a shared MySQL, so that a pod can be destroyed at any time.
+# -----------------------------------------------------------------------------
+persistence:
+  # false = run entirely without a database. The plugin never opens a JDBC
+  # connection and simply has no stats.
+  enabled: true
 
 database:
-  host: "mysql"
+  host: "mysql"            # in Kubernetes this is the Service name
   port: 3306
   name: "bedwars"
   username: "bedwars"
   password: "bedwars"
   pool-size: 4
+  # ELO a brand-new player starts at.
   baseline-elo: 1000
 
+# -----------------------------------------------------------------------------
+# Controller webhook (POD mode only). Ignored entirely in STANDALONE mode.
+# -----------------------------------------------------------------------------
+controller:
+  base-url: "http://bedwars-controller:8080"
+  heartbeat-seconds: 15
+
+# -----------------------------------------------------------------------------
+# Ranking.
+# -----------------------------------------------------------------------------
 ranking:
   k-factor: 32
   leaderboard-refresh-seconds: 60
   leaderboard-page-size: 100
 
+# -----------------------------------------------------------------------------
+# Logging.
+# -----------------------------------------------------------------------------
 logging:
-  json: true            # structured logs with correlation ids (game-id, pod-id)
+  # true  = one JSON object per gameplay event, carrying game_id / pod_id /
+  #         player_uuid, ready for Loki or ELK. false = plain text lines.
+  json: true

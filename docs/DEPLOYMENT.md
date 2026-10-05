@@ -1,5 +1,9 @@
 # Deployment
 
+> **Start with [`SETUP.md`](SETUP.md)** for the step-by-step path, and
+> [`CONCEPTS.md`](CONCEPTS.md) for what the pieces are. This document is the reference
+> for the two deployment shapes themselves.
+
 Two ways to run BedwarsRecoded: a local **Compose** stack for development and
 integration testing, and the **Kubernetes** platform for production.
 
@@ -163,7 +167,7 @@ MinIO is disabled in the minikube overlay because this sandbox cannot pull
 `quay.io/minio/minio` anonymously; the manifest is correct for clusters that can, or
 point `s3.endpoint` at an external store.
 
-### Windows-hosted WSL tooling
+### Windows-hosted WSL tooling (optional — skip on Linux/macOS)
 
 Here docker/kubectl/helm/minikube/kubeconform are Windows binaries, and WSL does not
 inherit the user PATH — which breaks docker's credential helper and minikube's docker

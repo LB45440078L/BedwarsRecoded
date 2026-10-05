@@ -146,12 +146,36 @@ tests that need real Bukkit objects. `verify` runs the suite.
 
 ## Running locally
 
-```bash
-# Controller (queue watcher + webhooks)
-java -jar BedwarsRecoded-Controller/target/BedwarsRecoded-Controller-*.jar
+The plugin adapts to where it is running. The first decision is `deployment.mode` in
+`config.yml`:
 
-# A game pod is a Paper server with the plugin installed; in production it is
-# created on demand by the GameServerSet. See deploy/k8s.
+| Mode | Behaviour |
+|---|---|
+| `POD` | Kubernetes game pod: reports to the controller, pulls a Slime template, writes stats. |
+| `STANDALONE` | An ordinary server. **No controller requests at all**, no pod lifecycle. |
+| `AUTO` (default) | Probes `<controller.base-url>/healthz` at boot and picks one. |
+
+So the same jar runs both as an ephemeral pod and on a plain dev server without
+config edits. At boot the plugin logs exactly what it decided:
+
+```
+bedwars_setup mode=STANDALONE (configured AUTO) controller_reporting=not used (not a pod) ...
+bedwars_setup server_id=pod-mybox arena_group=solo teams=2x2 template=Glacier@1.0.0(LOCAL) persistence=disabled
+```
+
+Running it:
+
+```bash
+# A. plain server (any OS) - simplest way to test gameplay
+java -Xms1G -Xmx2G -jar paper.jar --nogui
+
+# B. the whole stack on one machine
+cd deploy/compose && docker compose up -d
+
+# C. Kubernetes
+helm install bedwars deploy/helm/bedwars -f deploy/helm/values-minikube.yaml -n bedwars --create-namespace
+kubectl -n bedwars scale gameserversets bedwars-solo --replicas=1
+deploy/tools/join-server.sh          # then connect to localhost:25565
 ```
 
 ## Deployment
@@ -164,11 +188,17 @@ Dockerfiles for each component.
 ## Documentation
 
 - `docs/SETUP.md` — **step-by-step setup**, from a bare machine to a running match.
+  Three paths (plain server / Docker Compose / Kubernetes), every step explained.
+- `docs/CONCEPTS.md` — what containers, Kubernetes and pods are, and **what each
+  component of this stack is responsible for** (and what it must never do).
 - `docs/AUDIT.md` — requirement-by-requirement audit against the original brief.
 - `docs/ARCHITECTURE.md` — pod lifecycle, controller protocol, scaling model.
 - `docs/DEPLOYMENT.md` — Compose stack, Kubernetes platform, verification.
 - `docs/API.md` — public API reference (DTOs, events, services, HTTP endpoints).
 - `docs/MIGRATIONS.md` — how to add database migrations.
+- `deploy/tools/README.md` — the tooling, and which parts are Windows-only.
+
+New here? Read `docs/CONCEPTS.md` first, then `docs/SETUP.md`.
 
 ## Verifying everything
 
