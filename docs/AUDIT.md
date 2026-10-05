@@ -228,10 +228,8 @@ Still open, and why:
   (`readWorld` read-only → `clone(instanceName)` → `loadWorld`) and unit-tested through
   the `SlimeWorldBridge` seam; no ASP server exists in this environment, so the world
   swap has not been executed against a live ASP.
-- **Persistence not verified against a live MySQL** — `MatchResultPersister` +
-  `StatsRepository` are unit-tested; the pod booted while MySQL was unreachable here
-  (`Persistence unavailable; running without stats`), so a real row write was not
-  observed.
+- **Persistence against a live MySQL** — **now verified**: migrations v1–v4 applied and
+  `player_stats` rows written on a real MySQL 8.4 (§15).
 - **K8s annotations for pod state** — HTTP webhooks only.
 - **gRPC transport** — the brief allowed "HTTP or gRPC"; HTTP was chosen, so this is a
   non-gap by the brief's own wording.
@@ -259,3 +257,57 @@ What was implemented, and how each is verified:
 | Structured concurrency | deliberately **not** adopted | compile probe records the exact preview rejection |
 
 Test count after this pass: **98** (was 77).
+
+## 15. Live verification on a real Spigot 26.3 server (real 26.3 bot clients)
+
+Everything below was observed on a real Spigot **26.3** server (offline-mode) driven by
+two headless **protocol-777 (26.3)** bot clients — no mocks, no containers.
+
+| Area | Observed |
+|---|---|
+| Plugin bootstrap | loads, enables, registers `/bw`, downloads its `libraries:` (HikariCP, mysql-connector) on first boot |
+| Server-id | reported `pod-marco-win` — placeholder resolved |
+| TPS metric | `tps=20.0` |
+| Template + loader | `template_materialised … productionReady=false` → `using_non_production_world_loader backend=FALLBACK(local-copy, non-production)` |
+| Match lifecycle | `WAITING → COUNTDOWN → RUNNING → ENDED` |
+| Two-player join | `state=RUNNING players=2 teams=2`; players received `Joined the match.` and `Starting in 5…1…` |
+| Death handling | `player_eliminated … killer=null final=false`, **no** event exceptions |
+| Structured JSON | `{"event":"player_eliminated","game_id":"…","player_uuid":"…","final":false}` — null field omitted, `pod_id` added from Scoped Values |
+| DB migrations | real MySQL 8.4: `Schema at version 0, latest available 4` → v1–v4 applied |
+| Persistence | `match_results_persisted`; `player_stats` rows written (`BotAlpha deaths=1 losses=1 games_played=1`) |
+| ELO | stayed 1000 for an aborted/drawn match — correct (draws skip ELO) |
+| Graceful shutdown | RCON `stop` → `Disabling BedwarsRecoded` → `report_failed path=/pods/draining` |
+
+### Bugs the live run exposed (all fixed)
+
+12. **Every gameplay command was blocked for normal players.** `plugin.yml` put
+    `permission: bedwars.admin` on the whole `/bw` command, so `/bw join` was denied and
+    no player could ever join a match. Removed the blanket permission; `start`/`stop`/
+    `reload` are now gated per-subcommand (console/RCON always allowed).
+13. **`server-id` never resolved.** The shipped default is `pod-${HOSTNAME}`, used
+    literally — pods identified themselves to the controller as `pod-${HOSTNAME}`.
+    `PluginConfig.expand` now resolves `${ENV}` against the environment/system properties,
+    falling back to the local hostname.
+14. **TPS reported as 1.0 on a healthy server** — the meter was ticked from the 1-second
+    game loop rather than per server tick. It now has its own 1-tick task.
+15. **No MySQL 8 connection could ever succeed.** The JDBC URL used `useSSL=false` with no
+    `allowPublicKeyRetrieval`, so the default `caching_sha2_password` plugin failed with
+    *"Public Key Retrieval is not allowed"* and the plugin silently ran stat-less. The URL
+    is now `sslMode=PREFERRED&allowPublicKeyRetrieval=true&…`.
+16. **`Map.of` in the structured-log fields threw on any kill with no killer** (and any
+    draw), aborting the listener chain — on the server: `Could not pass event
+    PlayerDeathEvent`. Replaced with a null-skipping map builder.
+
+Test count after this pass: **112**.
+
+## 16. Remaining gaps after the live pass
+
+- **AdvancedSlimePaper end-to-end** — implemented against the real ASP 3.0.0 API and
+  unit-tested, but the local test server is Spigot rather than AdvancedSlimePaper, so the
+  Slime world swap still has not run on a live ASP.
+- **K8s annotations for pod state** — HTTP webhooks only.
+- **Citizens NPC hook**; **Dragon Buff** spawns no dragons.
+- **Structured concurrency (`StructuredTaskScope`)** — still preview in JDK 25.
+
+Verified since the previous pass: MySQL migrations + stat persistence, plugin bootstrap,
+match lifecycle, joins, death handling and structured logging — all on a real server.

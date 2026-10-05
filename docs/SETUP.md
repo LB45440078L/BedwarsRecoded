@@ -431,8 +431,61 @@ That already consumes most of 16 GB once Windows itself is included. So:
   ```
 
 Everything in this project that does **not** need a cluster can be verified without one:
-`mvn verify` is 98 tests including the in-JVM S3 fetch, the ASP loader sequence, the
+`mvn verify` is 112 tests including the in-JVM S3 fetch, the ASP loader sequence, the
 SigV4 vector and MockBukkit, and needs no Docker at all.
+
+## 4c. Testing against a local Spigot server (bots + RCON)
+
+A plain Spigot server plus headless bot clients is the fastest way to exercise the
+plugin for real. Verified on **Spigot 26.3** with two protocol-777 (26.3) bots.
+
+1. Install the plugin and a world template (so the staging + loader path runs):
+
+   ```bash
+   S=/mnt/c/Users/thevi/Desktop/BedwarsTest
+   mkdir -p "$S/plugins/BedwarsRecoded/templates"
+   cp BedwarsRecoded-Spigot/target/BedwarsRecoded-Spigot-*.jar "$S/plugins/BedwarsRecoded.jar"
+   cp -r "$S/world" "$S/plugins/BedwarsRecoded/templates/Glacier"
+   ```
+
+   `api-version: '26.2'` on a 26.3 server is fine — only a *newer* api-version is refused.
+
+2. Start it (a modest heap keeps a 16 GB machine alive):
+
+   ```bash
+   cd "$S" && java.exe -Xms1G -Xmx2G -jar spigot.jar --nogui
+   ```
+
+3. Drive it with the bundled RCON tool (`server.properties` needs `rcon.password`):
+
+   ```bash
+   # WSL cannot reach a Windows-hosted service on 127.0.0.1 — use the host IP.
+   HOSTIP=$(ip route show default | awk '{print $3}')
+   python3 deploy/tools/rcon.py --server-dir "$S" --host "$HOSTIP" "bw status"
+   ```
+
+4. Run bots. `deploy/tools/` has no bot, but the WinBot is a **GUI binary** with a
+   headless mode; the two things that matter:
+
+   - its **MSYS2 UCRT64 `bin` must be on `PATH`** (`zlib1.dll`), or it exits silently:
+     `set "PATH=C:\msys64\ucrt64\bin;%PATH%"`
+   - stdin must stay **open**: a file redirect hits EOF and the bot disconnects
+     immediately. Drive it with redirected pipes (see `botdrive.ps1` next to the server)
+     or type into a terminal.
+
+   A bot sends `/bw join` as chat, and the server treats a leading `/` as a command.
+
+5. Optional: point the plugin at a real MySQL to exercise migrations + persistence.
+
+   ```bash
+   # host in plugins/BedwarsRecoded/config.yml must be 127.0.0.1 (not the k8s "mysql")
+   docker run -d --name bedwars-test-mysql -p 3306:3306 \
+     -e MYSQL_ROOT_PASSWORD=rootpass -e MYSQL_DATABASE=bedwars \
+     -e MYSQL_USER=bedwars -e MYSQL_PASSWORD=bedwars mysql:8.4
+   ```
+
+   On boot the plugin logs `Schema at version 0, latest available 4` then applies v1–v4.
+   Join with two bots, `/bw stop`, and `player_stats` should carry a row per player.
 
 ## 5. Troubleshooting
 

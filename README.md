@@ -80,22 +80,20 @@ Spigot adapter:
 Honest list of what is modelled but not fully wired, or absent:
 
 - **AdvancedSlimePaper end-to-end** — the loader is implemented against the real ASP
-  3.0.0 API and unit-tested (read-only template, per-match clone, load), but no ASP
-  server was available here, so the world swap has not been run against a live ASP.
-- **Persistence not verified against a live MySQL** — `MatchResultPersister` and the
-  repositories are unit-tested, but the pod booted while MySQL was unreachable in this
-  environment, so a real write has not been observed.
+  3.0.0 API and unit-tested (read-only template, per-match clone, load), but the local
+  test server is Spigot rather than AdvancedSlimePaper, so the world swap has not run
+  on a live ASP.
 - **Dragon Buff** — purchased and stored; no dragons are actually spawned.
 - **gRPC** — controller communication is HTTP only (the brief allowed HTTP webhooks).
-- **K8s annotations for pod state** — state is reported over HTTP webhooks only; the
-  controller does not patch pod annotations.
+- **K8s annotations for pod state** — state is reported over HTTP webhooks only.
 - **NPC via Citizens** — join NPCs use a named entity, not a Citizens hook.
 - **Structured concurrency (`StructuredTaskScope`)** — still a preview API in JDK 25
   (verified: `javac --release 25` rejects it without `--enable-preview`), so plain
   virtual threads are used. Scoped Values *are* used, since those are final.
-- **MockBukkit plugin bootstrap** — MockBukkit is wired and tests run against 26.2,
-  but loading the *whole plugin* in-process needs the plugin JAR on the classpath,
-  which surefire does not provide (it runs `target/classes`).
+
+Formerly listed here and now **verified on a real Spigot 26.3 server with real 26.3
+bot clients**: plugin bootstrap, match lifecycle, player joins, death handling,
+structured logging, MySQL 8 migrations and stat persistence (see `docs/AUDIT.md` §15).
 
 Verified on a real cluster: the Compose stack and Helm chart are wired and the
 controller API was exercised end-to-end on minikube (see `docs/DEPLOYMENT.md`). The
