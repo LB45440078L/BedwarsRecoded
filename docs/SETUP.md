@@ -194,17 +194,30 @@ Operators additionally get:
 **How to check it worked:** `/bw status` reports `players=1` after you join, and when a
 second player joins the countdown runs and the state moves to `RUNNING`.
 
-### A.6 Optional: a world that looks like an arena
+### A.6 Load a real arena map
 
-Out of the box the plugin uses whatever world the server generated, and `arena.yml`
-describes the bed/spawn/generator positions. On a fresh world those coordinates are
-empty space. Two ways to fix it for testing:
+Out of the box the server generates a plain world, and `arena.yml`'s
+bed/spawn/generator coordinates then point at empty space — the match runs, but not on a
+real map.
 
-- Edit `plugins/BedwarsRecoded/arena.yml` to use coordinates near spawn, or
-- Put a real world at `plugins/BedwarsRecoded/templates/<name>/` and keep
-  `template.source: LOCAL`.
+A preconfigured fixture ships with the repo: the **Glacier** Bedwars map at
+`deploy/templates/Glacier/`, whose coordinates the shipped `arena.yml` already matches.
 
-(Neither matters for Path C: there the world arrives as a Slime template from S3.)
+On a pod (Path C) the container stages it automatically as the server's main world
+before Paper starts. On a plain server (this path), put it in place yourself:
+
+```bash
+# stop the server first
+rm -rf  <server-dir>/world
+cp -a   <repo>/deploy/templates/Glacier  <server-dir>/world
+rm -f   <server-dir>/world/session.lock     # a downloaded world carries a lock
+# start the server again
+```
+
+`/bw join` now drops you onto Glacier. The same trick works for any map you have: a
+world directory with a `level.dat` is a valid arena. (The plugin's own
+`template.source: LOCAL` staging is the AdvancedSlimePaper path — see
+[CONCEPTS](CONCEPTS.md); it cannot swap the main world on plain Paper.)
 
 ---
 

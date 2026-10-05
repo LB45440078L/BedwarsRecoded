@@ -22,7 +22,7 @@ FROM eclipse-temurin:25-jre AS runtime
 ARG PAPER_VERSION=26.2
 ARG PAPER_BUILD=latest
 
-RUN apt-get update && apt-get install -y --no-install-recommends curl jq \
+RUN apt-get update && apt-get install -y --no-install-recommends curl jq unzip \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /server
@@ -44,9 +44,23 @@ COPY --from=build /src/BedwarsRecoded-Spigot/target/BedwarsRecoded-Spigot-*.jar 
 # must accept the players the controller routes to it; the whitelist is not the access
 # control here, the controller's queue is.
 RUN printf 'eula=true\n' > /server/eula.txt \
-    && printf 'online-mode=false\nspawn-protection=0\nmax-players=40\nview-distance=6\nsimulation-distance=4\nwhite-list=false\nenforce-whitelist=false\n' > /server/server.properties
+    && printf 'online-mode=false\nlevel-name=world\nspawn-protection=0\nmax-players=40\nview-distance=6\nsimulation-distance=4\nwhite-list=false\nenforce-whitelist=false\n' > /server/server.properties
+
+# The arena templates the pod can stage as its main world. In production these live in
+# object storage and are fetched at boot; a template baked here makes the image
+# self-contained (and is how the dev/test cluster gets a real map).
+COPY deploy/templates /templates
+
+# Stage the arena BEFORE the server starts: Paper reads its main world during
+# startup, so the world has to exist before the JVM runs. See entrypoint.sh.
+COPY deploy/docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 # A game pod never keeps arenas on disk: templates are pulled from S3 at boot.
-ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75 -XX:+UseZGC"
+# G1 rather than ZGC: ZGC's native overhead does not fit a small container limit well
+# (a 1.5 GiB pod OOMKilled while loading a real arena). A conservative heap percentage
+# leaves room for metaspace, Netty's direct buffers and the JVM itself.
+# Override per-deployment with the JAVA_TOOL_OPTIONS env var (gameServerSet.jvmOptions).
+ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=65 -XX:+UseG1GC -XX:+ExitOnOutOfMemoryError"
 
-ENTRYPOINT ["java", "-jar", "paper.jar", "--nogui"]
+ENTRYPOINT ["/entrypoint.sh"]

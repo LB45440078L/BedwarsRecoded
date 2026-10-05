@@ -129,6 +129,25 @@ system like this comes from a component quietly doing a job that belongs to anot
 | **This plugin** | The game: state machine, teams, beds, generators, shop, upgrades, traps, scoreboard, language, stats. | Controller/queue/routing/scaling work. |
 | **Prometheus** (optional) | Scrapes the controller's `/metrics` and each pod's heartbeats (TPS, players, phase). | Store long-term data by itself. |
 
+### How the arena world gets into a pod
+
+A pod plays exactly **one** match, so its main world *is* the arena — there is no
+throwaway world to generate and then replace.
+
+The catch: Paper reads its main world (`level-name` in `server.properties`) **during
+startup**, before any plugin is enabled. A plugin therefore cannot stage the arena by
+itself. The container does it, in `deploy/docker/entrypoint.sh`, before the JVM starts:
+
+1. Read `BEDWARS_TEMPLATE_SOURCE` and `BEDWARS_TEMPLATE_NAME`.
+2. `LOCAL` → copy the template baked at `/templates/<name>` into `/server/world`.
+   `S3` → download `…/templates/<name>/<version>.zip` and unpack it.
+3. Drop the world's stale `session.lock`, then `exec java -jar paper.jar`.
+
+With **AdvancedSlimePaper** installed there is a second, richer path: the map stays a
+packed Slime file and the plugin loads/clones it at runtime. Set
+`arena.templateEnabled: true` for that; leave it `false` when the entrypoint stages the
+world, so the two do not both act on it.
+
 ### How you run it
 
 | Tool | Does | Does **not** do |

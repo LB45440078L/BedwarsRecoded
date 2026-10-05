@@ -6,6 +6,13 @@ image:
   # Images are loaded into the minikube node, not pulled from a registry.
   pullPolicy: Never
 
+# Use the arena map baked into the image (deploy/templates/<name>) instead of S3:
+# MinIO is disabled here, and a real map is what makes `/bw join` land in the arena.
+# The entrypoint stages it as the pod's main world before Paper starts.
+arena:
+  templateSource: LOCAL
+  templateName: Glacier
+
 controller:
   replicas: 1
 velocity:
@@ -39,3 +46,6 @@ gameServerSet:
   memoryRequest: 512Mi
   cpuLimit: "1"
   memoryLimit: 1536Mi
+  # The 1.5 GiB limit is tight with a real arena loaded; keep the heap conservative so
+  # metaspace, Netty buffers and the JVM itself still fit inside the limit.
+  jvmOptions: "-XX:MaxRAMPercentage=55 -XX:+UseG1GC -XX:+ExitOnOutOfMemoryError"
