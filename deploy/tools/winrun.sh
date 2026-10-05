@@ -38,7 +38,11 @@ translate() {
   esac
 }
 
-mkdir -p "$WORKDIR_WIN"
+# NOTE: create the Linux-side directory that holds the .bat. Running
+# `mkdir -p "$WORKDIR_WIN"` here would create a literal directory named
+# "C:\Users\thevi\bedwars-k8s" in the current WSL directory — that stray folder
+# used to appear inside the repo because winrun.sh was invoked from there.
+mkdir -p "$(dirname "$BAT_LINUX")"
 {
   echo '@echo off'
   echo "set \"PATH=${DOCKER_BIN};${EXTRA_BIN};%PATH%\""
