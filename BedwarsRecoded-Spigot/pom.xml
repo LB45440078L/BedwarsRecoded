@@ -19,14 +19,50 @@
             <groupId>dev.bedwars</groupId>
             <artifactId>BedwarsRecoded-Core</artifactId>
         </dependency>
+
+        <!-- Test scope: MockBukkit is built against the Paper API and needs Paper's
+             org.bukkit.NamespacedKey.value(). Declared before spigot-api so it wins on
+             the TEST classpath only — main code still compiles against Spigot alone,
+             because test-scoped dependencies are excluded from main compilation. -->
+        <dependency>
+            <groupId>io.papermc.paper</groupId>
+            <artifactId>paper-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+
         <dependency>
             <groupId>org.spigotmc</groupId>
             <artifactId>spigot-api</artifactId>
         </dependency>
 
+        <!-- AdvancedSlimePaper API: provided by the ASP server; used by AspSlimeWorldProvider.
+             flow-nbt is only needed for NBT-level access, which this project does not do. -->
+        <dependency>
+            <groupId>com.infernalsuite.aswm</groupId>
+            <artifactId>api</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>com.flowpowered</groupId>
+                    <artifactId>flow-nbt</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.jetbrains</groupId>
+                    <artifactId>annotations</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.mockbukkit.mockbukkit</groupId>
+            <artifactId>mockbukkit-v26.2</artifactId>
         </dependency>
     </dependencies>
 

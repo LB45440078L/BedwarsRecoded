@@ -47,8 +47,8 @@ exercising the live cluster HTTP API (see §12 — eleven in total).
 | Karpenter node autoscale | **Met** | `NodePool` in chart |
 | Paper, **not Folia** | **Met** | constraint #3 |
 | BedWars1058 (BUNGEE mode) as the game-logic layer | **Met (adapted)** | The source plugin is self-contained (no BedWars1058 dependency); "the game logic layer" is reimplemented cleanly in `Core`. Depending on BedWars1058 would have contradicted "rewrite logic cleanly". |
-| AdvancedSlimePaper + SlimeWorldManager | **Partial** | `TemplateSource` stages the Slime file; the actual world load is a documented integration point |
-| S3-compatible store | **Met** | `S3TemplateSource` (SigV4 not yet implemented — see §12) |
+| AdvancedSlimePaper + SlimeWorldManager | **Met (verified by unit test, not against a live ASP)** | `AspSlimeWorldProvider`: template read read-only, cloned per match, loaded; `FallbackWorldProvider` when ASP is absent |
+| S3-compatible store | **Met** | `S3TemplateSource` with real **SigV4** signing (`AwsSigV4`) |
 | MySQL cluster | **Met** | HikariCP, versioned migrations |
 | Docker for every component | **Met** | `deploy/docker/{controller,velocity,spigot}.Dockerfile` |
 | Pod lifecycle 0→1→Ready→routed→deleted | **Met** | verified on minikube |
@@ -135,8 +135,8 @@ exercising the live cluster HTTP API (see §12 — eleven in total).
 
 | Requirement | Status | Notes |
 |---|---|---|
-| JUnit 5 + MockBukkit | **Met (adapted)** | JUnit 5 yes; **MockBukkit has no release past MC 1.21**, so Core is Bukkit-free and tested with plain JUnit. Adequate substitute, documented. |
-| Wired into `verify` | **Met** | `mvn verify` runs 72 tests |
+| JUnit 5 + MockBukkit | **Met** | JUnit 5 **and** MockBukkit for Paper 26.2 (`org.mockbukkit.mockbukkit:mockbukkit-v26.2:4.116.1`) in the Spigot test scope; Core stays Bukkit-free so game logic needs no mock |
+| Wired into `verify` | **Met** | `mvn verify` runs 98 tests |
 | Tests: state transitions, shop, elimination, scoreboard | **Met** | `GameLifecycleTest`, `ShopServiceTest`, `GameStateTest`, `ScoreboardBuilderTest` |
 | Module boundaries / compile-time validation | **Met (adapted)** | explicit package structure + module POMs; no Modulith-style enforcement tool |
 | Async everything that touches I/O | **Met** | repositories and HTTP all return `CompletableFuture` |
@@ -218,12 +218,44 @@ Earlier in the project, four more were found by running the cluster:
 
 ## 13. Remaining gaps (honest list)
 
-- AdvancedSlimePaper world load (staging only).
-- S3 SigV4 signing (`S3TemplateSource` currently assumes pre-signed/public access).
-- K8s annotations for pod state (HTTP webhooks only).
-- gRPC transport.
-- Citizens NPC hook (named entity used instead).
-- Dragon Buff spawns no dragons.
-- MockBukkit unavailable for Paper 26.x.
-- Structured concurrency / scoped values (preview APIs, deliberately avoided).
-- MinIO/S3 path unexercised in-cluster (image pull limitation in this sandbox).
+Closed in the gap-closure pass (previously listed here):
+`AdvancedSlimePaper world load`, `S3 SigV4 signing`, `MockBukkit` availability, and
+`Scoped Values` adoption. See §14.
+
+Still open, and why:
+
+- **AdvancedSlimePaper end-to-end** — implemented against the real ASP 3.0.0 API
+  (`readWorld` read-only → `clone(instanceName)` → `loadWorld`) and unit-tested through
+  the `SlimeWorldBridge` seam; no ASP server exists in this environment, so the world
+  swap has not been executed against a live ASP.
+- **Persistence not verified against a live MySQL** — `MatchResultPersister` +
+  `StatsRepository` are unit-tested; the pod booted while MySQL was unreachable here
+  (`Persistence unavailable; running without stats`), so a real row write was not
+  observed.
+- **K8s annotations for pod state** — HTTP webhooks only.
+- **gRPC transport** — the brief allowed "HTTP or gRPC"; HTTP was chosen, so this is a
+  non-gap by the brief's own wording.
+- **Citizens NPC hook** — named entity used instead.
+- **Dragon Buff** spawns no dragons.
+- **Structured concurrency (`StructuredTaskScope`)** — verified still preview in JDK 25
+  (`javac --release 25` → "preview API and is disabled by default"), so plain virtual
+  threads are used. Scoped Values are final and *are* used.
+- **MockBukkit plugin bootstrap** — harness works; whole-plugin load needs the JAR on
+  the classpath, which surefire does not offer.
+- **MinIO/S3 in-cluster fetch** — MinIO is disabled in the minikube overlay (its image
+  cannot be pulled anonymously here); the S3 path is instead verified end-to-end
+  in-JVM against a stub S3 endpoint (`S3TemplateSourceTest`).
+
+## 14. Gap-closure pass (second round)
+
+What was implemented, and how each is verified:
+
+| Gap | Implementation | Verified by |
+|---|---|---|
+| Slime world load | `SlimeWorldProvider` + `AspSlimeWorldProvider`/`AspSlimeWorldBridge` (real ASP API) + `FallbackWorldProvider` | `AspSlimeWorldProviderTest` (read-only template, clone name, load order); compiles against ASP 3.0.0 |
+| S3 SigV4 | `AwsSigV4` (real `AWS4-HMAC-SHA256`) wired into `S3TemplateSource` with credentials | `AwsSigV4Test` (published AWS `get-vanilla` vector); `S3TemplateSourceTest` (real signed HTTP GET against an in-JVM stub) |
+| MockBukkit | `mockbukkit-v26.2:4.116.1` in Spigot test scope (+ Paper API, test-scoped and ordered first) | `MockBukkitEnvironmentTest` — mocked server **and** real player interactions |
+| Scoped Values | `CorrelationContext` (game/pod ids), used by the tick loop and structured logging | `CorrelationContextTest`; compile probe shows it needs no preview flag |
+| Structured concurrency | deliberately **not** adopted | compile probe records the exact preview rejection |
+
+Test count after this pass: **98** (was 77).

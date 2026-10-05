@@ -392,6 +392,48 @@ If `upgrades:` is absent, `UpgradeCatalog.defaults()` is used.
 
 ---
 
+## 4b. Sizing on a small machine (16 GB RAM, Windows + WSL)
+
+The production footprint (**2 CPU / 4 GiB per game pod**) is correct for a real node,
+but it will wedge a 16 GB laptop. Concretely, on this machine the whole stack wedged the
+node — the API server stopped answering and the Paper pod was OOM-killed — until the
+game-pod footprint was reduced. Budget roughly:
+
+| Component | Typical RSS |
+|---|---|
+| Docker Desktop (WSL2 backend) | 1.0–1.5 GB |
+| minikube control plane | ~1 GB |
+| MySQL | 300–500 MB |
+| controller + mc-router + Velocity | ~400 MB |
+| **one Paper game pod** | 700 MB–1.5 GB |
+
+That already consumes most of 16 GB once Windows itself is included. So:
+
+- Always deploy with `-f values-minikube.yaml` (requests `500m/512Mi`, limits `1/1536Mi`,
+  MinIO disabled). The base `values.yaml` is for real clusters.
+- **Run one heavy thing at a time.** Do not keep minikube up while also running the
+  Compose stack or a big `docker build`.
+- Cap Docker Desktop (Settings → Resources) to ~6 GB, and WSL to ~4–6 GB via
+  `%UserProfile%\.wslconfig`:
+  ```ini
+  [wsl2]
+  memory=6GB
+  processors=4
+  swap=2GB
+  ```
+- **Free the disk before it fills.** The node wedges on a full disk as readily as on
+  OOM. `minikube delete -p bedwars` reclaims the node image cache; `docker system prune -a`
+  reclaims build layers (both cost a re-pull/rebuild).
+- Stop what you are not using:
+  ```bash
+  kubectl -n bedwars scale gameserversets bedwars-solo --replicas=0
+  minikube -p bedwars stop
+  ```
+
+Everything in this project that does **not** need a cluster can be verified without one:
+`mvn verify` is 98 tests including the in-JVM S3 fetch, the ASP loader sequence, the
+SigV4 vector and MockBukkit, and needs no Docker at all.
+
 ## 5. Troubleshooting
 
 | Symptom | Cause / fix |

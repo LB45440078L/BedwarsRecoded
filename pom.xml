@@ -43,6 +43,10 @@
         <!-- Testing -->
         <junit.version>5.12.2</junit.version>
         <assertj.version>3.27.3</assertj.version>
+        <mockbukkit.version>4.116.1</mockbukkit.version>
+
+        <!-- Slime world runtime (AdvancedSlimePaper API, provided by the server) -->
+        <asp.version>3.0.0</asp.version>
 
         <!-- Build plugins -->
         <compiler.plugin.version>3.14.0</compiler.plugin.version>
@@ -63,6 +67,16 @@
         <repository>
             <id>spigotmc-repo</id>
             <url>https://hub.spigotmc.org/nexus/content/repositories/snapshots/</url>
+        </repository>
+        <!-- AdvancedSlimePaper API (Slime Region Format world loading) -->
+        <repository>
+            <id>infernalsuite-releases</id>
+            <url>https://repo.infernalsuite.com/repository/maven-releases/</url>
+        </repository>
+        <!-- Flow-NBT, a transitive of the ASP API (excluded where the ASP API is used) -->
+        <repository>
+            <id>rapture-releases</id>
+            <url>https://repo.rapture.pw/repository/maven-releases/</url>
         </repository>
     </repositories>
 
@@ -151,6 +165,30 @@
                 <artifactId>assertj-core</artifactId>
                 <version>${assertj.version}</version>
                 <scope>test</scope>
+            </dependency>
+
+            <!-- MockBukkit for 26.2: unit-tests real Bukkit interactions without a server. -->
+            <dependency>
+                <groupId>org.mockbukkit.mockbukkit</groupId>
+                <artifactId>mockbukkit-v26.2</artifactId>
+                <version>${mockbukkit.version}</version>
+                <scope>test</scope>
+            </dependency>
+
+            <!-- AdvancedSlimePaper API: provided by the ASP server at runtime.
+                 Used only for the Slime world load; never shaded.
+                 flow-nbt excluded: the adapter never touches NBT, and its repo is unreliable. -->
+            <dependency>
+                <groupId>com.infernalsuite.aswm</groupId>
+                <artifactId>api</artifactId>
+                <version>${asp.version}</version>
+                <scope>provided</scope>
+                <exclusions>
+                    <exclusion>
+                        <groupId>com.flowpowered</groupId>
+                        <artifactId>flow-nbt</artifactId>
+                    </exclusion>
+                </exclusions>
             </dependency>
         </dependencies>
     </dependencyManagement>

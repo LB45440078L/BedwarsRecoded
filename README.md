@@ -49,6 +49,15 @@ Gameplay (Core, unit-tested, Bukkit-free):
   falls back to `UpgradeCatalog.defaults()` when absent.
 - **Structured JSON logging** (`StructuredLog`) carrying `game_id`/`player_uuid`
   correlation fields, enabled by `logging.json`.
+- **Correlation context** (`CorrelationContext`) built on **Scoped Values** — finalised
+  in JDK 25 (JEP 506), so no preview flag. The tick wraps every match operation in the
+  game/pod ids, and structured logs pick them up automatically.
+- **Slime world loading** — `AspSlimeWorldProvider` reads the template through the
+  AdvancedSlimePaper API **read-only** and clones it to a per-match instance, so a pod
+  can never mutate the shared template. Without ASP the documented
+  `FallbackWorldProvider` (local copy, non-production) is used.
+- **S3 SigV4 signing** (`AwsSigV4`) — real `AWS4-HMAC-SHA256` request signing, so
+  templates fetch from AWS S3, MinIO or Ceph rather than only public buckets.
 
 Spigot adapter:
 - Shop GUI (`/bw shop`, shift-click toggles quick buy), Quick-buy GUI (`/bw quickbuy`),
@@ -70,19 +79,23 @@ Spigot adapter:
 
 Honest list of what is modelled but not fully wired, or absent:
 
-- **AdvancedSlimePaper load** — the S3/local `TemplateSource` stages the template file;
-  the actual Slime world load is a documented integration point, not implemented. On a
-  real cluster the pod still boots and reports Ready; only the world swap is pending.
+- **AdvancedSlimePaper end-to-end** — the loader is implemented against the real ASP
+  3.0.0 API and unit-tested (read-only template, per-match clone, load), but no ASP
+  server was available here, so the world swap has not been run against a live ASP.
+- **Persistence not verified against a live MySQL** — `MatchResultPersister` and the
+  repositories are unit-tested, but the pod booted while MySQL was unreachable in this
+  environment, so a real write has not been observed.
 - **Dragon Buff** — purchased and stored; no dragons are actually spawned.
-- **gRPC** — controller communication is HTTP only.
+- **gRPC** — controller communication is HTTP only (the brief allowed HTTP webhooks).
 - **K8s annotations for pod state** — state is reported over HTTP webhooks only; the
   controller does not patch pod annotations.
 - **NPC via Citizens** — join NPCs use a named entity, not a Citizens hook.
-- **MockBukkit** — no release exists for Paper 26.x; Core is kept Bukkit-free instead.
-- **Structured concurrency / scoped values** — still preview APIs (need
-  `--enable-preview` at compile *and* runtime), so plain virtual threads are used.
-- **MinIO / S3 fetch unexercised in-cluster** — the overlay disables MinIO (image pull),
-  so the S3 template path has never completed end-to-end here.
+- **Structured concurrency (`StructuredTaskScope`)** — still a preview API in JDK 25
+  (verified: `javac --release 25` rejects it without `--enable-preview`), so plain
+  virtual threads are used. Scoped Values *are* used, since those are final.
+- **MockBukkit plugin bootstrap** — MockBukkit is wired and tests run against 26.2,
+  but loading the *whole plugin* in-process needs the plugin JAR on the classpath,
+  which surefire does not provide (it runs `target/classes`).
 
 Verified on a real cluster: the Compose stack and Helm chart are wired and the
 controller API was exercised end-to-end on minikube (see `docs/DEPLOYMENT.md`). The
@@ -119,13 +132,19 @@ by Paper at startup, so they are never shaded.
 ## Testing
 
 JUnit 5 + AssertJ. `Core` is deliberately Bukkit-free, so game logic is tested with
-plain JUnit — no server, no mocking framework. `verify` runs the suite.
+plain JUnit — no server, no mocking framework. The Spigot adapter additionally has
+**MockBukkit for Paper 26.2** (`org.mockbukkit.mockbukkit:mockbukkit-v26.2`) for
+tests that need real Bukkit objects. `verify` runs the suite.
 
-> **MockBukkit note.** MockBukkit has **no release for Paper 26.x** (latest is
-> `MockBukkit-v1.21:3.133.2`, MC 1.21). Rather than pin an incompatible artifact,
-> the domain was kept free of Bukkit so it is fully testable without a mocking
-> framework; the thin Spigot adapter is verified by compilation against the real
-> Paper API. See `docs/ARCHITECTURE.md` for the boundary rationale.
+> **MockBukkit note.** MockBukkit **does** have a release for our target: the project
+> moved from `com.github.seeseemelk` to `org.mockbukkit.mockbukkit`, and
+> `mockbukkit-v26.2:4.116.1` is on Maven Central. It is wired into the Spigot module's
+> test scope. It needs the Paper API on the test classpath (it uses Paper's
+> `NamespacedKey.value()`), so `paper-api` is declared **test-scoped and first** in the
+> module POM — main code still compiles against Spigot alone. Loading the *whole plugin*
+> in-process is not possible under surefire (MockBukkit's classloader wants the plugin
+> JAR, and surefire runs `target/classes`), so plugin-level coverage comes from the
+> packaged JAR and the cluster runs.
 
 ## Running locally
 

@@ -3,6 +3,7 @@ package dev.bedwars.spigot.listener;
 import dev.bedwars.api.event.GameEvent;
 import dev.bedwars.api.event.GameEventListener;
 import dev.bedwars.api.service.PodReporter;
+import dev.bedwars.core.logging.CorrelationContext;
 import dev.bedwars.core.logging.StructuredLog;
 import org.slf4j.Logger;
 
@@ -79,7 +80,11 @@ public final class DomainEventBridge implements GameEventListener {
 
     private void emit(String event, Map<String, Object> fields) {
         if (json) {
-            log.info(StructuredLog.json(event, fields));
+            // Merge the request-scoped correlation ids so every line carries
+            // game_id/pod_id even when the caller did not pass them.
+            java.util.Map<String, Object> merged = new java.util.LinkedHashMap<>(fields);
+            CorrelationContext.fields().forEach(merged::putIfAbsent);
+            log.info(StructuredLog.json(event, merged));
         }
     }
 }

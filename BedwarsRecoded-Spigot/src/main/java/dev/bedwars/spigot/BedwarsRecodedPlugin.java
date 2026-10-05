@@ -43,6 +43,8 @@ import dev.bedwars.core.shop.ShopItem;
 import dev.bedwars.core.shop.ShopService;
 import dev.bedwars.core.upgrade.UpgradeCatalog;
 import dev.bedwars.core.upgrade.UpgradeService;
+import dev.bedwars.core.logging.CorrelationContext;
+import dev.bedwars.core.logging.StructuredLog;
 import dev.bedwars.core.ranking.EloCalculator;
 import dev.bedwars.core.ranking.MatchResultPersister;
 import dev.bedwars.api.service.PodHeartbeat;
@@ -59,8 +61,14 @@ import dev.bedwars.spigot.listener.UpgradeListener;
 import dev.bedwars.spigot.listener.VoidKillListener;
 import dev.bedwars.spigot.report.HttpPodReporter;
 import dev.bedwars.spigot.scoreboard.ScoreboardRenderer;
+import dev.bedwars.spigot.template.AspSlimeWorldBridge;
+import dev.bedwars.spigot.template.AspSlimeWorldProvider;
+import dev.bedwars.spigot.template.FallbackWorldProvider;
 import dev.bedwars.spigot.template.LocalTemplateSource;
 import dev.bedwars.spigot.template.S3TemplateSource;
+import dev.bedwars.spigot.template.SlimeWorldProvider;
+import com.infernalsuite.aswm.api.AdvancedSlimePaperAPI;
+import com.infernalsuite.aswm.api.loaders.SlimeLoader;
 import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.entity.Player;
@@ -86,8 +94,10 @@ import java.util.concurrent.ConcurrentHashMap;
  * wires Core services, and reports READY to the controller. On shutdown it reports
  * DRAINING and flushes results. There is no persistent arena state on disk
  * (constraint #1); the pod itself is the reset (constraint #2).
+ *
+ * <p>Not {@code final}: MockBukkit subclasses the plugin to load it in tests.
  */
-public final class BedwarsRecodedPlugin extends JavaPlugin {
+public class BedwarsRecodedPlugin extends JavaPlugin {
 
     private static final Logger LOG = LoggerFactory.getLogger("bedwars-pod");
 
@@ -109,6 +119,7 @@ public final class BedwarsRecodedPlugin extends JavaPlugin {
     private final UpgradeService upgradeService = new UpgradeService();
     private final TpsMeter tpsMeter = new TpsMeter();
     private MatchResultPersister matchResultPersister;
+    private SlimeWorldProvider worldProvider;
     private long startedAtMillis;
     private boolean resultsPersisted;
     private final QuickBuyStore quickBuy = new QuickBuyStore();
@@ -289,16 +300,83 @@ public final class BedwarsRecodedPlugin extends JavaPlugin {
             case S3 -> new S3TemplateSource(
                     URI.create(env("BEDWARS_TEMPLATE_S3_ENDPOINT", getConfig().getString("template.s3.endpoint", "http://minio:9000"))),
                     env("BEDWARS_TEMPLATE_S3_BUCKET", getConfig().getString("template.s3.bucket", "bedwars-templates")),
-                    env("BEDWARS_TEMPLATE_S3_REGION", getConfig().getString("template.s3.region", "us-east-1")));
+                    env("BEDWARS_TEMPLATE_S3_REGION", getConfig().getString("template.s3.region", "us-east-1")),
+                    env("BEDWARS_TEMPLATE_S3_ACCESS_KEY", getConfig().getString("template.s3.access-key", "")),
+                    env("BEDWARS_TEMPLATE_S3_SECRET_KEY", getConfig().getString("template.s3.secret-key", "")));
             case LOCAL -> new LocalTemplateSource(getDataFolder().toPath().resolve(config.localTemplatePath()));
         };
         source.materialise(template, getDataFolder().toPath().resolve("staging"))
-                .thenAccept(path -> LOG.info("template_materialised template={} path={} productionReady={}",
-                        template.coordinate(), path, source.productionReady()))
+                .thenAccept(path -> {
+                    LOG.info("template_materialised template={} path={} productionReady={}",
+                            template.coordinate(), path, source.productionReady());
+                    loadWorld(template, path);
+                })
                 .exceptionally(error -> {
                     LOG.error("template_load_failed template={}", template.coordinate(), error);
                     return null;
                 });
+    }
+
+    /**
+     * Hands the staged archive to the world loader. Production uses AdvancedSlimePaper
+     * (the template is read read-only and cloned per match, so the pod never mutates
+     * the shared template); without ASP the documented non-production fallback is used.
+     */
+    private void loadWorld(TemplateDescriptor template, java.nio.file.Path archive) {
+        SlimeWorldProvider provider = worldProvider();
+        try {
+            boolean ok = provider.load(archive, template.name(), "match-" + game.id());
+            if (!ok) {
+                LOG.warn("world_load_incomplete loader={} template={}", provider.backend(), template.coordinate());
+            }
+        } catch (Exception e) {
+            LOG.error("world_load_failed loader={} template={}", provider.backend(), template.coordinate(), e);
+        }
+    }
+
+    private SlimeWorldProvider worldProvider() {
+        if (worldProvider == null) {
+            worldProvider = resolveAspProvider();
+            if (worldProvider == null) {
+                worldProvider = new FallbackWorldProvider(
+                        getDataFolder().toPath().resolve("templates").resolve(config.templateName()), LOG);
+            }
+        }
+        return worldProvider;
+    }
+
+    /** Builds the ASP world loader when AdvancedSlimePaper is installed; null otherwise. */
+    private SlimeWorldProvider resolveAspProvider() {
+        try {
+            if (getServer().getPluginManager().getPlugin("AdvancedSlimePaper") == null) {
+                return null;
+            }
+            AdvancedSlimePaperAPI asp = AdvancedSlimePaperAPI.instance();
+            String dataSource = env("BEDWARS_SLIME_DATASOURCE",
+                    getConfig().getString("template.slime-datasource", "file"));
+            SlimeLoader loader = resolveAspLoader(dataSource);
+            if (asp == null || loader == null) {
+                return null;
+            }
+            return new AspSlimeWorldProvider(new AspSlimeWorldBridge(asp, loader, dataSource, null), LOG);
+        } catch (Throwable t) {
+            LOG.warn("asp_unavailable; using the non-production world loader: {}", t.toString());
+            return null;
+        }
+    }
+
+    /**
+     * The ASP API artifact exposes {@link SlimeLoader} but not the server's configured
+     * loaders, so one reflective hop reaches the loader the server built for the given
+     * data source (file/S3/MySQL). This is an integration seam, not bytecode patching.
+     */
+    private SlimeLoader resolveAspLoader(String dataSource) throws Exception {
+        org.bukkit.plugin.Plugin asp = getServer().getPluginManager().getPlugin("AdvancedSlimePaper");
+        if (asp == null) {
+            return null;
+        }
+        Object loader = asp.getClass().getMethod("getLoader", String.class).invoke(asp, dataSource);
+        return loader instanceof SlimeLoader slime ? slime : null;
     }
 
     /** Loads {@code arena.yml} if present (the template's bed/spawn/generator/shop layout). */
@@ -379,6 +457,12 @@ public final class BedwarsRecodedPlugin extends JavaPlugin {
 
     private void tick() {
         tpsMeter.tick();
+        // Correlate everything this tick does (logs, persistence, webhooks) with the
+        // match and the pod via scoped values; the binding is restored automatically.
+        CorrelationContext.run(game.id(), config.serverId(), this::tickGame);
+    }
+
+    private void tickGame() {
         if (game.state().isTerminal()) {
             persistResults();
             return;
