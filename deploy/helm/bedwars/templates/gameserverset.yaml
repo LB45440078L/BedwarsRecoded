@@ -7,7 +7,20 @@ metadata:
     app.kubernetes.io/name: gameserverset
     {{- include "bedwars.labels" . | nindent 4 }}
 spec:
+  {{- /*
+    Replicas are owned by the CONTROLLER and KEDA, not by Helm: they scale this set up
+    when players queue and back to zero when the last match ends. If the chart kept
+    writing this field, every `helm upgrade` would fight the controller for ownership
+    of it - and could reset replicas to 0 underneath a running match.
+
+    So it is rendered only on the very first install (when the object does not exist).
+    Afterwards the field is left exactly as the controller left it.
+    (Under plain `helm template` there is no cluster to look up, so it is always
+    rendered - which keeps `helm template`/kubeconform output reproducible.)
+  */}}
+  {{- if not (lookup "game.kruise.io/v1alpha1" "GameServerSet" .Release.Namespace .Values.gameServerSet.name) }}
   replicas: {{ .Values.gameServerSet.replicas }}
+  {{- end }}
   serviceName: {{ .Values.gameServerSet.name }}
   gameServerTemplate:
     metadata:
