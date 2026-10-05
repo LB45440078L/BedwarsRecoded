@@ -12,7 +12,7 @@
 
     <artifactId>BedwarsRecoded-Spigot</artifactId>
     <name>BedwarsRecoded :: Spigot</name>
-    <description>Paper/Spigot plugin entrypoint. Thin listeners resolve the owning Game and delegate to Core.</description>
+    <description>Spigot plugin entrypoint (Spigot API only). Thin listeners resolve the owning Game and delegate to Core.</description>
 
     <dependencies>
         <dependency>
@@ -20,16 +20,9 @@
             <artifactId>BedwarsRecoded-Core</artifactId>
         </dependency>
 
-        <!-- Test scope: MockBukkit is built against the Paper API and needs Paper's
-             org.bukkit.NamespacedKey.value(). Declared before spigot-api so it wins on
-             the TEST classpath only — main code still compiles against Spigot alone,
-             because test-scoped dependencies are excluded from main compilation. -->
-        <dependency>
-            <groupId>io.papermc.paper</groupId>
-            <artifactId>paper-api</artifactId>
-            <scope>test</scope>
-        </dependency>
-
+        <!-- Spigot API only: the plugin must compile and run against Spigot with no
+             Paper API anywhere on the classpath. SpigotOnlyApiTest enforces this by
+             scanning the sources for Paper/Folia/Adventure imports. -->
         <dependency>
             <groupId>org.spigotmc</groupId>
             <artifactId>spigot-api</artifactId>
@@ -59,10 +52,6 @@
         <dependency>
             <groupId>org.assertj</groupId>
             <artifactId>assertj-core</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.mockbukkit.mockbukkit</groupId>
-            <artifactId>mockbukkit-v26.2</artifactId>
         </dependency>
     </dependencies>
 

@@ -346,9 +346,12 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
             this.matchResultPersister = new MatchResultPersister(new EloCalculator(cfg.kFactor()));
             LOG.info("persistence_ready host={}:{} database={}", cfg.database().host(), cfg.database().port(),
                     cfg.database().database());
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | LinkageError e) {
             // One concise line: the full HikariCP stack is noise for an operator who
             // simply has no database yet. The cause is kept in the message.
+            // LinkageError covers a server that did not provide the plugin libraries
+            // (e.g. stock Spigot without `libraries:` support): the JDBC classes are
+            // then absent at runtime, and persistence must disable rather than crash.
             LOG.warn("persistence_unavailable running without stats ({}). "
                     + "Set persistence.enabled: false to silence this.", rootCause(e));
         }
@@ -422,7 +425,15 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
                     loadWorld(template, path);
                 })
                 .exceptionally(error -> {
-                    LOG.error("template_load_failed template={}", template.coordinate(), error);
+                    // A missing template is an operator configuration issue, not a crash:
+                    // one actionable line beats a wall of CompletionException trace.
+                    LOG.warn("template_load_failed template={} reason={}. "
+                            + "Provide the world under template.local-path, or set template.enabled: false. "
+                            + "The server keeps its current world until then.",
+                            template.coordinate(), rootCause(error));
+                    if (LOG.isDebugEnabled()) {
+                        LOG.debug("template_load_failed detail", error);
+                    }
                     return null;
                 });
     }

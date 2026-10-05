@@ -7,13 +7,12 @@
 <p align="center">
   <a href="https://github.com/LB45440078L/BedwarsRecoded/actions/workflows/ci.yml"><img src="https://github.com/LB45440078L/BedwarsRecoded/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://openjdk.org/"><img src="https://img.shields.io/badge/Java-25-orange?logo=openjdk&amp;logoColor=white" alt="Java 25"></a>
-  <a href="https://www.spigotmc.org/"><img src="https://img.shields.io/badge/Spigot%20API-26.2-yellow" alt="Spigot API 26.2"></a>
-  <a href="https://papermc.io/"><img src="https://img.shields.io/badge/Paper-26.3-blue" alt="Paper 26.3"></a>
+  <a href="https://www.spigotmc.org/"><img src="https://img.shields.io/badge/Spigot%20API-26.3-yellow" alt="Spigot API 26.3"></a>
   <a href="https://velocitypowered.com/"><img src="https://img.shields.io/badge/Velocity-4.2.0-00B4D8" alt="Velocity 4.2.0"></a>
   <a href="https://kubernetes.io/"><img src="https://img.shields.io/badge/Kubernetes-native-326CE5?logo=kubernetes&amp;logoColor=white" alt="Kubernetes"></a>
   <a href="https://helm.sh/"><img src="https://img.shields.io/badge/Helm-chart-0F1689?logo=helm&amp;logoColor=white" alt="Helm chart"></a>
   <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-images-2496ED?logo=docker&amp;logoColor=white" alt="Docker images"></a>
-  <a href="#-testing"><img src="https://img.shields.io/badge/tests-135%20passing-brightgreen" alt="Tests"></a>
+  <a href="#-testing"><img src="https://img.shields.io/badge/tests-174%20passing-brightgreen" alt="Tests"></a>
   <a href="#-build"><img src="https://img.shields.io/badge/plugin%20JAR-%3C%204%20MB-brightgreen" alt="Plugin JAR under 4 MB"></a>
   <a href="https://github.com/LB45440078L/BedwarsRecoded/issues"><img src="https://img.shields.io/badge/PRs-welcome-blueviolet" alt="PRs welcome"></a>
 </p>
@@ -33,9 +32,9 @@ and a controller that drives scaling.
 |---|---|
 | `BedwarsRecoded-API` | Public interfaces, platform-neutral events, DTOs, shared JSON. No Bukkit, no JDBC. |
 | `BedwarsRecoded-Core` | Game domain, state machine, managers, ranking, persistence, migrations. **Bukkit-free** so it is unit-testable. |
-| `BedwarsRecoded-Spigot` | Paper/Spigot plugin entrypoint. Thin listeners resolve the owning `Game` and delegate. |
+| `BedwarsRecoded-Spigot` | Spigot plugin entrypoint (**Spigot API only**). Thin listeners resolve the owning `Game` and delegate. |
 | `BedwarsRecoded-Velocity` | Persistent proxy; asks the controller where to route players. |
-| `BedwarsRecoded-Controller` | Standalone service: queue watcher, GameServerSet scaler, pod webhook receiver. |
+| `BedwarsRecoded-Controller` | Standalone service: queue watcher, **replaceable `ServerProvisioner` (Kubernetes *or* Docker)**, idle scale-down, pod webhook receiver. |
 
 ## ✨ Implemented features
 
@@ -121,14 +120,18 @@ sandbox); its assets are validated structurally.
 
 ## 🎯 Targets (verified)
 
-- **Spigot API**: `26.2-R0.1-SNAPSHOT` (the plugin's compile target — runs on Spigot and
-  Paper). Paper API `26.2.build.129-stable` is retained for reference. Compatibility
-  covers 26.1, 26.2, 26.3 (all exist on the respective repos). The plugin deliberately
-  uses only Spigot API surface (no Paper-only Adventure), so it loads on plain Spigot.
+- **Spigot API**: compiled against `26.3-R0.1-SNAPSHOT`, with `api-version: '26.1'` in
+  `plugin.yml` so the same jar loads on every Spigot 26.x server. **No Paper API is on
+  any classpath** (main, test or runtime) — `SpigotOnlyApiTest` fails the build if a
+  Paper/Folia/Adventure import or a `paper-api` dependency reappears.
 - **Velocity API**: `4.2.0`.
-- **Java**: source/target release **25** (`maven.compiler.release=25`). Built with the
-  installed JDK 27 (Temurin), which targets release 25 cleanly.
-- **Engine**: Paper, explicitly **not** Folia.
+- **Java**: source/target release **25** (`maven.compiler.release=25`), built and
+  tested on JDK 25.
+- **Engine**: Spigot. Explicitly **not** Folia and **not** Paper-only.
+
+Verified load: the packaged jar was started on a real Spigot 26.3 dedicated server; the
+plugin bootstraps to STANDALONE, loads its libraries, and reports `pod_ready` with no
+stack traces (a missing MySQL/template degrades gracefully to a one-line warning).
 
 ## 🔨 Build
 
@@ -147,19 +150,21 @@ by Paper at startup, so they are never shaded.
 ## 🧪 Testing
 
 JUnit 5 + AssertJ. `Core` is deliberately Bukkit-free, so game logic is tested with
-plain JUnit — no server, no mocking framework. The Spigot adapter additionally has
-**MockBukkit for Paper 26.2** (`org.mockbukkit.mockbukkit:mockbukkit-v26.2`) for
-tests that need real Bukkit objects. `verify` runs the suite.
+plain JUnit — no server, no mocking framework. The suite is **174 tests**:
 
-> **MockBukkit note.** MockBukkit **does** have a release for our target: the project
-> moved from `com.github.seeseemelk` to `org.mockbukkit.mockbukkit`, and
-> `mockbukkit-v26.2:4.116.1` is on Maven Central. It is wired into the Spigot module's
-> test scope. It needs the Paper API on the test classpath (it uses Paper's
-> `NamespacedKey.value()`), so `paper-api` is declared **test-scoped and first** in the
-> module POM — main code still compiles against Spigot alone. Loading the *whole plugin*
-> in-process is not possible under surefire (MockBukkit's classloader wants the plugin
-> JAR, and surefire runs `target/classes`), so plugin-level coverage comes from the
-> packaged JAR and the cluster runs.
+- **Core (92)** — game lifecycle, and the win condition in particular
+  (`WinConditionTest`): a match must reach a single survivor even when the arena
+  declares more teams than were filled, and when a team is abandoned by disconnects.
+- **Spigot (26)** — config, reporting, template sources, and `SpigotOnlyApiTest`,
+  which enforces the Spigot-only constraint.
+- **Controller (51)** — queue dispatch over real HTTP (`WebhookServerTest`), token
+  authentication (`WebhookServerAuthTest`), `DockerProvisionerTest` (fake runner),
+  `ScaleDownPolicyTest`, and an opt-in `DockerProvisionerIntegrationTest` that drives a
+  **real** Docker daemon: it provisions an actual container, health-checks it, reclaims
+  it, and asserts nothing is left behind (self-skips when no daemon is present).
+
+`verify` runs the suite. There is no Paper API and no MockBukkit anywhere on the
+classpath.
 
 ## 🚀 Running locally
 
@@ -210,6 +215,10 @@ Dockerfiles for each component.
   component of this stack is responsible for** (and what it must never do).
 - `docs/AUDIT.md` — requirement-by-requirement audit against the original brief.
 - `docs/ARCHITECTURE.md` — pod lifecycle, controller protocol, scaling model.
+- `docs/PROVISIONING.md` — the `ServerProvisioner` seam: Kubernetes vs Docker,
+  capacity (`games-per-server`), idle scale-down, and controller authentication.
+- `docs/AUDIT-RECODED.md` — the audit that drove this revision: defects found,
+  decisions taken, and what remains.
 - `docs/DEPLOYMENT.md` — Compose stack, Kubernetes platform, verification.
 - `docs/API.md` — public API reference (DTOs, events, services, HTTP endpoints).
 - `docs/MIGRATIONS.md` — how to add database migrations.

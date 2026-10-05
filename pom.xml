@@ -27,8 +27,10 @@
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 
         <!-- Platform APIs (verified against repo.papermc.io / hub.spigotmc.org, 2026) -->
-        <paper.version>26.2.build.129-stable</paper.version>
-        <spigot.version>26.2-R0.1-SNAPSHOT</spigot.version>
+        <!-- The plugin compiles against the SC 26.3 Spigot API and runs on Spigot.
+             No Paper API is on any classpath (main, test or runtime); api-version in
+             plugin.yml is 26.1 so the plugin loads on every 26.x Spigot server. -->
+        <spigot.version>26.3-R0.1-SNAPSHOT</spigot.version>
         <velocity.version>4.2.0</velocity.version>
 
         <!-- Runtime / infrastructure -->
@@ -43,7 +45,6 @@
         <!-- Testing -->
         <junit.version>5.12.2</junit.version>
         <assertj.version>3.27.3</assertj.version>
-        <mockbukkit.version>4.116.1</mockbukkit.version>
 
         <!-- Slime world runtime (AdvancedSlimePaper API, provided by the server) -->
         <asp.version>3.0.0</asp.version>
@@ -94,19 +95,13 @@
                 <version>${project.version}</version>
             </dependency>
 
-            <!-- Spigot API: the plugin's compile target (runs on Spigot and Paper) -->
+            <!-- Spigot API: the plugin's compile target and only runtime server API.
+                 The plugin deliberately uses no Paper-only surface, so it loads on a
+                 plain Spigot server. See SpigotOnlyApiTest for the enforced guard. -->
             <dependency>
                 <groupId>org.spigotmc</groupId>
                 <artifactId>spigot-api</artifactId>
                 <version>${spigot.version}</version>
-                <scope>provided</scope>
-            </dependency>
-
-            <!-- Paper API: retained for reference / optional Paper-only modules -->
-            <dependency>
-                <groupId>io.papermc.paper</groupId>
-                <artifactId>paper-api</artifactId>
-                <version>${paper.version}</version>
                 <scope>provided</scope>
             </dependency>
 
@@ -164,14 +159,6 @@
                 <groupId>org.assertj</groupId>
                 <artifactId>assertj-core</artifactId>
                 <version>${assertj.version}</version>
-                <scope>test</scope>
-            </dependency>
-
-            <!-- MockBukkit for 26.2: unit-tests real Bukkit interactions without a server. -->
-            <dependency>
-                <groupId>org.mockbukkit.mockbukkit</groupId>
-                <artifactId>mockbukkit-v26.2</artifactId>
-                <version>${mockbukkit.version}</version>
                 <scope>test</scope>
             </dependency>
 

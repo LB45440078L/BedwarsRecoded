@@ -9,6 +9,7 @@ import dev.bedwars.api.json.JsonSupport;
 import dev.bedwars.api.service.DispatchResult;
 import dev.bedwars.controller.config.ControllerConfig;
 import dev.bedwars.controller.pod.ReadyPodRegistry;
+import dev.bedwars.controller.provision.ServerProvisioner;
 import dev.bedwars.controller.queue.QueueManager;
 import org.slf4j.Logger;
 
@@ -16,6 +17,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
@@ -30,17 +32,27 @@ import java.util.concurrent.TimeoutException;
  * <ul>
  *   <li>{@code POST /pods/*} — pods report ready/started/ended/heartbeat/draining</li>
  *   <li>{@code POST /lobby/queue} — lobby requests a slot (capacity-aware dispatch)</li>
- *   <li>{@code GET /healthz}, {@code GET /queue/depth}</li>
+ *   <li>{@code GET /healthz}, {@code /queue/depth}, {@code /lobby/arena-status},
+ *       {@code /infra}, {@code /metrics}</li>
  * </ul>
  * Uses the JDK's built-in HTTP server, so no extra runtime dependency.
+ *
+ * <p><b>Security.</b> Mutating endpoints require a shared secret when one is
+ * configured ({@code BEDWARS_API_TOKEN}). This protects a controller that is
+ * reachable from game servers on other machines. When the token is blank the
+ * controller logs a loud warning and stays open, which is the documented
+ * single-host development mode. The secret is compared in constant time and is
+ * never logged.
  */
 public final class WebhookServer {
 
     private static final long DISPATCH_WAIT_MILLIS = 1_500L;
+    private static final String TOKEN_HEADER = "X-Bedwars-Token";
 
     private final int port;
     private final QueueManager queueManager;
     private final ReadyPodRegistry registry;
+    private final ServerProvisioner provisioner;
     private final ControllerConfig config;
     private final Gson gson = JsonSupport.gson();
     private final Logger log;
@@ -48,11 +60,12 @@ public final class WebhookServer {
     private ExecutorService executor;
 
     public WebhookServer(int port, QueueManager queueManager, ReadyPodRegistry registry,
-                         ControllerConfig config, Logger log) {
+                         ControllerConfig config, ServerProvisioner provisioner, Logger log) {
         this.port = port;
         this.queueManager = queueManager;
         this.registry = registry;
         this.config = config;
+        this.provisioner = provisioner;
         this.log = log;
     }
 
@@ -68,10 +81,16 @@ public final class WebhookServer {
         server.createContext("/lobby/queue", exchange -> handle(exchange, this::lobbyQueue));
         server.createContext("/queue/depth", exchange -> respond(exchange, 200, gson.toJson(queueManager.depthByGroup())));
         server.createContext("/lobby/arena-status", exchange -> respond(exchange, 200, gson.toJson(arenaStatus())));
+        server.createContext("/infra", exchange -> respond(exchange, 200, gson.toJson(infraStatus())));
         server.createContext("/metrics", exchange -> respondText(exchange, 200, metrics()));
         server.createContext("/healthz", exchange -> respond(exchange, 200, "ok"));
         server.start();
-        log.info("Controller HTTP listening on :{}", port);
+        if (config.security().enabled()) {
+            log.info("Controller HTTP listening on :{} (mutating endpoints require a token)", port);
+        } else {
+            log.warn("Controller HTTP listening on :{} WITHOUT authentication. "
+                    + "Set BEDWARS_API_TOKEN before exposing this controller to other machines.", port);
+        }
     }
 
     public void stop() {
@@ -136,6 +155,11 @@ public final class WebhookServer {
 
     private void handle(HttpExchange exchange, Handler handler) throws IOException {
         try {
+            if (!authorized(exchange)) {
+                log.warn("Rejected unauthenticated request to {}", exchange.getRequestURI());
+                respond(exchange, 401, "{\"error\":\"unauthorized\"}");
+                return;
+            }
             JsonObject body = readJson(exchange);
             String response = handler.handle(body);
             respond(exchange, 200, response);
@@ -148,6 +172,23 @@ public final class WebhookServer {
         } finally {
             exchange.close();
         }
+    }
+
+    /** Constant-time shared-secret check. Returns true when no token is configured. */
+    private boolean authorized(HttpExchange exchange) {
+        if (!config.security().enabled()) {
+            return true;
+        }
+        String presented = exchange.getRequestHeaders().getFirst(TOKEN_HEADER);
+        if (presented == null) {
+            String auth = exchange.getRequestHeaders().getFirst("Authorization");
+            if (auth != null && auth.regionMatches(true, 0, "Bearer ", 0, 7)) {
+                presented = auth.substring(7).trim();
+            }
+        }
+        return presented != null && MessageDigest.isEqual(
+                presented.getBytes(StandardCharsets.UTF_8),
+                config.security().apiToken().getBytes(StandardCharsets.UTF_8));
     }
 
     private JsonObject readJson(HttpExchange exchange) throws IOException {
@@ -168,7 +209,27 @@ public final class WebhookServer {
         sb.append("# TYPE bedwars_ready_pods gauge\n");
         registry.readyByGroup().forEach((group, count) ->
                 sb.append("bedwars_ready_pods{group=\"").append(group).append("\"} ").append(count).append('\n'));
+        sb.append("# HELP bedwars_servers Provisioned game servers.\n");
+        sb.append("# TYPE bedwars_servers gauge\n");
+        sb.append("bedwars_servers ").append(provisioner.currentServers()).append('\n');
+        sb.append("# HELP bedwars_game_capacity Total concurrent game slots.\n");
+        sb.append("# TYPE bedwars_game_capacity gauge\n");
+        sb.append("bedwars_game_capacity ").append(provisioner.totalGameCapacity()).append('\n');
         return sb.toString();
+    }
+
+    /** Infrastructure view for operators and the deploy verifier. Never leaks secrets. */
+    private Map<String, Object> infraStatus() {
+        Map<String, Object> status = new LinkedHashMap<>();
+        status.put("provisioner", provisioner.kind().name());
+        status.put("description", provisioner.describe());
+        status.put("servers", provisioner.currentServers());
+        status.put("minServers", provisioner.minimumServers());
+        status.put("maxServers", provisioner.maximumServers());
+        status.put("gamesPerServer", provisioner.gamesPerServer());
+        status.put("gameCapacity", provisioner.totalGameCapacity());
+        status.put("authenticated", config.security().enabled());
+        return status;
     }
 
     /**

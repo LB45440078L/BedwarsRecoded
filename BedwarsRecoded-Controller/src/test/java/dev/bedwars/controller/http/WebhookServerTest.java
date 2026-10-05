@@ -5,6 +5,8 @@ import dev.bedwars.api.dto.QueueRequest;
 import dev.bedwars.api.json.JsonSupport;
 import dev.bedwars.controller.config.ControllerConfig;
 import dev.bedwars.controller.pod.ReadyPodRegistry;
+import dev.bedwars.controller.provision.NoopProvisioner;
+import dev.bedwars.controller.provision.ProvisionerKind;
 import dev.bedwars.controller.queue.QueueManager;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -41,10 +43,21 @@ class WebhookServerTest {
         }
         ReadyPodRegistry registry = new ReadyPodRegistry();
         QueueManager queue = new QueueManager(registry::allocate, 500, 10_000);
-        ControllerConfig config = new ControllerConfig("local", "bedwars-solo", port, 0, 10, 2, 500, 10_000);
-        server = new WebhookServer(port, queue, registry, config, LoggerFactory.getLogger("test"));
+        ControllerConfig config = config("", port);
+        server = new WebhookServer(port, queue, registry, config, new NoopProvisioner(LoggerFactory.getLogger("test")),
+                LoggerFactory.getLogger("test"));
         server.start();
         http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
+    }
+
+    /** Controller config for tests: open (no token) unless one is passed. */
+    static ControllerConfig config(String apiToken, int port) {
+        ControllerConfig.Provisioning provisioning = new ControllerConfig.Provisioning(
+                ProvisionerKind.NONE, 0, 10, 25, true, 10,
+                "bedwars-game", "bedwars-recoded-game:latest", "1024m", "solo",
+                "http://localhost:" + port);
+        return new ControllerConfig("local", "bedwars-solo", port, 2, 500, 10_000,
+                provisioning, new ControllerConfig.Security(apiToken));
     }
 
     @AfterEach

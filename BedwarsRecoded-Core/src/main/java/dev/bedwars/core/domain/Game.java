@@ -168,7 +168,12 @@ public final class Game {
     public void beginMatch(long nowMillis) {
         transition(GameState.RUNNING);
         this.startedAtMillis = nowMillis;
+        // Any team that never received a player is out from the first tick; otherwise
+        // an empty team would count as "still standing" forever and the match could
+        // never reach a single survivor.
+        evaluateEliminations(nowMillis);
         bus.publish(new GameEvent.GameStarted(id, group.id(), template, sessions.size()));
+        checkWinCondition(nowMillis);
     }
 
     /** Sudden death: every bed is destroyed and generators are maxed. */
@@ -302,18 +307,37 @@ public final class Game {
         return true;
     }
 
+    /**
+     * Marks teams out. A team is finished when either:
+     * <ul>
+     *   <li>it has <em>no members at all</em> (nobody ever joined, or the last player
+     *       quit) &mdash; it can never win, so it must not prop up the win condition; or</li>
+     *   <li>its bed is destroyed and no member can still respawn (all eliminated or
+     *       spectating).</li>
+     * </ul>
+     * The previous implementation only applied the second rule, so an unfilled or
+     * abandoned team kept the match alive indefinitely.
+     */
     private void evaluateEliminations(long nowMillis) {
         for (Team team : teams.values()) {
             if (team.isEliminated()) {
                 continue;
             }
+            boolean abandoned = team.size() == 0;
             boolean noActiveMembers = team.members().stream()
                     .map(sessions::get)
                     .filter(Objects::nonNull)
                     .noneMatch(PlayerSession::isActive);
-            if (team.bed().isDestroyed() && (team.size() == 0 || noActiveMembers)) {
+            if (abandoned || (team.bed().isDestroyed() && noActiveMembers)) {
                 team.eliminate();
-                team.members().forEach(m -> sessions.get(m).setState(PlayerState.SPECTATOR));
+                // Guard against a member whose session was already removed: an NPE here
+                // would abort the whole death/quit path and leave the match unstoppable.
+                team.members().forEach(m -> {
+                    PlayerSession session = sessions.get(m);
+                    if (session != null) {
+                        session.setState(PlayerState.SPECTATOR);
+                    }
+                });
                 bus.publish(new GameEvent.TeamEliminated(id, team.id()));
             }
         }

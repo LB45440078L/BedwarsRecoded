@@ -1,11 +1,15 @@
 name: "BedwarsRecoded"
 version: ${project.version}
 main: dev.bedwars.spigot.BedwarsRecodedPlugin
-api-version: '26.2'
+# Loads on every Spigot 26.x server: api-version is the lowest supported (26.1) while
+# the plugin is compiled against the 26.3 Spigot API. No Paper-only surface is used.
+api-version: '26.1'
 authors: [ "BedwarsRecoded" ]
-description: "Kubernetes-native Bedwars game pod. One match per pod; pod destruction is the reset."
+description: "Spigot Bedwars game server. One match per pod; pod destruction is the reset."
 website: ${project.url}
-# Downloaded by Paper at startup, so the plugin jar stays tiny (constraint: JAR < 4 MB).
+# Loaded at startup when the server supports plugin libraries (Spigot 26.x / Paper), so
+# the plugin jar stays tiny (constraint: JAR < 4 MB). The plugin degrades gracefully
+# (persistence disabled, no crash) if the server cannot provide them.
 libraries:
   - "com.zaxxer:HikariCP:6.3.0"
   - "com.mysql:mysql-connector-j:9.3.0"

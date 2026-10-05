@@ -2,26 +2,32 @@ package dev.bedwars.controller;
 
 import dev.bedwars.controller.config.ControllerConfig;
 import dev.bedwars.controller.http.WebhookServer;
-import dev.bedwars.controller.k8s.Fabric8GameServerSetScaler;
-import dev.bedwars.controller.k8s.GameServerSetScaler;
 import dev.bedwars.controller.pod.ReadyPodRegistry;
+import dev.bedwars.controller.provision.ProvisionerFactory;
+import dev.bedwars.controller.provision.ScaleDownPolicy;
+import dev.bedwars.controller.provision.ServerProvisioner;
 import dev.bedwars.controller.queue.QueueManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Optional;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Entry point for the Bedwars controller. Wires the ready-pod registry, the
- * GameServerSet scaler, the queue manager (with pre-warm) and the HTTP server.
+ * Entry point for the Bedwars controller.
  *
- * <p>Pod scaling is primarily KEDA/Karpenter's job; the controller's own scaling
- * is a pre-warm hint: when a queue request cannot be satisfied, it asks the
- * GameServerSet for one more replica so a pod is booting before players arrive.
+ * <p>It wires the ready-pod registry, the {@link ServerProvisioner} (Kubernetes or
+ * Docker, chosen by config), the queue manager with pre-warm, the idle scale-down
+ * loop and the HTTP server. The controller never contains gameplay logic; it only
+ * moves capacity and players around.
  */
 public final class ControllerMain {
 
     private static final Logger LOG = LoggerFactory.getLogger(ControllerMain.class);
+    private static final long SCALE_DOWN_TICK_SECONDS = 60L;
 
     private ControllerMain() {
     }
@@ -29,7 +35,7 @@ public final class ControllerMain {
     public static void main(String[] args) throws Exception {
         ControllerConfig config = ControllerConfig.fromEnv();
         ReadyPodRegistry registry = new ReadyPodRegistry();
-        GameServerSetScaler scaler = createScaler(config);
+        ServerProvisioner provisioner = ProvisionerFactory.create(config);
 
         QueueManager queueManager = new QueueManager(group -> {
             Optional<String> pod = registry.allocate(group);
@@ -37,58 +43,63 @@ public final class ControllerMain {
                 LOG.info("Allocated ready pod {} for group {}", pod.get(), group);
             } else {
                 // Pre-warm: ask for capacity before the next request arrives.
-                scaler.scaleUpOne();
+                provisioner.scaleUpOne();
             }
             return pod;
         }, config.baseBackoffMillis(), config.maxBackoffMillis());
 
-        WebhookServer server = new WebhookServer(config.httpPort(), queueManager, registry, config, LOG);
+        WebhookServer server = new WebhookServer(config.httpPort(), queueManager, registry, config, provisioner, LOG);
         server.start();
+
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "scale-down");
+            thread.setDaemon(true);
+            return thread;
+        });
+        startScaleDownLoop(config, queueManager, registry, provisioner, scheduler);
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             LOG.info("Controller shutting down");
+            scheduler.shutdownNow();
             server.stop();
-            closeQuietly(scaler);
+            provisioner.close();
         }, "shutdown"));
 
-        LOG.info("Bedwars controller started for GameServerSet {}/{}", config.namespace(), config.gameServerSet());
+        LOG.info("Bedwars controller started ({})", provisioner.describe());
     }
 
-    private static GameServerSetScaler createScaler(ControllerConfig config) {
-        try {
-            return new Fabric8GameServerSetScaler(
-                    config.namespace(), config.gameServerSet(), config.minReplicas(), config.maxReplicas(), LOG);
-        } catch (RuntimeException e) {
-            LOG.warn("Kubernetes client unavailable; scaling disabled: {}", e.getMessage());
-            return new NoOpScaler();
-        }
-    }
+    /**
+     * Reclaims idle, dynamically provisioned servers. The decision itself lives in
+     * {@link ScaleDownPolicy} so it is unit-tested; this method only feeds it state
+     * and applies the outcome. Reserved/active servers are never candidates because
+     * an allocated pod leaves the ready pool the moment it is dispatched.
+     */
+    private static void startScaleDownLoop(ControllerConfig config, QueueManager queueManager,
+                                           ReadyPodRegistry registry, ServerProvisioner provisioner,
+                                           ScheduledExecutorService scheduler) {
+        ControllerConfig.Provisioning p = config.provisioning();
+        ScaleDownPolicy policy = new ScaleDownPolicy(p.scaleDownEnabled(), p.minServers(), p.idleMillis());
+        AtomicLong idleSince = new AtomicLong(System.currentTimeMillis());
 
-    private static void closeQuietly(Object resource) {
-        if (resource instanceof AutoCloseable closeable) {
+        scheduler.scheduleWithFixedDelay(() -> {
             try {
-                closeable.close();
-            } catch (Exception e) {
-                LOG.warn("Failed to close resource", e);
+                int depth = queueManager.totalDepth();
+                long now = System.currentTimeMillis();
+                if (depth > 0) {
+                    idleSince.set(now);
+                    return;
+                }
+                int ready = registry.readyByGroup().values().stream().mapToInt(Integer::intValue).sum();
+                int current = provisioner.currentServers();
+                ScaleDownPolicy.Decision decision = policy.evaluate(current, ready, depth, now - idleSince.get());
+                if (decision.scaleDown()) {
+                    int target = policy.nextTarget(current);
+                    LOG.info("Scaling down {} -> {} ({})", current, target, decision.reason());
+                    provisioner.scaleTo(target);
+                }
+            } catch (RuntimeException e) {
+                LOG.warn("Scale-down tick failed: {}", e.getMessage());
             }
-        }
-    }
-
-    private static final class NoOpScaler implements GameServerSetScaler {
-        @Override
-        public int currentReplicas() {
-            return 0;
-        }
-
-        @Override
-        public void scaleTo(int replicas) {
-            LOG.debug("Scaling disabled; ignoring scaleTo({})", replicas);
-        }
-
-        @Override
-        public int scaleUpOne() {
-            LOG.debug("Scaling disabled; ignoring scaleUpOne()");
-            return 0;
-        }
+        }, SCALE_DOWN_TICK_SECONDS, SCALE_DOWN_TICK_SECONDS, TimeUnit.SECONDS);
     }
 }
