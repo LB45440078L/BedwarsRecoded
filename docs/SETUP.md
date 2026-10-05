@@ -524,6 +524,7 @@ no Docker at all.
 | `Public Key Retrieval is not allowed` | MySQL 8's default auth over a non-TLS link. The JDBC URL already sets `allowPublicKeyRetrieval=true`; if you changed it, put it back. |
 | `Local template not found` | `template.local-path` must be the directory *containing* template directories, and the directory must be named after `template.name`. |
 | Pod exits immediately | Missing `eula.txt`. The game image writes it; a manual image will not. |
+| `You are not whitelisted on this server!` | Some server builds enable the whitelist by their own default; with an empty `whitelist.json` that rejects everyone. The game image now writes `white-list=false` **and** the plugin switches it off in `POD` mode. On a standalone server, set `server.force-whitelist-off: OFF` to have the plugin do it too, or `LEAVE` to keep your whitelist. |
 | Client cannot connect (protocol mismatch) | The pod's Minecraft version must match your client. Rebuild the image with `--build-arg PAPER_VERSION=<your version>`. |
 | `ready_pods` never appears | The pod's `arena.group` must equal the request's `preferredGroup`. Check `READY for group <x>` in the controller log. |
 | `helm upgrade` did not change pod env | Pods keep their creation-time environment. Re-run the upgrade, then re-scale the GameServerSet. |

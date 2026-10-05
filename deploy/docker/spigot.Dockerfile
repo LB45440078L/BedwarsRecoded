@@ -37,8 +37,14 @@ COPY --from=build /src/BedwarsRecoded-Spigot/target/BedwarsRecoded-Spigot-*.jar 
 # A game pod is non-interactive: there is no operator to click through the
 # Minecraft EULA, so accept it here and pre-seed minimal server config. The world
 # itself comes from the Slime template at boot.
+#
+# white-list is stated EXPLICITLY on purpose. It used to be left to the server's own
+# default, and this Paper build defaults it to *true* -- with an empty whitelist.json
+# that rejects every player ("You are not whitelisted on this server!"). A game pod
+# must accept the players the controller routes to it; the whitelist is not the access
+# control here, the controller's queue is.
 RUN printf 'eula=true\n' > /server/eula.txt \
-    && printf 'online-mode=false\nspawn-protection=0\nmax-players=40\nview-distance=6\nsimulation-distance=4\n' > /server/server.properties
+    && printf 'online-mode=false\nspawn-protection=0\nmax-players=40\nview-distance=6\nsimulation-distance=4\nwhite-list=false\nenforce-whitelist=false\n' > /server/server.properties
 
 # A game pod never keeps arenas on disk: templates are pulled from S3 at boot.
 ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75 -XX:+UseZGC"

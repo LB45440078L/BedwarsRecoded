@@ -3,6 +3,7 @@ package dev.bedwars.spigot.config;
 import dev.bedwars.api.dto.TemplateSource;
 import dev.bedwars.core.config.DatabaseConfig;
 import dev.bedwars.core.reporting.DeploymentMode;
+import dev.bedwars.core.reporting.WhitelistEnforcement;
 import org.bukkit.configuration.file.FileConfiguration;
 
 import java.util.regex.Pattern;
@@ -36,7 +37,8 @@ public record PluginConfig(
         boolean persistenceEnabled,
         boolean templateEnabled,
         int disableReportingAfterFailures,
-        int failureLogIntervalSeconds
+        int failureLogIntervalSeconds,
+        WhitelistEnforcement whitelistEnforcement
 ) {
 
     /** Matches {@code ${NAME}} placeholders in configuration values. */
@@ -84,7 +86,9 @@ public record PluginConfig(
                 c.getBoolean("persistence.enabled", true),
                 c.getBoolean("template.enabled", true),
                 Math.max(1, c.getInt("deployment.disable-reporting-after-failures", 5)),
-                Math.max(0, c.getInt("deployment.failure-log-interval-seconds", 300)));
+                Math.max(0, c.getInt("deployment.failure-log-interval-seconds", 300)),
+                WhitelistEnforcement.parse(env("BEDWARS_WHITELIST",
+                        c.getString("server.force-whitelist-off", "AUTO"))));
     }
 
     /** Environment variable wins over the YAML value when set and non-blank. */

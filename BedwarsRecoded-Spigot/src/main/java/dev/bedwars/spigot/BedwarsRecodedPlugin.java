@@ -63,6 +63,7 @@ import dev.bedwars.spigot.report.ControllerProbe;
 import dev.bedwars.spigot.report.HttpPodReporter;
 import dev.bedwars.core.reporting.DeploymentMode;
 import dev.bedwars.core.reporting.ReportingPolicy;
+import dev.bedwars.core.reporting.WhitelistEnforcement;
 import dev.bedwars.spigot.scoreboard.ScoreboardRenderer;
 import dev.bedwars.spigot.template.AspSlimeWorldBridge;
 import dev.bedwars.spigot.template.AspSlimeWorldProvider;
@@ -154,6 +155,7 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
                 config.disableReportingAfterFailures(),
                 config.failureLogIntervalSeconds() * 1000L));
         logStartupSummary();
+        applyWhitelistPolicy();
         this.eventBus = new EventBus();
         this.eventBus.subscribe(new DomainEventBridge(LOG, reporter, config.jsonLogs()));
         this.gameManager = new GameManager();
@@ -273,6 +275,28 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         boolean reachable = ControllerProbe.isReachable(cfg.controllerBaseUrl(), java.time.Duration.ofSeconds(2));
         LOG.info("deployment_mode_auto controller={} reachable={}", cfg.controllerBaseUrl(), reachable);
         return reachable;
+    }
+
+    /**
+     * A game pod must be joinable: its access control is the controller's queue, not
+     * the server whitelist. Some server builds switch the whitelist on by their own
+     * default, and an empty {@code whitelist.json} then rejects every player with
+     * "You are not whitelisted on this server!". In POD mode we therefore switch it
+     * off explicitly. Configurable: {@code server.force-whitelist-off: AUTO|OFF|LEAVE}.
+     */
+    private void applyWhitelistPolicy() {
+        if (!WhitelistEnforcement.shouldDisable(config.whitelistEnforcement(), effectiveMode)) {
+            return;
+        }
+        if (getServer().hasWhitelist()) {
+            getServer().setWhitelist(false);
+            LOG.info("whitelist_disabled it was enabled (by the server's own default or by an operator); "
+                    + "a game pod accepts the players the controller routes to it "
+                    + "(server.force-whitelist-off={} mode={})",
+                    config.whitelistEnforcement(), effectiveMode);
+        } else {
+            LOG.info("whitelist_ok already off (mode={})", effectiveMode);
+        }
     }
 
     /** One block that states exactly which setup this server is running as. */

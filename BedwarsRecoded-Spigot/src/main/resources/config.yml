@@ -48,6 +48,21 @@ arena:
   bed-protection-radius: 3.0
 
 # -----------------------------------------------------------------------------
+# Server-level guarantees the plugin applies at boot.
+# -----------------------------------------------------------------------------
+server:
+  # A Minecraft server can have its whitelist switched on by its own default, and an
+  # EMPTY whitelist then rejects everyone with "You are not whitelisted on this
+  # server!" - fatal for a game pod, whose job is to accept the players the controller
+  # routes to it. The queue is the access control, not the whitelist.
+  #
+  # AUTO  (default) a game pod (deployment.mode: POD) switches the whitelist OFF;
+  #                 a STANDALONE server keeps whatever you configured.
+  # OFF             always switch it off.
+  # LEAVE           never touch it - the plugin leaves your whitelist alone.
+  force-whitelist-off: "AUTO"
+
+# -----------------------------------------------------------------------------
 # World template. Production reads a Slime world from S3-compatible storage and
 # loads it with AdvancedSlimePaper; LOCAL copies a plain world directory and is a
 # documented, NON-PRODUCTION fallback.
