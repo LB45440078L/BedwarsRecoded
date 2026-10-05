@@ -165,6 +165,9 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         registerListeners();
         getCommand("bedwars").setExecutor(new BedwarsCommand(this));
         getServer().getScheduler().runTaskTimer(this, this::tick, 20L, 20L);
+        // TPS is measured per server tick (20/s). Ticking the meter from the 1-second
+        // game loop reported ~1.0 TPS on a perfectly healthy server.
+        getServer().getScheduler().runTaskTimer(this, tpsMeter::tick, 0L, 1L);
         getServer().getScheduler().runTaskTimer(this, this::applyTeamEffects, 40L, 40L);
         getServer().getScheduler().runTaskTimer(this, this::sendHeartbeat, 200L,
                 Math.max(20L, config.heartbeatSeconds() * 20L));
@@ -456,7 +459,6 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
     // ---- tick loop -------------------------------------------------------
 
     private void tick() {
-        tpsMeter.tick();
         // Correlate everything this tick does (logs, persistence, webhooks) with the
         // match and the pod via scoped values; the binding is restored automatically.
         CorrelationContext.run(game.id(), config.serverId(), this::tickGame);

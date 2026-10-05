@@ -32,6 +32,9 @@ public final class BedwarsCommand implements CommandExecutor {
             case "status" -> sender.sendMessage(ChatColor.YELLOW + "game=" + game.id() + " state=" + game.state()
                     + " players=" + game.playerCount() + " teams=" + game.teams().size());
             case "start" -> {
+                if (!requireAdmin(sender)) {
+                    return true;
+                }
                 try {
                     game.startCountdown();
                     game.beginMatch(System.currentTimeMillis());
@@ -41,6 +44,9 @@ public final class BedwarsCommand implements CommandExecutor {
                 }
             }
             case "stop" -> {
+                if (!requireAdmin(sender)) {
+                    return true;
+                }
                 game.abort();
                 plugin.gameManager().unregister(game.id());
                 sender.sendMessage(ChatColor.YELLOW + "Match aborted.");
@@ -52,17 +58,29 @@ public final class BedwarsCommand implements CommandExecutor {
             case "gui" -> openJoinGui(sender);
             case "lang" -> language(sender, args);
             case "reload" -> {
-                if (!sender.hasPermission("bedwars.admin")) {
-                    sender.sendMessage(ChatColor.RED + "No permission.");
-                } else {
-                    plugin.reloadConfiguration();
-                    sender.sendMessage(ChatColor.GREEN + "Configuration reloaded.");
+                if (!requireAdmin(sender)) {
+                    return true;
                 }
+                plugin.reloadConfiguration();
+                sender.sendMessage(ChatColor.GREEN + "Configuration reloaded.");
             }
             default -> sender.sendMessage(ChatColor.RED
                     + "Usage: /bw status|start|stop|join|gui|shop|quickbuy|upgrades|lang|reload");
         }
         return true;
+    }
+
+    /**
+     * Gate for administrative subcommands. Deliberately per-subcommand rather than on
+     * the whole {@code /bw} command, so regular players can still join, shop and talk.
+     * Console/RCON senders always pass.
+     */
+    private boolean requireAdmin(CommandSender sender) {
+        if (!(sender instanceof Player) || sender.hasPermission("bedwars.admin")) {
+            return true;
+        }
+        sender.sendMessage(ChatColor.RED + "No permission.");
+        return false;
     }
 
     private void join(CommandSender sender) {

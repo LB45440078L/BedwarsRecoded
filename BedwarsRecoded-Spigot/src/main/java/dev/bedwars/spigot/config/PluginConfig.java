@@ -4,6 +4,8 @@ import dev.bedwars.api.dto.TemplateSource;
 import dev.bedwars.core.config.DatabaseConfig;
 import org.bukkit.configuration.file.FileConfiguration;
 
+import java.util.regex.Pattern;
+
 /**
  * Typed view over {@code config.yml}. Keeps the plugin's bootstrap free of
  * scattered {@code getString} calls.
@@ -31,6 +33,9 @@ public record PluginConfig(
         boolean jsonLogs
 ) {
 
+    /** Matches {@code ${NAME}} placeholders in configuration values. */
+    private static final Pattern PLACEHOLDER = Pattern.compile("\\$\\{([A-Za-z0-9_]+)}");
+
     public static PluginConfig from(FileConfiguration c, String defaultServerId) {
         TemplateSource source = switch (env("BEDWARS_TEMPLATE_SOURCE",
                 c.getString("template.source", "LOCAL")).toUpperCase()) {
@@ -49,7 +54,7 @@ public record PluginConfig(
                 "game-pod");
 
         return new PluginConfig(
-                env("BEDWARS_SERVER_ID", c.getString("server-id", defaultServerId)),
+                expand(env("BEDWARS_SERVER_ID", c.getString("server-id", defaultServerId))),
                 env("BEDWARS_ARENA_GROUP", c.getString("arena.group", "solo")),
                 intEnv("BEDWARS_TEAM_COUNT", c.getInt("arena.team-count", 2)),
                 intEnv("BEDWARS_PLAYERS_PER_TEAM", c.getInt("arena.players-per-team", 2)),
@@ -75,6 +80,45 @@ public record PluginConfig(
     private static String env(String key, String fallback) {
         String value = System.getenv(key);
         return value == null || value.isBlank() ? fallback : value;
+    }
+
+    /**
+     * Expands {@code ${NAME}} placeholders against the environment (then system
+     * properties, then the local hostname for HOSTNAME/COMPUTERNAME).
+     *
+     * <p>Without this the shipped default {@code server-id: "pod-${HOSTNAME}"} stays
+     * literal — pods reported the string {@code pod-${HOSTNAME}} to the controller
+     * instead of their real identity.
+     */
+    static String expand(String value) {
+        if (value == null || !value.contains("${")) {
+            return value;
+        }
+        var matcher = PLACEHOLDER.matcher(value);
+        StringBuilder out = new StringBuilder();
+        while (matcher.find()) {
+            String key = matcher.group(1);
+            String replacement = System.getenv(key);
+            if (replacement == null) {
+                replacement = System.getProperty(key);
+            }
+            if (replacement == null && ("HOSTNAME".equals(key) || "COMPUTERNAME".equals(key))) {
+                replacement = localHostname();
+            }
+            matcher.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(
+                    replacement == null ? "" : replacement));
+        }
+        matcher.appendTail(out);
+        String expanded = out.toString().trim();
+        return expanded.isEmpty() ? "pod-local" : expanded;
+    }
+
+    private static String localHostname() {
+        try {
+            return java.net.InetAddress.getLocalHost().getHostName();
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private static int intEnv(String key, int fallback) {

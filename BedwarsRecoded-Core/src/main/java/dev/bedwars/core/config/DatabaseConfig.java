@@ -23,8 +23,16 @@ public record DatabaseConfig(
     }
 
     public String jdbcUrl() {
+        // allowPublicKeyRetrieval is REQUIRED for MySQL 8's default caching_sha2_password
+        // over a non-TLS link: without it Connector/J fails with
+        // "Public Key Retrieval is not allowed" and the whole plugin runs stat-less.
+        // sslMode=PREFERRED keeps TLS whenever the server offers it.
         return "jdbc:mysql://" + host + ":" + port + "/" + database
-                + "?useSSL=false&characterEncoding=utf8&serverTimezone=UTC&rewriteBatchedStatements=true";
+                + "?sslMode=PREFERRED"
+                + "&allowPublicKeyRetrieval=true"
+                + "&characterEncoding=utf8"
+                + "&serverTimezone=UTC"
+                + "&rewriteBatchedStatements=true";
     }
 
     public static DatabaseConfig localDefaults(String poolName, int poolSize) {

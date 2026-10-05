@@ -13,4 +13,7 @@ commands:
   bedwars:
     description: "Bedwars game-pod administration."
     aliases: [ bw ]
-    permission: bedwars.admin
+    # NOTE: no command-level permission. In a game pod every player must be able to
+    # run `/bw join`, `/bw shop`, `/bw lang`, ... A blanket permission here blocked
+    # all gameplay commands for regular players. Admin subcommands (start/stop/reload)
+    # are gated individually in BedwarsCommand.
