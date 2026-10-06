@@ -250,6 +250,9 @@ Dockerfiles for each component.
 
 ## 📚 Documentation
 
+- `docs/MANUAL.md` — **the complete manual** (~25,000 words). Every technology explained
+  from first principles, requirements, command-by-command setup for both paths, and a
+  reference for **every parameter** in every config file. Start here.
 - `docs/SETUP.md` — **step-by-step setup**, from a bare machine to a running match, with
   a **Minimum Requirements** section. Two paths (Docker Compose / Kubernetes), every step
   explained.
@@ -266,7 +269,8 @@ Dockerfiles for each component.
 - `docs/MIGRATIONS.md` — how to add database migrations.
 - `deploy/tools/README.md` — the RCON, status and port-forward helpers.
 
-New here? Read `docs/CONCEPTS.md` first, then `docs/SETUP.md`.
+New here? Read `docs/MANUAL.md` (everything in one file), or `docs/CONCEPTS.md` first and
+then `docs/SETUP.md` if you prefer the short path.
 
 ## ✅ Verifying everything
 
