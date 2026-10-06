@@ -92,10 +92,20 @@ else
     else
         no "did not explain why the spigot jar was skipped"
     fi
-    if grep -q "downloading Paper" "$TMP/log-mixed"; then
-        ok "went to Paper instead"
+    if grep -q "could not resolve a Paper" "$TMP/log-mixed"; then
+        ok "reported the Paper lookup failure clearly"
     else
-        no "did not attempt a Paper download"
+        no "did not report a clear reason for the Paper failure"
+    fi
+    if grep -q "Traceback" "$TMP/log-mixed"; then
+        no "leaked a Python traceback instead of a message"
+    else
+        ok "no Python traceback leaked"
+    fi
+    if grep -q "blank argument" "$TMP/log-mixed"; then
+        no "carried on to curl with an empty URL"
+    else
+        ok "did not attempt a download with an empty URL"
     fi
 fi
 

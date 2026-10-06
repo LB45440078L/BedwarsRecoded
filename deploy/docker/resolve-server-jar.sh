@@ -98,16 +98,22 @@ paper_artifact() {
     python3 - "$PAPER_VERSION" "$PAPER_BUILD" "$PAPER_CHANNEL" <<'PY'
 import json
 import sys
+import urllib.error
 import urllib.request
 
 version, wanted_build, channel = sys.argv[1], sys.argv[2], sys.argv[3]
 url = f"https://fill.papermc.io/v3/projects/paper/versions/{version}/builds"
 request = urllib.request.Request(url, headers={"User-Agent": "bedwarsrecoded-image/1.0"})
-with urllib.request.urlopen(request, timeout=60) as response:
-    payload = json.load(response)
+try:
+    with urllib.request.urlopen(request, timeout=60) as response:
+        payload = json.load(response)
+except urllib.error.HTTPError as exc:
+    sys.exit(f"the PaperMC API returned HTTP {exc.code} for version {version}")
+except urllib.error.URLError as exc:
+    sys.exit(f"could not reach the PaperMC API: {exc.reason}")
 builds = payload if isinstance(payload, list) else payload.get("builds", [])
 if not builds:
-    sys.exit(f"no Paper builds published for {version}")
+    sys.exit(f"no Paper builds are published for version {version}")
 if wanted_build:
     builds = [b for b in builds if str(b.get("id")) == str(wanted_build)]
     if not builds:
@@ -116,14 +122,26 @@ else:
     preferred = [b for b in builds if str(b.get("channel", "")).upper() == channel.upper()]
     if preferred:
         builds = preferred
-artifact = builds[0]["downloads"]["server:default"]
+try:
+    artifact = builds[0]["downloads"]["server:default"]
+except (KeyError, IndexError, TypeError):
+    sys.exit(f"Paper {version} returned an unexpected build payload")
 print(artifact["url"], artifact.get("checksums", {}).get("sha256", ""), artifact.get("name", "server.jar"))
 PY
 }
 
 download_paper() {
+    local artifact
+    if ! artifact="$(paper_artifact)"; then
+        log "ERROR: could not resolve a Paper $PAPER_VERSION build (reason above)"
+        exit 3
+    fi
     local url sha name
-    read -r url sha name <<<"$(paper_artifact)"
+    read -r url sha name <<<"$artifact"
+    if [ -z "$url" ]; then
+        log "ERROR: the PaperMC API gave no download URL for $PAPER_VERSION"
+        exit 3
+    fi
     log "downloading Paper $PAPER_VERSION ($name) - no compilation needed"
     curl -fsSL --retry 3 --max-time 900 "$url" -o "$OUT"
     if [ -n "$sha" ]; then
