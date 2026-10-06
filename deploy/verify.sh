@@ -18,8 +18,14 @@ python3 deploy/verify_deploy.py
 
 echo
 echo "==> Plugin JAR size"
-JAR="$(ls BedwarsRecoded-Spigot/target/BedwarsRecoded-Spigot-*.jar | head -1)"
-SIZE=$(stat -c%s "$JAR")
+JAR="$(ls BedwarsRecoded-Spigot/target/BedwarsRecoded-Spigot-*.jar 2>/dev/null | head -1)"
+if [ -z "$JAR" ]; then
+  echo "    FAIL: no plugin jar found - did the build run?"
+  exit 1
+fi
+# `wc -c` rather than `stat`: GNU stat's -c and BSD/macOS stat's -f disagree, so the
+# old `stat -c%s` made this gate error out on macOS instead of checking anything.
+SIZE="$(wc -c <"$JAR" | tr -d ' ')"
 echo "    $JAR = $SIZE bytes (budget 4194304)"
 if [ "$SIZE" -gt 4194304 ]; then
   echo "    FAIL: plugin JAR exceeds 4 MB"
