@@ -24,6 +24,11 @@ spec:
       containers:
         - name: controller
           image: bedwars-controller:1.0.0
+          # IfNotPresent so a locally built/loaded image (minikube, kind, a private
+          # registry) is used as-is. The Kubernetes default for a tagged image is
+          # IfNotPresent too, but stating it keeps this manifest consistent with the
+          # GameServerSet and immune to a future retag to :latest.
+          imagePullPolicy: IfNotPresent
           env:
             - name: BEDWARS_NAMESPACE
               value: "bedwars"
