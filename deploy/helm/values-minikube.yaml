@@ -8,7 +8,7 @@ image:
 
 # Use the arena map baked into the image (deploy/templates/<name>) instead of S3:
 # MinIO is disabled here, and a real map is what makes `/bw join` land in the arena.
-# The entrypoint stages it as the pod's main world before Paper starts.
+# The entrypoint stages it as the pod's main world before Spigot starts.
 arena:
   templateSource: LOCAL
   templateName: Glacier
@@ -31,7 +31,7 @@ minio:
   enabled: false
 
 # No Prometheus Operator / KEDA in a bare minikube; the GameServerSet CRD comes
-# from OpenKruise (installed separately). Replicas stay 0 so no Paper pod is
+# from OpenKruise (installed separately). Replicas stay 0 so no Spigot pod is
 # created.
 serviceMonitor:
   enabled: false
@@ -41,7 +41,7 @@ gameServerSet:
   enabled: true
   replicas: 0
   # This node is only 4 GiB total, so the default 2/4Gi game-pod footprint
-  # starves the API server. Use a small footprint that still boots Paper.
+  # starves the API server. Use a small footprint that still boots Spigot.
   cpuRequest: 500m
   memoryRequest: 512Mi
   cpuLimit: "1"

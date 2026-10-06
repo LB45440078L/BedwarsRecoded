@@ -15,15 +15,19 @@ spec:
         app.kubernetes.io/name: gameserverset
     spec:
       containers:
-        - name: paper
+        - name: spigot
           image: bedwars-spigot:1.0.0
+          # IfNotPresent so a locally built/loaded image (minikube, kind, a private
+          # registry) is used as-is; the OpenKruise default of Always would force a
+          # pull from Docker Hub and fail for an image that only exists locally.
+          imagePullPolicy: IfNotPresent
           ports:
             - name: minecraft
               containerPort: 25565
           env:
             - name: BEDWARS_ARENA_GROUP
               value: "solo"
-            # Templates come from S3 in production (Slime via AdvancedSlimePaper).
+            # Templates come from S3 in production; a baked template is used for dev.
             - name: BEDWARS_TEMPLATE_SOURCE
               value: "S3"
             - name: BEDWARS_CONTROLLER_URL

@@ -53,6 +53,30 @@ arena:
   bed-protection-radius: 3.0
 
 # -----------------------------------------------------------------------------
+# Sudden-death dragons. A team that bought "Dragon Buff" brings one dragon per
+# level at sudden death; these settings control the neutral dragons and behaviour.
+# -----------------------------------------------------------------------------
+dragon:
+  enabled: true
+  # Neutral dragons that spawn at sudden death and attack every team.
+  base-per-match: 1
+  # Dragon health, so it survives long enough to matter.
+  health: 300.0
+  # How far above the island/centre a dragon spawns.
+  spawn-height: 25.0
+  # How hard a dragon knocks nearby players away (velocity magnitude).
+  knockback: 3.0
+  knockback-radius: 10.0
+  knockback-interval-ticks: 10
+  # How much of the map the dragon tears up as it flies: a radius around it, and how
+  # far below it the damage reaches down to the surface.
+  destroy-radius: 3
+  destroy-depth: 40
+  destroy-interval-ticks: 20
+  # Optional heart damage per knockback pulse (0 = knockback only).
+  damage: 0.0
+
+# -----------------------------------------------------------------------------
 # Server-level guarantees the plugin applies at boot.
 # -----------------------------------------------------------------------------
 server:

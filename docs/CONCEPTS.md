@@ -141,7 +141,7 @@ itself. The container does it, in `deploy/docker/entrypoint.sh`, before the JVM 
 1. Read `BEDWARS_TEMPLATE_SOURCE` and `BEDWARS_TEMPLATE_NAME`.
 2. `LOCAL` → copy the template baked at `/templates/<name>` into `/server/world`.
    `S3` → download `…/templates/<name>/<version>.zip` and unpack it.
-3. Drop the world's stale `session.lock`, then `exec java -jar paper.jar`.
+3. Drop the world's stale `session.lock`, then `exec java -jar spigot.jar`.
 
 With **AdvancedSlimePaper** installed there is a second, richer path: the map stays a
 packed Slime file and the plugin loads/clones it at runtime. Set

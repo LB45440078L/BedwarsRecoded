@@ -6,8 +6,8 @@
 #   docker compose -f deploy/compose/docker-compose.yml up --build
 #   ./deploy/verify.sh                      # structure + unit tests
 #
-# The optional `game` profile adds one real Paper game pod (heavy: it downloads a
-# Paper server jar and needs a world). The default stack (infra + controller) is
+# The optional `game` profile adds one real Spigot game pod (heavy: the image
+# builds Spigot from source with BuildTools, which takes several minutes). The default stack (infra + controller) is
 # the part meant to run anywhere.
 name: bedwars
 
@@ -101,8 +101,7 @@ services:
       context: ../..
       dockerfile: deploy/docker/spigot.Dockerfile
       args:
-        PAPER_VERSION: ${PAPER_VERSION:-26.2}
-        PAPER_BUILD: ${PAPER_BUILD:-latest}
+        SPIGOT_REV: ${SPIGOT_REV:-26.3}
     environment:
       BEDWARS_SERVER_ID: "pod-local-1"
       BEDWARS_ARENA_GROUP: "solo"

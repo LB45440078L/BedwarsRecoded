@@ -82,8 +82,8 @@ session cannot NPE the elimination path.
 
 ## Verification performed
 
-- `mvn clean install`: **187 tests, 0 failures** (Core 99, Spigot 26, Controller 57,
-  API 5). JAR gate passes; jar is 264 KB.
+- `mvn clean install`: **191 tests, 0 failures** (Core 103, Spigot 26, Controller 57,
+  API 5). JAR gate passes; jar is 269 KB.
 - **Real Spigot 26.3 server**: plugin loads, bootstraps to STANDALONE, loads libraries,
   logs `pod_ready`, no stack traces.
 - **RCON on the live server**: `/bw help`, `/bw status`, `/bw start` exercised. After
@@ -97,6 +97,22 @@ session cannot NPE the elimination path.
   finished matches were pruned with their worlds released; `/bw stop all` returned the
   server to `0` matches and `3` free slots. `/bw status`, `/bw create`, `/bw stop` and a
   graceful `stop` (`game_server_shutdown complete`) were exercised.
+- **Live bot-driven dragon run (Spigot 26.3, Python bot clients)**: two offline-mode bots
+  (`mcbot`) joined a live server; the match auto-started (`WAITING → COUNTDOWN →
+  RUNNING`), reached `SUDDEN_DEATH` after the configured 20 s, and the server logged
+  `dragons_spawned total=1`, `dragon_map_damage blocks_first_pass=147` and
+  `dragon_knockback player=RedBot strength=3.0`; the bot's own feed showed the
+  sudden-death chat broadcast and its position thrown from `8.5,-60,8.5` to
+  `5.1,-54.2,10.3`. `dragons_cleared dragons=1 blocks_destroyed=147` confirmed cleanup.
+- **Live minikube cluster**: controller image built into minikube and deployed; the pod
+  reached Ready and served `/healthz` (`ok`), `/metrics` (`bedwars_*` gauges) and
+  `/infra` reporting `provisioner: KUBERNETES` with
+  `GameServerSet bedwars/bedwars-solo servers[0..50] gamesPerServer=25`. The OpenKruise
+  `GameServerSet` CRD was installed to validate the manifests against the real schema.
+- **Game-pod image builds real Spigot**: the Docker image previously downloaded Paper;
+  it now builds Spigot 26.3 from source with the official BuildTools (verified: the
+  BuildTools run produced an 85 MB `spigot-26.3` jar byte-identical in size to the
+  reference build, and the image was built on minikube).
 
 ## Remaining limitations
 
@@ -106,13 +122,18 @@ session cannot NPE the elimination path.
   lobby that then transfers through Velocity) is configured, but its proxy-transfer hop
   was not run in this environment (no Velocity + bot client here). Multi-match hosting on
   one server — the substantive part of the model — is done and tested.
-- **Full multiplayer gameplay scenarios (A/D with 8 bot players) were not run live.** The
-  win condition is verified by unit tests against the real `Game` code and by the live
-  `start → ENDED` transition, but a bot-driven end-to-end match was not executed here.
-- **Dragon Buff** is purchasable but spawns no dragon. **NPC join** uses a named entity,
-  not Citizens. **gRPC** is not used (HTTP).
+- **Full multiplayer gameplay scenarios (8-player A/D) were not run live.** A real
+  two-bot match *was* driven end-to-end (join → countdown → running → sudden death →
+  dragons), and the win condition is verified by unit tests against the real `Game`
+  code plus the live `start → ENDED` transition, but a full 8-player game with combat,
+  beds and traps was not played out.
+- **Dragon Buff** now spawns dragons: verified live (spawn, map destruction, knockback,
+  cleanup) and unit-tested for the per-team plan. **NPC join** uses a named entity, not
+  Citizens. **gRPC** is not used (HTTP).
 - **AdvancedSlimePaper** world loading is implemented and unit-tested but not run on a
   live ASP server (the test server is plain Spigot).
-- **Kubernetes** path is unchanged and was not re-run on a live cluster in this pass
-  (no minikube profile is configured on this machine); the Docker path is the one
-  exercised for real here.
+- **Kubernetes** was re-run on a live minikube cluster in this pass (OpenKruise
+  `GameServerSet` CRD installed, controller deployed and queried); the *container-level*
+  game-pod deployment on the cluster (a match actually running inside a K8s pod) still
+  needs the Spigot image loaded and a real template fetch, and the Docker path remains
+  the one exercised end-to-end for a running server.

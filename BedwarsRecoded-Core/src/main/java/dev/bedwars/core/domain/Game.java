@@ -395,6 +395,27 @@ public final class Game {
         session(uuid).ifPresent(session -> session.setState(PlayerState.SPECTATOR));
     }
 
+    /**
+     * Dragons each standing team brings to sudden death: one per Dragon Buff level the
+     * team bought. Eliminated teams bring none.
+     *
+     * <p>Only team dragons are a domain concern. The neutral "base" dragons that attack
+     * everyone are a server configuration choice, added by the adapter.
+     */
+    public Map<String, Integer> dragonsByTeam() {
+        Map<String, Integer> planned = new LinkedHashMap<>();
+        for (Team team : teams.values()) {
+            if (team.isEliminated()) {
+                continue;
+            }
+            int level = team.upgrades().levelOf(dev.bedwars.core.upgrade.UpgradeType.DRAGON_BUFF);
+            if (level > 0) {
+                planned.put(team.id(), level);
+            }
+        }
+        return planned;
+    }
+
     /** Applies a team's Iron Forge level to its iron and gold generators. */
     public void applyForge(String teamId, long nowMillis) {
         int level = team(teamId).map(team -> team.upgrades().levelOf(

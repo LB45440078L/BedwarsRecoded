@@ -94,20 +94,22 @@ running the plugin, which you can join directly.
 
 ### A.1 Get a server jar
 
-**What this does:** downloads the Minecraft server engine the plugin runs inside. This
-project targets **Spigot/Paper 26.x** and deliberately does **not** support Folia.
+**What this does:** produces the Minecraft server engine the plugin runs inside. This
+project targets **Spigot 26.x** and deliberately does **not** support Folia, and it does
+**not** use Paper.
 
-Paper is recommended (faster, and what production uses). Grab a 26.3 build:
+Spigot has no prebuilt download, so you build it once with the official **BuildTools**
+(it needs `git` and a JDK; the first run takes a few minutes):
 
 ```bash
 mkdir -p ~/bedwars-local/server/plugins
 cd ~/bedwars-local/server
-# from https://papermc.io/downloads  (choose 26.3) - or, on any OS:
-curl -s -o paper.json https://fill.papermc.io/v3/projects/paper/versions/26.3/builds/latest
-curl -sL "$(grep -o 'https://[^"]*paper-26.3-[0-9]*\.jar' paper.json | head -1)" -o paper.jar
+curl -sL -o BuildTools.jar https://hub.spigotmc.org/jenkins/job/BuildTools/lastSuccessfulBuild/artifact/target/BuildTools.jar
+java -jar BuildTools.jar --rev 26.3 --compile spigot
+mv spigot-26.3*.jar spigot.jar
 ```
 
-**How to check:** `ls -lh paper.jar` shows a jar of roughly 50–90 MB.
+**How to check:** `ls -lh spigot.jar` shows a jar of roughly 50–90 MB.
 
 ### A.2 Accept the EULA and install the plugin
 
@@ -123,7 +125,7 @@ cp ../../BedwarsRecoded/BedwarsRecoded-Spigot/target/BedwarsRecoded-Spigot-*.jar
 ### A.3 Start it
 
 ```bash
-java -Xms1G -Xmx2G -jar paper.jar --nogui
+java -Xms1G -Xmx2G -jar spigot.jar --nogui
 ```
 
 **What to look for in the console.** On the very first boot the server downloads the
@@ -193,6 +195,32 @@ Operators additionally get:
 
 **How to check it worked:** `/bw status` reports `players=1` after you join, and when a
 second player joins the countdown runs and the state moves to `RUNNING`.
+
+#### Drive it headless with bot clients
+
+You do not need a Minecraft client to test a match: the offline-mode Python bot in
+`Documents/MinecraftPythonBot/mcbot` can join and play. This is how the sudden-death
+dragon path was verified here.
+
+```bash
+# in the bot repo; --headless prints chat and its own position
+python3 -m mcbot --headless --host 127.0.0.1 --port 25565 --name RedBot
+python3 -m mcbot --headless --host 127.0.0.1 --port 25565 --name BlueBot
+```
+
+Two bots fill a two-team match, so the countdown starts on its own. With a short
+`sudden-death-after-seconds` in `arena.yml` (e.g. 20) the match reaches `SUDDEN_DEATH`
+and the dragons spawn; the server log then shows the evidence:
+
+```
+dragons_spawned game=match-1 total=1
+dragon_map_damage game=match-1 blocks_first_pass=147 total=147
+dragon_knockback game=match-1 player=RedBot strength=3.0
+```
+
+The server must run with `online-mode=false` for the bot to authenticate. Tune the
+dragon itself from the top-level `dragon:` block in `config.yml` (count, health, spawn
+height, knockback strength/radius, and how much map it destroys).
 
 ### A.6 Load a real arena map
 
@@ -330,14 +358,16 @@ that is not in a registry.
 ```bash
 docker build -f deploy/docker/controller.Dockerfile -t bedwars-controller:1.0.0 .
 docker build -f deploy/docker/velocity.Dockerfile   -t bedwars-velocity:1.0.0   .
-docker build --build-arg PAPER_VERSION=26.3 \
+docker build --build-arg SPIGOT_REV=26.3 \
              -f deploy/docker/spigot.Dockerfile     -t bedwars-spigot:26.3     .
 
 minikube -p bedwars image load bedwars-controller:1.0.0 bedwars-velocity:1.0.0 bedwars-spigot:26.3
 ```
 
-> The Minecraft version is a **build argument**: the game pod only accepts clients whose
-> protocol matches. Build `PAPER_VERSION=26.3` if you play on 26.3.
+> The game-pod image **builds Spigot from source with BuildTools**, so it takes several
+> minutes and is much slower than the other two images. The Minecraft version is a build
+> argument (`SPIGOT_REV`): the game pod only accepts clients whose protocol matches, so
+> build `SPIGOT_REV=26.3` if you play on 26.3.
 
 **How to check:** `minikube -p bedwars image ls | grep bedwars` shows all three.
 
@@ -455,6 +485,9 @@ Run the plugin's tests alone with:
 mvn verify
 ```
 
+For an end-to-end check, start a server (Path A) and drive it with two bot clients — see
+[Drive it headless with bot clients](#drive-it-headless-with-bot-clients).
+
 ---
 
 ## 7. Appendix: Windows / WSL
@@ -538,7 +571,7 @@ no Docker at all.
 | `Local template not found` | `template.local-path` must be the directory *containing* template directories, and the directory must be named after `template.name`. |
 | Pod exits immediately | Missing `eula.txt`. The game image writes it; a manual image will not. |
 | `You are not whitelisted on this server!` | Some server builds enable the whitelist by their own default; with an empty `whitelist.json` that rejects everyone. The game image now writes `white-list=false` **and** the plugin switches it off in `POD` mode. On a standalone server, set `server.force-whitelist-off: OFF` to have the plugin do it too, or `LEAVE` to keep your whitelist. |
-| Client cannot connect (protocol mismatch) | The pod's Minecraft version must match your client. Rebuild the image with `--build-arg PAPER_VERSION=<your version>`. |
+| Client cannot connect (protocol mismatch) | The pod's Minecraft version must match your client. Rebuild the image with `--build-arg SPIGOT_REV=<your version>`. |
 | `ready_pods` never appears | The pod's `arena.group` must equal the request's `preferredGroup`. Check `READY for group <x>` in the controller log. |
 | `helm upgrade` did not change pod env | Pods keep their creation-time environment. Re-run the upgrade, then re-scale the GameServerSet. |
 | Node OOM / API server timeouts | The production footprint is 2 CPU / 4 GiB per pod. Use `values-minikube.yaml` on a small machine. |

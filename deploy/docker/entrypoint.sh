@@ -6,11 +6,11 @@
 #  reason to generate a throwaway world and then load the arena into it: the arena
 #  simply *is* the world.
 #
-#  This has to happen here rather than in the plugin, because Paper reads its main
-#  world (server.properties `level-name`) during startup - by the time a plugin
-#  enables, the world is already loaded. A plugin that wants to swap worlds at
-#  runtime needs AdvancedSlimePaper; that is the other, richer path this project
-#  supports. On plain Paper, staging the template before boot is the correct one.
+#  This has to happen here rather than in the plugin, because the server reads its
+#  main world (server.properties `level-name`) during startup - by the time a plugin
+#  enables, the world is already loaded. Staging the template before boot is the
+#  correct path on Spigot; the plugin's own GameWorldService copies a fresh world per
+#  match at runtime for the multi-game path.
 #
 #  Environment:
 #    BEDWARS_TEMPLATE_SOURCE        LOCAL (baked into the image) | S3
@@ -96,4 +96,4 @@ else
     log "WARNING: no arena world staged; the match will run on a generated world"
 fi
 
-exec java -jar "$SERVER_DIR/paper.jar" --nogui
+exec java -jar "$SERVER_DIR/spigot.jar" --nogui

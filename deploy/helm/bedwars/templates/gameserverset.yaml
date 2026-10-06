@@ -29,7 +29,7 @@ spec:
     spec:
       terminationGracePeriodSeconds: {{ .Values.gameServerSet.terminationGracePeriodSeconds }}
       containers:
-        - name: paper
+        - name: spigot
           image: {{ include "bedwars.image" (dict "name" "bedwars-spigot" "root" .) }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
@@ -51,7 +51,7 @@ spec:
             - name: BEDWARS_TEMPLATE_VERSION
               value: {{ .Values.arena.templateVersion | default "1.0.0" | quote }}
             # The container entrypoint stages the arena as the server's MAIN world
-            # before Paper starts, so the plugin must not also try to load a template.
+            # before Spigot starts, so the plugin must not also try to load a template.
             - name: BEDWARS_TEMPLATE_ENABLED
               value: {{ .Values.arena.templateEnabled | default false | quote }}
             # Tunable per deployment: the heap percentage is relative to the container's

@@ -39,7 +39,8 @@ public record PluginConfig(
         boolean templateEnabled,
         int disableReportingAfterFailures,
         int failureLogIntervalSeconds,
-        WhitelistEnforcement whitelistEnforcement
+        WhitelistEnforcement whitelistEnforcement,
+        DragonConfig dragon
 ) {
 
     /** Matches {@code ${NAME}} placeholders in configuration values. */
@@ -91,7 +92,62 @@ public record PluginConfig(
                 Math.max(1, c.getInt("deployment.disable-reporting-after-failures", 5)),
                 Math.max(0, c.getInt("deployment.failure-log-interval-seconds", 300)),
                 WhitelistEnforcement.parse(env("BEDWARS_WHITELIST",
-                        c.getString("server.force-whitelist-off", "AUTO"))));
+                        c.getString("server.force-whitelist-off", "AUTO"))),
+                dragon(c));
+    }
+
+    /**
+     * Sudden-death dragons. See the Javadoc on {@link DragonConfig}: the values decide
+     * whether a dragon spawns at all, how hard it knocks players back, and how much of
+     * the map it tears up.
+     */
+    private static DragonConfig dragon(FileConfiguration c) {
+        return new DragonConfig(
+                Boolean.parseBoolean(env("BEDWARS_DRAGON_ENABLED",
+                        String.valueOf(c.getBoolean("dragon.enabled", true)))),
+                Math.max(0, intEnv("BEDWARS_DRAGON_BASE", c.getInt("dragon.base-per-match", 1))),
+                Math.max(1.0, c.getDouble("dragon.health", 300.0)),
+                Math.max(0.0, c.getDouble("dragon.spawn-height", 25.0)),
+                Math.max(0.0, c.getDouble("dragon.knockback", 3.0)),
+                Math.max(1.0, c.getDouble("dragon.knockback-radius", 10.0)),
+                Math.max(1, intEnv("BEDWARS_DRAGON_KNOCKBACK_INTERVAL",
+                        c.getInt("dragon.knockback-interval-ticks", 10))),
+                Math.max(0, c.getInt("dragon.destroy-radius", 3)),
+                Math.max(1, c.getInt("dragon.destroy-depth", 40)),
+                Math.max(1, c.getInt("dragon.destroy-interval-ticks", 20)),
+                Math.max(0.0, c.getDouble("dragon.damage", 0.0)));
+    }
+
+    /**
+     * Dragon settings for a match's sudden-death phase.
+     *
+     * @param enabled               whether dragons spawn at all
+     * @param basePerMatch          neutral dragons that attack every team
+     * @param health                dragon health (so it is not killed instantly)
+     * @param spawnHeight           blocks above the island/centre a dragon spawns
+     * @param knockback             velocity magnitude applied to players near a dragon
+     * @param knockbackRadius       how far a dragon reaches players
+     * @param knockbackIntervalTicks ticks between knockback pulses
+     * @param destroyRadius         block radius the dragon tears up as it flies
+     * @param destroyDepth          how far below the dragon that damage reaches
+     * @param destroyIntervalTicks  ticks between map-destruction pulses
+     * @param damage                optional heart damage per knockback pulse (0 = none)
+     */
+    public record DragonConfig(
+            boolean enabled,
+            int basePerMatch,
+            double health,
+            double spawnHeight,
+            double knockback,
+            double knockbackRadius,
+            int knockbackIntervalTicks,
+            int destroyRadius,
+            int destroyDepth,
+            int destroyIntervalTicks,
+            double damage
+    ) {
+        public static final DragonConfig DEFAULTS =
+                new DragonConfig(true, 1, 300.0, 25.0, 3.0, 10.0, 10, 3, 40, 20, 0.0);
     }
 
     /** Environment variable wins over the YAML value when set and non-blank. */

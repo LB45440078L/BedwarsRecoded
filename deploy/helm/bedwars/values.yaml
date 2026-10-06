@@ -11,14 +11,14 @@ arena:
   group: solo
   # Where the pod's arena world comes from: S3 (production) or LOCAL (baked into the
   # image, for dev/test). The container entrypoint stages it as the server's MAIN
-  # world before Paper starts - Paper reads its world at startup, so a plugin cannot
-  # do this. See deploy/docker/entrypoint.sh.
+  # world before Spigot starts - the server reads its world at startup, so a plugin
+  # cannot do this. See deploy/docker/entrypoint.sh.
   templateSource: S3
   templateName: Glacier
   templateVersion: "1.0.0"
   # The plugin's own template loading is off by default because the entrypoint has
-  # already staged the world. Turn it on only if you use the AdvancedSlimePaper path,
-  # where the plugin loads a Slime template at runtime instead.
+  # already staged the world. Turn it on to let the plugin's GameWorldService copy a
+  # fresh world per match at runtime instead.
   templateEnabled: false
   teamCount: 2
   playersPerTeam: 2
@@ -65,7 +65,7 @@ velocity:
 controller:
   replicas: 1
 
-# Object storage for Slime templates.
+# Object storage for world templates.
 s3:
   endpoint: "http://minio:9000"
   bucket: "bedwars-templates"

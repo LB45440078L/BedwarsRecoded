@@ -12,7 +12,7 @@
   <a href="https://kubernetes.io/"><img src="https://img.shields.io/badge/Kubernetes-native-326CE5?logo=kubernetes&amp;logoColor=white" alt="Kubernetes"></a>
   <a href="https://helm.sh/"><img src="https://img.shields.io/badge/Helm-chart-0F1689?logo=helm&amp;logoColor=white" alt="Helm chart"></a>
   <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-images-2496ED?logo=docker&amp;logoColor=white" alt="Docker images"></a>
-  <a href="#-testing"><img src="https://img.shields.io/badge/tests-187%20passing-brightgreen" alt="Tests"></a>
+  <a href="#-testing"><img src="https://img.shields.io/badge/tests-191%20passing-brightgreen" alt="Tests"></a>
   <a href="#-build"><img src="https://img.shields.io/badge/plugin%20JAR-%3C%204%20MB-brightgreen" alt="Plugin JAR under 4 MB"></a>
   <a href="https://github.com/LB45440078L/BedwarsRecoded/issues"><img src="https://img.shields.io/badge/PRs-welcome-blueviolet" alt="PRs welcome"></a>
 </p>
@@ -82,6 +82,13 @@ Gameplay (Core, unit-tested, Bukkit-free):
   `FallbackWorldProvider` (local copy, non-production) is used.
 - **S3 SigV4 signing** (`AwsSigV4`) — real `AWS4-HMAC-SHA256` request signing, so
   templates fetch from AWS S3, MinIO or Ceph rather than only public buckets.
+- **Sudden-death dragons** (`DragonService`) — when a match enters `SUDDEN_DEATH` the
+  server spawns dragons: one neutral dragon per `dragon.base-per-match`, plus one per
+  Dragon Buff level for every surviving team (eliminated teams bring none). A dragon
+  hunts the nearest enemy player, hurls players away with a configurable high knockback,
+  and tears the map apart beneath itself as it flies (bounded radius and depth; never
+  beds, bedrock, obsidian, end stone or barriers). Configured from the top-level
+  `dragon:` block and hot-reloadable.
 
 Spigot adapter:
 - Shop GUI (`/bw shop`, shift-click toggles quick buy), Quick-buy GUI (`/bw quickbuy`),
@@ -107,7 +114,6 @@ Honest list of what is modelled but not fully wired, or absent:
   3.0.0 API and unit-tested (read-only template, per-match clone, load), but the local
   test server is Spigot rather than AdvancedSlimePaper, so the world swap has not run
   on a live ASP.
-- **Dragon Buff** — purchased and stored; no dragons are actually spawned.
 - **gRPC** — controller communication is HTTP only (the brief allowed HTTP webhooks).
 - **K8s annotations for pod state** — state is reported over HTTP webhooks only.
 - **NPC via Citizens** — join NPCs use a named entity, not a Citizens hook.
@@ -118,6 +124,18 @@ Honest list of what is modelled but not fully wired, or absent:
 Formerly listed here and now **verified on a real Spigot 26.3 server with real 26.3
 bot clients**: plugin bootstrap, match lifecycle, player joins, death handling,
 structured logging, MySQL 8 migrations and stat persistence (see `docs/AUDIT.md` §15).
+
+This revision was additionally verified live with the project's own offline-mode
+**Python bot clients** (`Documents/MinecraftPythonBot/mcbot`): two bots joined a running
+server, drove a match through `COUNTDOWN → RUNNING → SUDDEN_DEATH`, and the dragons
+spawned, destroyed the map and knocked a bot into the air — proven by the server-side
+lines `dragons_spawned`, `dragon_map_damage` (147 blocks) and `dragon_knockback`, and by
+the bot's own chat and position feed. The controller was also deployed to a live
+**minikube** cluster (OpenKruise `GameServerSet` CRD installed) and answered `/healthz`,
+`/metrics` and `/infra` with the Kubernetes provisioner active; the Docker provisioner is
+exercised by a real-daemon integration test. The game-pod Docker image now builds Spigot
+itself with the official **BuildTools** (no prebuilt Spigot jar exists), verified by
+building the image on minikube.
 
 Verified on a real cluster: the Compose stack and Helm chart are wired and the
 controller API was exercised end-to-end on minikube (see `docs/DEPLOYMENT.md`). The
@@ -152,19 +170,21 @@ mvn -pl BedwarsRecoded-Spigot -am package  # just the plugin jar
 The `verify` phase enforces the **JAR < 4 MB** budget for the plugin jar via an
 Ant size gate in `BedwarsRecoded-Spigot/pom.xml`. Runtime-only dependencies
 (HikariCP, MySQL connector) are declared in `plugin.yml` `libraries:` and downloaded
-by Paper at startup, so they are never shaded.
+by the server at startup, so they are never shaded.
 
 ## 🧪 Testing
 
 JUnit 5 + AssertJ. `Core` is deliberately Bukkit-free, so game logic is tested with
-plain JUnit — no server, no mocking framework. The suite is **187 tests**:
+plain JUnit — no server, no mocking framework. The suite is **191 tests**:
 
-- **Core (99)** — game lifecycle, and the win condition in particular
+- **Core (103)** — game lifecycle, and the win condition in particular
   (`WinConditionTest`): a match must reach a single survivor even when the arena
   declares more teams than were filled, and when a team is abandoned by disconnects.
   `GameHostTest` covers many matches on one server: players fill a match before a new
   one is created, the configured `games-per-server` is never exceeded, created matches
   consume slots, and finished matches are pruned and unregistered.
+  `SuddenDeathDragonTest` covers the dragon plan: one per Dragon Buff level, eliminated
+  teams bring none, and the neutral count is honoured.
 - **Spigot (26)** — config, reporting, template sources, and `SpigotOnlyApiTest`,
   which enforces the Spigot-only constraint.
 - **Controller (57)** — queue dispatch over real HTTP (`WebhookServerTest`), token

@@ -42,6 +42,7 @@ import dev.bedwars.core.upgrade.UpgradeCatalog;
 import dev.bedwars.core.upgrade.UpgradeService;
 import dev.bedwars.spigot.command.BedwarsCommand;
 import dev.bedwars.spigot.config.PluginConfig;
+import dev.bedwars.spigot.dragon.DragonService;
 import dev.bedwars.spigot.effects.UpgradeEffectApplier;
 import dev.bedwars.spigot.game.JoinService;
 import dev.bedwars.spigot.gui.JoinMenu;
@@ -138,6 +139,7 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
     private final TrapTriggerService trapTriggers = new TrapTriggerService(8.0, 5_000L);
     private QuickBuyRepository quickBuyRepository;
     private JoinMenu joinMenu;
+    private DragonService dragonService;
     private List<String> startItems = List.of();
 
     private final Map<String, Integer> countdownRemaining = new ConcurrentHashMap<>();
@@ -182,6 +184,7 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         this.host = new GameHost(arena, template, eventBus, gameManager,
                 config.gamesPerServer(), 5, "match");
         this.joinService = new JoinService(host, worlds);
+        this.dragonService = new DragonService(config.dragon(), LOG);
 
         this.joinMenu = new JoinMenu(joinService, host);
         registerListeners();
@@ -419,6 +422,7 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         reloadConfig();
         PluginConfig fresh = PluginConfig.from(getConfig(), config.serverId());
         this.config = fresh;
+        dragonService.updateSettings(fresh.dragon());
         ArenaDefinition arena = loadArenaDefinition(fresh);
         if (arena != null) {
             this.shop = arena.shop();
@@ -543,6 +547,7 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         for (Game game : host.games()) {
             CorrelationContext.run(game.id(), config.serverId(), () -> tickGame(game));
         }
+        dragonService.tick(host.games());
         updateScoreboards();
         persistResults();
         pruneFinished();
@@ -600,6 +605,10 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
                 && now - game.startedAtMillis() >= after * 1000L) {
             game.enterSuddenDeath(now);
             broadcastTo(game, "&4Sudden death! All beds have been destroyed.");
+            int dragons = dragonService.spawnForGame(game, worlds.worldFor(game.id()));
+            if (dragons > 0) {
+                broadcastTo(game, "&5Dragons are unleashed - they tear up the map and hurl you back!");
+            }
         }
     }
 
@@ -620,6 +629,7 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
             return;
         }
         for (String id : finished) {
+            dragonService.clearGame(id);
             host.byId(id).ifPresent(game -> {
                 broadcastTo(game, "&eThis match has ended.");
                 for (UUID uuid : game.sessions().keySet()) {
@@ -731,6 +741,9 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (dragonService != null) {
+            dragonService.shutdown();
+        }
         if (host != null) {
             int players = 0;
             for (Game game : host.games()) {
