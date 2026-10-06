@@ -78,7 +78,7 @@ class DockerProvisionerTest {
 
     private DockerProvisioner provisioner(FakeDocker docker, int min, int max) {
         return new DockerProvisioner(docker, "docker", "bedwars-game", "bedwars-recoded-game:1.0.0",
-                "1024m", 25, min, max, "solo", "http://controller:8080", List.of(),
+                "1024m", 25, min, max, "solo", "http://controller:8080", "bedwars_default", List.of(),
                 LoggerFactory.getLogger("test"));
     }
 
@@ -95,6 +95,10 @@ class DockerProvisionerTest {
         assertThat(run).contains("-e", "BEDWARS_SERVER_ID=bedwars-game-1", "BEDWARS_ARENA_GROUP=solo");
         assertThat(run).contains("--memory", "1024m");
         assertThat(run).contains("--label", "bedwars.provisioned=true");
+        // The pod must join the controller's network or it cannot resolve it, and the
+        // plugin only reads BEDWARS_CONTROLLER_URL (a bare CONTROLLER_URL is ignored).
+        assertThat(run).contains("--network", "bedwars_default");
+        assertThat(run).contains("-e", "BEDWARS_CONTROLLER_URL=http://controller:8080");
         assertThat(run.getLast()).isEqualTo("bedwars-recoded-game:1.0.0");
         // No shell is ever involved: the command is an argument list.
         assertThat(run).doesNotContain("-c", "sh", "bash");

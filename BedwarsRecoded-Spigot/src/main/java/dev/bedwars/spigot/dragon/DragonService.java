@@ -301,7 +301,7 @@ public final class DragonService {
         return destroyed;
     }
 
-    private static boolean isDragonBreakable(Material type) {
+    static boolean isDragonBreakable(Material type) {
         if (type == Material.AIR || type == Material.CAVE_AIR || type == Material.VOID_AIR) {
             return false;
         }

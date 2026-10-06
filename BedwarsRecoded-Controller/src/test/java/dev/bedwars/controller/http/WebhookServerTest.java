@@ -55,7 +55,7 @@ class WebhookServerTest {
         ControllerConfig.Provisioning provisioning = new ControllerConfig.Provisioning(
                 ProvisionerKind.NONE, 0, 10, 25, true, 10,
                 "bedwars-game", "bedwars-recoded-game:latest", "1024m", "solo",
-                "http://localhost:" + port);
+                "http://localhost:" + port, "");
         return new ControllerConfig("local", "bedwars-solo", port, 2, 500, 10_000,
                 provisioning, new ControllerConfig.Security(apiToken));
     }

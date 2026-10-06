@@ -17,7 +17,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 class DockerProvisionerIntegrationTest {
 
     private static boolean dockerUp() {
-        CommandRunner probe = new ProcessCommandRunner(15_000);
+        // Generous timeout: a busy host (other builds/tests running) can take well over
+        // 15s to answer `docker version`, and a timeout here silently SKIPS the whole
+        // integration test, which reads as "not verified" when the daemon is fine.
+        CommandRunner probe = new ProcessCommandRunner(45_000);
         try {
             return probe.run(List.of("docker", "version", "--format", "{{.Server.Version}}")).ok();
         } finally {
@@ -42,7 +45,7 @@ class DockerProvisionerIntegrationTest {
         String prefix = "bedwars-it-" + UUID.randomUUID().toString().substring(0, 8);
         ProcessCommandRunner runner = new ProcessCommandRunner(120_000);
         DockerProvisioner provisioner = new DockerProvisioner(runner, "docker", prefix, "alpine:latest",
-                "256m", 25, 0, 2, "solo", "http://controller:8080",
+                "256m", 25, 0, 2, "solo", "http://controller:8080", "",
                 List.of("sleep", "3600"), LoggerFactory.getLogger("integration"));
 
         try {

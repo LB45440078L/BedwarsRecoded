@@ -12,7 +12,8 @@ class ProvisionerFactoryTest {
     private static ControllerConfig configWith(ProvisionerKind kind) {
         ControllerConfig.Provisioning provisioning = new ControllerConfig.Provisioning(
                 kind, 2, 20, 25, true, 10, "bedwars-game",
-                "bedwars-recoded-game:latest", "1536m", "solo", "http://host.docker.internal:8080");
+                "bedwars-recoded-game:latest", "1536m", "solo", "http://host.docker.internal:8080",
+                "bedwars_default");
         return new ControllerConfig("bedwars", "bedwars-solo", 8080, 2, 500, 10_000,
                 provisioning, new ControllerConfig.Security(""));
     }

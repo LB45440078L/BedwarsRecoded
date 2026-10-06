@@ -82,8 +82,8 @@ session cannot NPE the elimination path.
 
 ## Verification performed
 
-- `mvn clean install`: **191 tests, 0 failures** (Core 103, Spigot 26, Controller 57,
-  API 5). JAR gate passes; jar is 269 KB.
+- `mvn clean install`: **202 tests, 0 failures** (Core 103, Spigot 33, Controller 61,
+  API 5). JAR gate passes; jar is 270 KB.
 - **Real Spigot 26.3 server**: plugin loads, bootstraps to STANDALONE, loads libraries,
   logs `pod_ready`, no stack traces.
 - **RCON on the live server**: `/bw help`, `/bw status`, `/bw start` exercised. After
@@ -109,6 +109,22 @@ session cannot NPE the elimination path.
   `/infra` reporting `provisioner: KUBERNETES` with
   `GameServerSet bedwars/bedwars-solo servers[0..50] gamesPerServer=25`. The OpenKruise
   `GameServerSet` CRD was installed to validate the manifests against the real schema.
+- **Live Docker Compose stack**: `docker compose up` brought the controller up healthy
+  with the DOCKER provisioner; a `POST /lobby/queue` provisioned a real container
+  (`bedwars-game-1`, image `bedwars-spigot:1.0.0`) running actual Spigot (it staged the
+  Glacier template from the baked copy and logged `server_ready`). The container joined
+  the Compose network, so it reached the controller and **registered**
+  (`registeredServers: 1`, `freeSlots: 25`) with no `ConnectException`. This path
+  initially failed for two reasons worth recording: the controller handed the pod
+  `CONTROLLER_URL` when the plugin only reads `BEDWARS_CONTROLLER_URL`, and it started
+  the container on the default bridge with no `--network`, so the controller's name did
+  not resolve. Both are fixed and covered by `DockerProvisionerTest`.
+- **Pre-warm stampede fixed.** The allocator asked for a new server on *every* dispatch
+  retry, and a server needs ~30 s to boot and register, so one `POST /lobby/queue`
+  started 13 containers (bounded only by the maximum). `PrewarmGuard` now treats a
+  started-but-unregistered server as a boot in flight and allows at most one pre-warm
+  per grace window; a repeat of the same single dispatch starts exactly **1** container
+  and still registers it. Covered by `PrewarmGuardTest`.
 - **Game-pod image builds real Spigot**: the Docker image previously downloaded Paper;
   it now builds Spigot 26.3 from source with the official BuildTools (verified: the
   BuildTools run produced an 85 MB `spigot-26.3` jar byte-identical in size to the
@@ -133,7 +149,10 @@ session cannot NPE the elimination path.
 - **AdvancedSlimePaper** world loading is implemented and unit-tested but not run on a
   live ASP server (the test server is plain Spigot).
 - **Kubernetes** was re-run on a live minikube cluster in this pass (OpenKruise
-  `GameServerSet` CRD installed, controller deployed and queried); the *container-level*
-  game-pod deployment on the cluster (a match actually running inside a K8s pod) still
-  needs the Spigot image loaded and a real template fetch, and the Docker path remains
-  the one exercised end-to-end for a running server.
+  `GameServerSet` CRD installed, controller deployed and queried) and a real Spigot
+  **game pod** was scaled up on it: `bedwars-solo-0` reached `1/1 Running`, booted
+  Spigot in POD mode and registered with the controller (`servers: 1`,
+  `free_slots{group="solo"} 25`). It ran without a real arena template, though: the pod
+  asked the cluster's MinIO endpoint for the Glacier world, which was not running, so it
+  fell back to a generated world (a one-line warning, not a crash). A full match inside
+  a K8s pod with an S3-served template has still not been played end-to-end.

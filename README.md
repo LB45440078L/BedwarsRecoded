@@ -12,7 +12,7 @@
   <a href="https://kubernetes.io/"><img src="https://img.shields.io/badge/Kubernetes-native-326CE5?logo=kubernetes&amp;logoColor=white" alt="Kubernetes"></a>
   <a href="https://helm.sh/"><img src="https://img.shields.io/badge/Helm-chart-0F1689?logo=helm&amp;logoColor=white" alt="Helm chart"></a>
   <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-images-2496ED?logo=docker&amp;logoColor=white" alt="Docker images"></a>
-  <a href="#-testing"><img src="https://img.shields.io/badge/tests-191%20passing-brightgreen" alt="Tests"></a>
+  <a href="#-testing"><img src="https://img.shields.io/badge/tests-202%20passing-brightgreen" alt="Tests"></a>
   <a href="#-build"><img src="https://img.shields.io/badge/plugin%20JAR-%3C%204%20MB-brightgreen" alt="Plugin JAR under 4 MB"></a>
   <a href="https://github.com/LB45440078L/BedwarsRecoded/issues"><img src="https://img.shields.io/badge/PRs-welcome-blueviolet" alt="PRs welcome"></a>
 </p>
@@ -140,8 +140,10 @@ building the image on minikube.
 Verified on a real cluster: the Compose stack and Helm chart are wired and the
 controller API was exercised end-to-end on minikube (see `docs/DEPLOYMENT.md`). The
 K8s manifests were schema-validated with `kubeconform` and rendered with `helm` +
-`kustomize`. Docker Compose itself was not run here (no Compose invocation in this
-sandbox); its assets are validated structurally.
+`kustomize`. The Compose stack was also run for real: the controller came up
+`healthy` and, on a `POST /lobby/queue`, provisioned an actual game container from the
+Spigot image, which joined the Compose network, resolved the controller and registered
+(`registeredServers: 1`).
 
 ## 🎯 Targets (verified)
 
@@ -175,7 +177,7 @@ by the server at startup, so they are never shaded.
 ## 🧪 Testing
 
 JUnit 5 + AssertJ. `Core` is deliberately Bukkit-free, so game logic is tested with
-plain JUnit — no server, no mocking framework. The suite is **191 tests**:
+plain JUnit — no server, no mocking framework. The suite is **202 tests**:
 
 - **Core (103)** — game lifecycle, and the win condition in particular
   (`WinConditionTest`): a match must reach a single survivor even when the arena
@@ -185,11 +187,14 @@ plain JUnit — no server, no mocking framework. The suite is **191 tests**:
   consume slots, and finished matches are pruned and unregistered.
   `SuddenDeathDragonTest` covers the dragon plan: one per Dragon Buff level, eliminated
   teams bring none, and the neutral count is honoured.
-- **Spigot (26)** — config, reporting, template sources, and `SpigotOnlyApiTest`,
-  which enforces the Spigot-only constraint.
-- **Controller (57)** — queue dispatch over real HTTP (`WebhookServerTest`), token
+- **Spigot (33)** — config (including the `dragon:` block and its clamps), the dragon's
+  block rules (`DragonRulesTest`: air/indestructible blocks/beds are never broken),
+  reporting, template sources, and `SpigotOnlyApiTest`, which enforces the Spigot-only
+  constraint.
+- **Controller (61)** — queue dispatch over real HTTP (`WebhookServerTest`), token
   authentication (`WebhookServerAuthTest`), the match-slot capacity model
-  (`ServerRegistryTest`), `DockerProvisionerTest` (fake runner), `ScaleDownPolicyTest`,
+  (`ServerRegistryTest`), `DockerProvisionerTest` (fake runner), `PrewarmGuardTest`
+  (a booting server must not be re-pre-warmed), `ScaleDownPolicyTest`,
   and an opt-in `DockerProvisionerIntegrationTest` that drives a
   **real** Docker daemon: it provisions an actual container, health-checks it, reclaims
   it, and asserts nothing is left behind (self-skips when no daemon is present).

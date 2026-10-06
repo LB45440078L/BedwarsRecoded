@@ -101,7 +101,7 @@ public record PluginConfig(
      * whether a dragon spawns at all, how hard it knocks players back, and how much of
      * the map it tears up.
      */
-    private static DragonConfig dragon(FileConfiguration c) {
+    static DragonConfig dragon(FileConfiguration c) {
         return new DragonConfig(
                 Boolean.parseBoolean(env("BEDWARS_DRAGON_ENABLED",
                         String.valueOf(c.getBoolean("dragon.enabled", true)))),

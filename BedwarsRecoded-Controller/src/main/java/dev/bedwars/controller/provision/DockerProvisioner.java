@@ -35,6 +35,7 @@ public final class DockerProvisioner implements ServerProvisioner {
     private final int maxServers;
     private final String arenaGroup;
     private final String controllerUrl;
+    private final String network;
     private final List<String> containerCommand;
     private final Logger log;
 
@@ -48,6 +49,7 @@ public final class DockerProvisioner implements ServerProvisioner {
                              int maxServers,
                              String arenaGroup,
                              String controllerUrl,
+                             String network,
                              List<String> containerCommand,
                              Logger log) {
         this.runner = runner;
@@ -60,6 +62,7 @@ public final class DockerProvisioner implements ServerProvisioner {
         this.maxServers = Math.max(this.minServers, maxServers);
         this.arenaGroup = arenaGroup == null || arenaGroup.isBlank() ? "solo" : arenaGroup;
         this.controllerUrl = controllerUrl == null ? "" : controllerUrl;
+        this.network = network == null ? "" : network;
         this.containerCommand = containerCommand == null ? List.of() : List.copyOf(containerCommand);
         this.log = log;
     }
@@ -174,11 +177,21 @@ public final class DockerProvisioner implements ServerProvisioner {
                 "--label", "bedwars.provisioned=true",
                 "--label", "bedwars.role=game",
                 "--memory", memory,
-                "--restart=no",
+                "--restart=no"));
+        // Join the controller's Docker network so the pod can resolve the controller by
+        // name. Without it the container lands on the default bridge and every report
+        // fails with ConnectException.
+        if (!network.isBlank()) {
+            command.add("--network");
+            command.add(network);
+        }
+        command.addAll(List.of(
                 "-e", "BEDWARS_DEPLOYMENT_MODE=POD",
                 "-e", "BEDWARS_SERVER_ID=" + name,
                 "-e", "BEDWARS_ARENA_GROUP=" + arenaGroup,
-                "-e", "CONTROLLER_URL=" + controllerUrl,
+                // The plugin reads BEDWARS_CONTROLLER_URL; a bare CONTROLLER_URL is
+                // ignored, which silently left every pod on the baked default.
+                "-e", "BEDWARS_CONTROLLER_URL=" + controllerUrl,
                 image));
         command.addAll(containerCommand);
         CommandRunner.Result result = runner.run(command);

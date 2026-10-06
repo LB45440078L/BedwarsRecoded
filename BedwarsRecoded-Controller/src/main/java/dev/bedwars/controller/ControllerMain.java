@@ -3,6 +3,7 @@ package dev.bedwars.controller;
 import dev.bedwars.controller.config.ControllerConfig;
 import dev.bedwars.controller.http.WebhookServer;
 import dev.bedwars.controller.pod.ServerRegistry;
+import dev.bedwars.controller.provision.PrewarmGuard;
 import dev.bedwars.controller.provision.ProvisionerFactory;
 import dev.bedwars.controller.provision.ScaleDownPolicy;
 import dev.bedwars.controller.provision.ServerProvisioner;
@@ -28,6 +29,8 @@ public final class ControllerMain {
 
     private static final Logger LOG = LoggerFactory.getLogger(ControllerMain.class);
     private static final long SCALE_DOWN_TICK_SECONDS = 60L;
+    /** How long a freshly started server is assumed to still be booting. */
+    private static final long PREWARM_GRACE_MILLIS = 30_000L;
 
     private ControllerMain() {
     }
@@ -37,12 +40,18 @@ public final class ControllerMain {
         ServerRegistry registry = new ServerRegistry();
         ServerProvisioner provisioner = ProvisionerFactory.create(config);
 
+        AtomicLong lastPrewarmAt = new AtomicLong(0L);
         QueueManager queueManager = new QueueManager(group -> {
             Optional<String> pod = registry.allocate(group);
             if (pod.isPresent()) {
                 LOG.info("Allocated ready pod {} for group {}", pod.get(), group);
-            } else {
-                // Pre-warm: ask for capacity before the next request arrives.
+            } else if (PrewarmGuard.shouldPrewarm(provisioner.currentServers(), registry.serverCount(),
+                    System.currentTimeMillis() - lastPrewarmAt.get(), PREWARM_GRACE_MILLIS)) {
+                // Pre-warm at most one server per boot window. Retrying the dispatch must
+                // not start a container per attempt: a server that is still booting is
+                // already the capacity this request is waiting for.
+                lastPrewarmAt.set(System.currentTimeMillis());
+                LOG.info("Pre-warming a game server for group {}", group);
                 provisioner.scaleUpOne();
             }
             return pod;

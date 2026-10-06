@@ -18,6 +18,15 @@ x-controller-env: &controller-env
   BEDWARS_MIN_REPLICAS: "0"
   BEDWARS_MAX_REPLICAS: "10"
   BEDWARS_PREWARM_THRESHOLD: "2"
+  # This stack has no cluster, so the controller must provision with Docker. Left
+  # unset it would default to KUBERNETES and report "no capacity" forever.
+  BEDWARS_PROVISIONER: "DOCKER"
+  BEDWARS_DOCKER_IMAGE: "bedwars-spigot:1.0.0"
+  BEDWARS_ARENA_GROUP: "solo"
+  # Game containers join this network so they can resolve the controller by name; and
+  # the URL they are handed must use that name rather than the host's loopback.
+  BEDWARS_DOCKER_NETWORK: "bedwars_bedwars"
+  BEDWARS_CONTROLLER_ADVERTISE_URL: "http://controller:8080"
 
 services:
   mysql:
@@ -80,10 +89,18 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/controller.Dockerfile
+      args:
+        # The controller provisions game containers through this Docker socket, so
+        # the image needs the docker CLI. Dev-only convenience.
+        WITH_DOCKER_CLI: "true"
     environment:
       <<: *controller-env
     ports:
       - "8080:8080"
+    volumes:
+      # Lets the controller start/reclaim game containers on the host daemon.
+      # Mounting the socket gives the container root-equivalent power: local dev only.
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       mysql:
         condition: service_healthy
@@ -132,3 +149,7 @@ volumes:
 networks:
   bedwars:
     driver: bridge
+    # Fixed name so BEDWARS_DOCKER_NETWORK is predictable: compose would otherwise
+    # prefix it with the project name, and containers started by the controller with
+    # `docker run --network` would join a network that does not exist.
+    name: bedwars_bedwars

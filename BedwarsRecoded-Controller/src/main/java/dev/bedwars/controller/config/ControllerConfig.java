@@ -37,7 +37,8 @@ public record ControllerConfig(
             String dockerImage,
             String containerMemory,
             String arenaGroup,
-            String controllerAdvertiseUrl) {
+            String controllerAdvertiseUrl,
+            String dockerNetwork) {
 
         public long idleMillis() {
             return idleMinutes * 60_000L;
@@ -68,7 +69,8 @@ public record ControllerConfig(
                 env("BEDWARS_DOCKER_IMAGE", "bedwars-recoded-game:latest"),
                 env("BEDWARS_CONTAINER_MEMORY", "1536m"),
                 env("BEDWARS_ARENA_GROUP", "solo"),
-                env("BEDWARS_CONTROLLER_ADVERTISE_URL", "http://host.docker.internal:8080"));
+                env("BEDWARS_CONTROLLER_ADVERTISE_URL", "http://host.docker.internal:8080"),
+                env("BEDWARS_DOCKER_NETWORK", ""));
 
         Security security = new Security(env("BEDWARS_API_TOKEN", ""));
 
