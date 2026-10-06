@@ -4,10 +4,10 @@ package dev.bedwars.core.reporting;
  * Decides whether controller reports should still be attempted, and how often a
  * failure may be logged.
  *
- * <p>Why this exists: a plugin running on a plain server (or with a controller that
- * is down) used to log a failure on <em>every</em> report — a heartbeat every 15
- * seconds plus ready/started/ended — which floods the console with
- * {@code ConnectException} noise for a condition the operator cannot fix from there.
+ * <p>Why this exists: when the controller is unreachable the plugin used to log a
+ * failure on <em>every</em> report — a heartbeat every 15 seconds plus
+ * ready/started/ended — flooding the console with {@code ConnectException} noise for a
+ * condition the operator cannot fix from the server itself.
  *
  * <p>Behaviour:
  * <ul>
@@ -23,7 +23,6 @@ public final class ReportingPolicy {
     public static final int DEFAULT_DISABLE_AFTER_FAILURES = 5;
     public static final long DEFAULT_FAILURE_LOG_INTERVAL_MILLIS = 300_000L;
 
-    private final boolean configured;
     private final int disableAfterFailures;
     private final long failureLogIntervalMillis;
 
@@ -31,25 +30,24 @@ public final class ReportingPolicy {
     private long nextFailureLogAtMillis;
     private boolean autoDisabled;
 
-    public ReportingPolicy(boolean configured) {
-        this(configured, DEFAULT_DISABLE_AFTER_FAILURES, DEFAULT_FAILURE_LOG_INTERVAL_MILLIS);
+    public ReportingPolicy() {
+        this(DEFAULT_DISABLE_AFTER_FAILURES, DEFAULT_FAILURE_LOG_INTERVAL_MILLIS);
     }
 
-    public ReportingPolicy(boolean configured, int disableAfterFailures, long failureLogIntervalMillis) {
+    public ReportingPolicy(int disableAfterFailures, long failureLogIntervalMillis) {
         if (disableAfterFailures < 1) {
             throw new IllegalArgumentException("disableAfterFailures must be >= 1");
         }
-        this.configured = configured;
         this.disableAfterFailures = disableAfterFailures;
         this.failureLogIntervalMillis = Math.max(0L, failureLogIntervalMillis);
     }
 
     /** True when reports should actually be sent right now. */
     public boolean shouldSend() {
-        return configured && !autoDisabled;
+        return !autoDisabled;
     }
 
-    /** True when the operator asked for reporting but it was switched off by failures. */
+    /** True when reporting was switched off by consecutive failures. */
     public boolean autoDisabled() {
         return autoDisabled;
     }
@@ -81,11 +79,8 @@ public final class ReportingPolicy {
         return false;
     }
 
-    /** Human-readable reason for the startup summary. */
+    /** Human-readable state for the startup summary. */
     public String describe() {
-        if (!configured) {
-            return "disabled by configuration";
-        }
         if (autoDisabled) {
             return "disabled after " + consecutiveFailures + " consecutive failures";
         }

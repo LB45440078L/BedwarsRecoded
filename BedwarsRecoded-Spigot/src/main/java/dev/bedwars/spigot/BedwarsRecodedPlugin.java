@@ -151,7 +151,6 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         }
         this.config = PluginConfig.from(getConfig(), defaultServerId());
         this.reporter = new HttpPodReporter(config.controllerBaseUrl(), new ReportingPolicy(
-                true,
                 config.disableReportingAfterFailures(),
                 config.failureLogIntervalSeconds() * 1000L));
         logStartupSummary();

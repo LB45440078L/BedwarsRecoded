@@ -43,7 +43,7 @@ public final class HttpPodReporter implements PodReporter {
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
 
     public HttpPodReporter(String baseUrl) {
-        this(baseUrl, new ReportingPolicy(true));
+        this(baseUrl, new ReportingPolicy());
     }
 
     public HttpPodReporter(String baseUrl, ReportingPolicy policy) {
