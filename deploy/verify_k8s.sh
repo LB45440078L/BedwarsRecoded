@@ -3,12 +3,7 @@
 # manifest with kubeconform. Custom resources without published schemas
 # (GameServerSet, ScaledObject, ServiceMonitor, NodePool) are skipped.
 #
-# Tools are taken from HELM / KUBECTL / KUBECONFORM when set, otherwise from PATH,
-# so this works unchanged on Linux and macOS. (On a Windows-hosted WSL box the
-# binaries are Windows .exe files and must be reached through the WSL bridge, e.g.
-#   HELM="deploy/tools/winrun.sh helm.exe" \
-#   KUBECTL="deploy/tools/winrun.sh kubectl.exe" \
-#   KUBECONFORM="deploy/tools/winrun.sh kubeconform.exe" deploy/verify_k8s.sh )
+# Tools are taken from HELM / KUBECTL / KUBECONFORM when set, otherwise from PATH.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -19,7 +14,7 @@ KUBECTL="${KUBECTL:-kubectl}"
 KUBECONFORM="${KUBECONFORM:-kubeconform}"
 
 if ! $HELM version >/dev/null 2>&1; then
-  echo "SKIP: helm not available; install helm or set HELM (e.g. 'deploy/tools/winrun.sh helm.exe')."
+  echo "SKIP: helm not available; install helm or set HELM."
   exit 0
 fi
 if ! $KUBECTL version --client >/dev/null 2>&1; then
@@ -39,8 +34,8 @@ if [ -z "$OUT" ]; then
 else
   mkdir -p "$OUT"
 fi
-# Windows-hosted tools cannot read WSL paths; set BEDWARS_K8S_TMP to a /mnt/c
-# directory when using deploy/tools/winrun.sh.
+# Override the scratch directory with BEDWARS_K8S_TMP if the default temp dir is
+# unsuitable (read-only, or on a small filesystem).
 trap '[ -n "$CLEANUP" ] && rm -rf "$CLEANUP"' EXIT
 
 echo "==> helm lint"

@@ -111,14 +111,20 @@ services:
       retries: 20
     networks: [bedwars]
 
-  # Optional: one real game pod. Enable with `--profile game`.
+  # Optional: one real game server. Enable with `--profile game`.
+  #
+  # It builds with the Spigot engine unless you say otherwise. Drop a jar in
+  # server-jars/ first to skip the Spigot compile; set SERVER_ENGINE=paper to run
+  # Paper instead (never compiled). See server-jars/README.md.
   game-pod:
     profiles: [game]
     build:
       context: ../..
-      dockerfile: deploy/docker/spigot.Dockerfile
+      dockerfile: deploy/docker/gameserver.Dockerfile
       args:
+        SERVER_ENGINE: ${SERVER_ENGINE:-spigot}
         SPIGOT_REV: ${SPIGOT_REV:-26.3}
+        PAPER_VERSION: ${PAPER_VERSION:-}
     environment:
       BEDWARS_SERVER_ID: "pod-local-1"
       BEDWARS_ARENA_GROUP: "solo"

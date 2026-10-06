@@ -78,7 +78,10 @@ What gets created:
 Build the three images and push them to your registry:
 
 ```bash
-docker build -f deploy/docker/spigot.Dockerfile     -t $REG/bedwars-spigot:1.0.0     .
+# The game-server image. Put a jar in server-jars/ first to skip the Spigot compile
+# entirely (see server-jars/README.md); --build-arg SERVER_ENGINE=paper runs Paper
+# instead, which is downloaded rather than compiled.
+docker build -f deploy/docker/gameserver.Dockerfile -t $REG/bedwars-spigot:1.0.0     .
 docker build -f deploy/docker/velocity.Dockerfile   -t $REG/bedwars-velocity:1.0.0   .
 docker build -f deploy/docker/controller.Dockerfile -t $REG/bedwars-controller:1.0.0 .
 ```
@@ -167,20 +170,15 @@ MinIO is disabled in the minikube overlay because this sandbox cannot pull
 `quay.io/minio/minio` anonymously; the manifest is correct for clusters that can, or
 point `s3.endpoint` at an external store.
 
-### Windows-hosted WSL tooling (optional — skip on Linux/macOS)
+### Server engine and jar
 
-Here docker/kubectl/helm/minikube/kubeconform are Windows binaries, and WSL does not
-inherit the user PATH — which breaks docker's credential helper and minikube's docker
-lookup. `deploy/tools/winrun.sh` regenerates a `.bat` that prepends the Docker
-Desktop (and Helm/kubeconform/minikube) bin directories and forwards arguments:
+The game-server image resolves its server jar in this order, and only the last step
+compiles anything:
 
-```bash
-deploy/tools/winrun.sh docker.exe build -t app:1 .
-HELM="deploy/tools/winrun.sh helm.exe" \
-KUBECTL="deploy/tools/winrun.sh kubectl.exe" \
-KUBECONFORM="deploy/tools/winrun.sh kubeconform.exe" \
-  deploy/verify_k8s.sh
-```
+1. a jar supplied in `server-jars/` — copied in, nothing compiled;
+2. `SERVER_ENGINE=paper` — downloaded from the PaperMC API;
+3. `SERVER_ENGINE=spigot` (default) with no jar supplied — compiled with BuildTools.
 
-Run these from a `/mnt/c/...` path and set `BEDWARS_K8S_TMP` to a `/mnt/c` directory:
-Windows tools cannot read WSL paths, nor run with a UNC working directory.
+The jar always lands at `/server/server.jar`, so manifests, probes and the entrypoint are
+independent of the engine. `deploy/tools/test-resolve-server-jar.sh` asserts this
+preference order, and `deploy/verify_deploy.py` fails if the image stops honouring it.

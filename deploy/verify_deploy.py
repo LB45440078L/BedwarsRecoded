@@ -125,7 +125,7 @@ def verify_compose() -> None:
 
 
 def verify_dockerfiles() -> None:
-    for name in ("spigot", "velocity", "controller"):
+    for name in ("gameserver", "velocity", "controller"):
         path = DOCKER / f"{name}.Dockerfile"
         check(path.exists(), f"docker: {name}.Dockerfile missing")
         if path.exists():
@@ -135,10 +135,66 @@ def verify_dockerfiles() -> None:
                   f"docker: {name}.Dockerfile has no ENTRYPOINT/CMD")
 
 
+def verify_server_jar_resolution() -> None:
+    """The game-server image must prefer a supplied jar and only compile Spigot as a
+    last resort. A regression here is expensive: it silently turns every image build
+    back into a multi-minute Spigot compile."""
+    gameserver = DOCKER / "gameserver.Dockerfile"
+    resolver = DOCKER / "resolve-server-jar.sh"
+    vendor = ROOT / "server-jars"
+
+    check(resolver.exists(), "docker: resolve-server-jar.sh missing")
+    check((vendor / "README.md").exists(), "server-jars/README.md missing (the default jar folder)")
+    check(not (DOCKER / "spigot.Dockerfile").exists(),
+          "docker: spigot.Dockerfile should have been replaced by gameserver.Dockerfile")
+
+    if not gameserver.exists() or not resolver.exists():
+        return
+
+    text = gameserver.read_text(encoding="utf-8")
+    for arg in ("SERVER_ENGINE", "SPIGOT_REV", "PAPER_VERSION"):
+        check(f"ARG {arg}" in text, f"gameserver.Dockerfile must declare ARG {arg}")
+    check("COPY server-jars" in text, "gameserver.Dockerfile must copy server-jars/ into the build")
+    check("resolve-server-jar.sh" in text, "gameserver.Dockerfile must use resolve-server-jar.sh")
+    check("/server/server.jar" in text,
+          "gameserver.Dockerfile must place the resolved jar at /server/server.jar")
+
+    script = resolver.read_text(encoding="utf-8")
+    check("find_vendored" in script and "compile_spigot" in script,
+          "resolve-server-jar.sh must be able to prefer a supplied jar over compiling")
+    check("fill.papermc.io" in script,
+          "resolve-server-jar.sh must download Paper from the current PaperMC API")
+    check("api.papermc.io" not in script,
+          "resolve-server-jar.sh must not use the sunset PaperMC v2 API")
+
+    entrypoint = (DOCKER / "entrypoint.sh").read_text(encoding="utf-8")
+    check("server.jar" in entrypoint, "entrypoint.sh must launch /server/server.jar")
+    check("spigot.jar" not in entrypoint,
+          "entrypoint.sh must not hard-code a spigot.jar name (the engine is a build arg)")
+
+
+def verify_no_standalone_mode() -> None:
+    """The plugin runs only as a managed game server. The standalone/AUTO deployment
+    mode was removed; a reappearing `deployment:` block would mean dead config paths
+    that no code reads."""
+    config = ROOT / "BedwarsRecoded-Spigot" / "src" / "main" / "resources" / "config.yml"
+    if not config.exists():
+        errors.append("plugin config.yml missing")
+        return
+    text = config.read_text(encoding="utf-8")
+    check("\ndeployment:" not in text, "plugin config.yml must not declare a `deployment:` block")
+    check("STANDALONE" not in text, "plugin config.yml must not mention STANDALONE mode")
+    check("controller:" in text, "plugin config.yml must declare the `controller:` block")
+    check("disable-reporting-after-failures" in text,
+          "reporting knobs belong under `controller:` now that `deployment:` is gone")
+
+
 def main() -> int:
     verify_k8s()
     verify_compose()
     verify_dockerfiles()
+    verify_server_jar_resolution()
+    verify_no_standalone_mode()
     if errors:
         print(f"DEPLOY VERIFY: {len(errors)} problem(s) across {checks} checks")
         for err in errors:

@@ -26,7 +26,6 @@ import dev.bedwars.core.persistence.SchemaMigrator;
 import dev.bedwars.core.persistence.StatsRepository;
 import dev.bedwars.core.ranking.EloCalculator;
 import dev.bedwars.core.ranking.MatchResultPersister;
-import dev.bedwars.core.reporting.DeploymentMode;
 import dev.bedwars.core.reporting.ReportingPolicy;
 import dev.bedwars.core.reporting.WhitelistEnforcement;
 import dev.bedwars.core.shop.Currency;
@@ -58,7 +57,6 @@ import dev.bedwars.spigot.listener.SpectatorListener;
 import dev.bedwars.spigot.listener.TrapTriggerListener;
 import dev.bedwars.spigot.listener.UpgradeListener;
 import dev.bedwars.spigot.listener.VoidKillListener;
-import dev.bedwars.spigot.report.ControllerProbe;
 import dev.bedwars.spigot.report.HttpPodReporter;
 import dev.bedwars.spigot.scoreboard.ScoreboardRenderer;
 import dev.bedwars.spigot.template.AspSlimeWorldBridge;
@@ -129,7 +127,6 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
     private final TpsMeter tpsMeter = new TpsMeter();
     private MatchResultPersister matchResultPersister;
     private SlimeWorldProvider worldProvider;
-    private DeploymentMode effectiveMode = DeploymentMode.AUTO;
     private long startedAtMillis;
     private final Set<String> persistedGames = ConcurrentHashMap.newKeySet();
     private int lastReportedFreeSlots = -1;
@@ -153,9 +150,8 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
             // No bundled sample arena; a config-derived arena will be used.
         }
         this.config = PluginConfig.from(getConfig(), defaultServerId());
-        this.effectiveMode = DeploymentMode.resolve(config.mode(), probeController(config));
         this.reporter = new HttpPodReporter(config.controllerBaseUrl(), new ReportingPolicy(
-                effectiveMode.reportsToController(),
+                true,
                 config.disableReportingAfterFailures(),
                 config.failureLogIntervalSeconds() * 1000L));
         logStartupSummary();
@@ -192,10 +188,8 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         getServer().getScheduler().runTaskTimer(this, this::tick, 20L, 20L);
         getServer().getScheduler().runTaskTimer(this, tpsMeter::tick, 0L, 1L);
         getServer().getScheduler().runTaskTimer(this, this::applyTeamEffects, 40L, 40L);
-        if (effectiveMode.reportsToController()) {
-            getServer().getScheduler().runTaskTimer(this, this::sendHeartbeat, 200L,
-                    Math.max(20L, config.heartbeatSeconds() * 20L));
-        }
+        getServer().getScheduler().runTaskTimer(this, this::sendHeartbeat, 200L,
+                Math.max(20L, config.heartbeatSeconds() * 20L));
         getServer().getScheduler().runTaskTimer(this, this::refreshLeaderboards, 400L,
                 Math.max(20L, config.leaderboardRefreshSeconds() * 20L));
 
@@ -271,38 +265,23 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         return "server-" + hostname;
     }
 
-    private boolean probeController(PluginConfig cfg) {
-        if (cfg.mode() == DeploymentMode.POD) {
-            return true;
-        }
-        if (cfg.mode() == DeploymentMode.STANDALONE) {
-            return false;
-        }
-        boolean reachable = ControllerProbe.isReachable(cfg.controllerBaseUrl(), java.time.Duration.ofSeconds(2));
-        LOG.info("deployment_mode_auto controller={} reachable={}", cfg.controllerBaseUrl(), reachable);
-        return reachable;
-    }
-
     private void applyWhitelistPolicy() {
-        if (!WhitelistEnforcement.shouldDisable(config.whitelistEnforcement(), effectiveMode)) {
+        if (!WhitelistEnforcement.shouldDisable(config.whitelistEnforcement())) {
             return;
         }
         if (getServer().hasWhitelist()) {
             getServer().setWhitelist(false);
             LOG.info("whitelist_disabled it was enabled (by the server's own default or by an operator); "
                     + "a game server accepts the players routed to it "
-                    + "(server.force-whitelist-off={} mode={})", config.whitelistEnforcement(), effectiveMode);
+                    + "(server.force-whitelist-off={})", config.whitelistEnforcement());
         } else {
-            LOG.info("whitelist_ok already off (mode={})", effectiveMode);
+            LOG.info("whitelist_ok already off");
         }
     }
 
     private void logStartupSummary() {
-        String reporting = effectiveMode.reportsToController()
-                ? reporter.policy().describe()
-                : "not used (not a pod)";
-        LOG.info("bedwars_setup mode={} (configured {}) controller_reporting={} controller_url={}",
-                effectiveMode, config.mode(), reporting, config.controllerBaseUrl());
+        LOG.info("bedwars_setup controller_reporting={} controller_url={}",
+                reporter.policy().describe(), config.controllerBaseUrl());
         LOG.info("bedwars_setup server_id={} arena_group={} teams={}x{} games_per_server={} template={} persistence={} json_logs={}",
                 config.serverId(), config.arenaGroup(), config.teamCount(), config.playersPerTeam(),
                 config.gamesPerServer(),
@@ -370,7 +349,7 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
 
     /** Reports free match slots (only when they change) so the controller can route players. */
     private void reportCapacityIfChanged(boolean force) {
-        if (host == null || !effectiveMode.reportsToController()) {
+        if (host == null) {
             return;
         }
         int free = host.freeSlots();

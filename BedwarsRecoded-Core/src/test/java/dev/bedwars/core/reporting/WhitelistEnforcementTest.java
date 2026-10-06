@@ -5,15 +5,14 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * A game pod must never be behind a whitelist (nobody would be on it, so everyone
- * would be kicked); a standalone server's whitelist must never be touched behind the
- * operator's back.
+ * A game server must never sit behind a whitelist: it accepts the players the controller
+ * routes to it, and an empty whitelist would kick every one of them. An operator who
+ * really wants a whitelist can still ask to keep one.
  */
 class WhitelistEnforcementTest {
 
     @Test
     void parsesValuesCaseInsensitively() {
-        assertThat(WhitelistEnforcement.parse("auto")).isEqualTo(WhitelistEnforcement.AUTO);
         assertThat(WhitelistEnforcement.parse(" OFF ")).isEqualTo(WhitelistEnforcement.OFF);
         assertThat(WhitelistEnforcement.parse("true")).isEqualTo(WhitelistEnforcement.OFF);
         assertThat(WhitelistEnforcement.parse("LEAVE")).isEqualTo(WhitelistEnforcement.LEAVE);
@@ -21,28 +20,22 @@ class WhitelistEnforcementTest {
     }
 
     @Test
-    void defaultsToAuto() {
-        assertThat(WhitelistEnforcement.parse(null)).isEqualTo(WhitelistEnforcement.AUTO);
-        assertThat(WhitelistEnforcement.parse("")).isEqualTo(WhitelistEnforcement.AUTO);
-        assertThat(WhitelistEnforcement.parse("nonsense")).isEqualTo(WhitelistEnforcement.AUTO);
+    void defaultsToOffSoAQueueManagedServerNeverRejectsItsPlayers() {
+        assertThat(WhitelistEnforcement.parse(null)).isEqualTo(WhitelistEnforcement.OFF);
+        assertThat(WhitelistEnforcement.parse("")).isEqualTo(WhitelistEnforcement.OFF);
+        assertThat(WhitelistEnforcement.parse("nonsense")).isEqualTo(WhitelistEnforcement.OFF);
+    }
+
+    /** The legacy spelling from earlier configs must keep working, not start rejecting players. */
+    @Test
+    void legacyAutoSpellingMeansOff() {
+        assertThat(WhitelistEnforcement.parse("auto")).isEqualTo(WhitelistEnforcement.OFF);
+        assertThat(WhitelistEnforcement.parse("AUTO")).isEqualTo(WhitelistEnforcement.OFF);
     }
 
     @Test
-    void autoDisablesOnAPodAndLeavesAStandaloneServerAlone() {
-        assertThat(WhitelistEnforcement.shouldDisable(WhitelistEnforcement.AUTO, DeploymentMode.POD)).isTrue();
-        assertThat(WhitelistEnforcement.shouldDisable(WhitelistEnforcement.AUTO, DeploymentMode.STANDALONE))
-                .isFalse();
-    }
-
-    @Test
-    void explicitValuesWinOverTheMode() {
-        assertThat(WhitelistEnforcement.shouldDisable(WhitelistEnforcement.OFF, DeploymentMode.STANDALONE)).isTrue();
-        assertThat(WhitelistEnforcement.shouldDisable(WhitelistEnforcement.LEAVE, DeploymentMode.POD)).isFalse();
-    }
-
-    @Test
-    void autoNeverDisablesOnAnUnresolvedMode() {
-        // AUTO is resolved before use; if it ever leaked through, do not touch anything.
-        assertThat(WhitelistEnforcement.shouldDisable(WhitelistEnforcement.AUTO, DeploymentMode.AUTO)).isFalse();
+    void offDisablesAndLeaveKeepsTheOperatorsWhitelist() {
+        assertThat(WhitelistEnforcement.shouldDisable(WhitelistEnforcement.OFF)).isTrue();
+        assertThat(WhitelistEnforcement.shouldDisable(WhitelistEnforcement.LEAVE)).isFalse();
     }
 }

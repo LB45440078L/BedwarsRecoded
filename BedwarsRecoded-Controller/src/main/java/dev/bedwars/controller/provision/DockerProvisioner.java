@@ -186,7 +186,6 @@ public final class DockerProvisioner implements ServerProvisioner {
             command.add(network);
         }
         command.addAll(List.of(
-                "-e", "BEDWARS_DEPLOYMENT_MODE=POD",
                 "-e", "BEDWARS_SERVER_ID=" + name,
                 "-e", "BEDWARS_ARENA_GROUP=" + arenaGroup,
                 // The plugin reads BEDWARS_CONTROLLER_URL; a bare CONTROLLER_URL is

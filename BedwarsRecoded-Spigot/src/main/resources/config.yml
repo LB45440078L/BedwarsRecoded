@@ -1,30 +1,12 @@
 # =============================================================================
 #  BedwarsRecoded - plugin configuration
 # =============================================================================
-#  The FIRST thing to decide is `deployment.mode` below: it controls whether this
-#  server behaves as an ephemeral Kubernetes game pod or as an ordinary, long-lived
-#  server. Nothing else in this file has a bigger effect.
+#  This plugin runs ONLY as a managed game server: a container started by the
+#  controller (Docker or Kubernetes). It pulls its world from the template store,
+#  reports its capacity and lifecycle to the controller, and writes stats to the
+#  shared database. There is no unmanaged mode - deploy it with
+#  deploy/compose/docker-compose.yml or deploy/k8s/.
 # =============================================================================
-
-deployment:
-  # POD        - an ephemeral, one-match-per-pod server on Kubernetes (production).
-  #              It reports its state to the controller, pulls its world from the
-  #              template store and writes stats to the shared database.
-  # STANDALONE - an ordinary server (a dev box, a single host, "basic mode").
-  #              The plugin makes NO controller requests at all, and there is no pod
-  #              lifecycle to participate in.
-  # AUTO       - DEFAULT. At boot the plugin probes <controller.base-url>/healthz and
-  #              picks POD if the controller answers, otherwise STANDALONE. Use this
-  #              when the same jar is deployed both ways.
-  mode: "AUTO"
-
-  # Reporting safety net (POD mode only). The FIRST failure to reach the controller is
-  # always logged with its reason; further failures are logged at most once every
-  # `failure-log-interval-seconds`; after `disable-reporting-after-failures` in a row,
-  # reporting stops for the session. This is what stops a down/missing controller from
-  # filling the console with connection errors on every heartbeat.
-  disable-reporting-after-failures: 5
-  failure-log-interval-seconds: 300
 
 # Identity of this server in every controller report. ${VAR} placeholders are
 # expanded from the environment (falling back to the local hostname for HOSTNAME /
@@ -82,14 +64,14 @@ dragon:
 server:
   # A Minecraft server can have its whitelist switched on by its own default, and an
   # EMPTY whitelist then rejects everyone with "You are not whitelisted on this
-  # server!" - fatal for a game pod, whose job is to accept the players the controller
-  # routes to it. The queue is the access control, not the whitelist.
+  # server!" - fatal for a game server, whose job is to accept the players the
+  # controller routes to it. The queue is the access control, not the whitelist.
   #
-  # AUTO  (default) a game pod (deployment.mode: POD) switches the whitelist OFF;
-  #                 a STANDALONE server keeps whatever you configured.
-  # OFF             always switch it off.
-  # LEAVE           never touch it - the plugin leaves your whitelist alone.
-  force-whitelist-off: "AUTO"
+  # OFF   (default) switch the whitelist off at boot.
+  # LEAVE never touch it - the plugin leaves your whitelist exactly as you set it.
+  #
+  # Overridable with BEDWARS_WHITELIST.
+  force-whitelist-off: "OFF"
 
 # -----------------------------------------------------------------------------
 # World template. Production reads a Slime world from S3-compatible storage and
@@ -98,8 +80,8 @@ server:
 # -----------------------------------------------------------------------------
 template:
   # false = do not touch the world at all: the server keeps whatever world it has
-  # and the plugin just runs the game logic. Useful on a standalone server, and it
-  # removes template loading from the logs entirely.
+  # and the plugin just runs the game logic. It removes template loading from the
+  # logs entirely, which is handy when a server is started with a pre-baked world.
   enabled: true
   name: "Glacier"
   version: "1.0.0"
@@ -135,11 +117,21 @@ database:
   baseline-elo: 1000
 
 # -----------------------------------------------------------------------------
-# Controller webhook (POD mode only). Ignored entirely in STANDALONE mode.
+# Controller. Every game server reports its capacity and lifecycle here, and this is
+# also where it learns what to do next.
 # -----------------------------------------------------------------------------
 controller:
+  # Overridable with BEDWARS_CONTROLLER_URL. In a container this must be the
+  # controller's name on the shared network (its Kubernetes Service / compose alias).
   base-url: "http://bedwars-controller:8080"
   heartbeat-seconds: 15
+  # Reporting safety net. The FIRST failure to reach the controller is always logged
+  # with its reason; further failures are logged at most once every
+  # `failure-log-interval-seconds`; after `disable-reporting-after-failures` in a row,
+  # reporting stops for the session. This is what keeps a down or missing controller
+  # from filling the console with connection errors on every heartbeat.
+  disable-reporting-after-failures: 5
+  failure-log-interval-seconds: 300
 
 # -----------------------------------------------------------------------------
 # Ranking.

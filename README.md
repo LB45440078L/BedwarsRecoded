@@ -156,9 +156,10 @@ Spigot image, which joined the Compose network, resolved the controller and regi
   tested on JDK 25.
 - **Engine**: Spigot. Explicitly **not** Folia and **not** Paper-only.
 
-Verified load: the packaged jar was started on a real Spigot 26.3 dedicated server; the
-plugin bootstraps to STANDALONE, loads its libraries, and reports `pod_ready` with no
-stack traces (a missing MySQL/template degrades gracefully to a one-line warning).
+Verified load: the packaged jar runs on a real Spigot 26.3 dedicated server inside the
+game-server container; it stages the arena, enables, registers with the controller and
+reports capacity with no stack traces (a missing database or template degrades gracefully
+to a one-line warning).
 
 ## 🔨 Build
 
@@ -177,9 +178,9 @@ by the server at startup, so they are never shaded.
 ## 🧪 Testing
 
 JUnit 5 + AssertJ. `Core` is deliberately Bukkit-free, so game logic is tested with
-plain JUnit — no server, no mocking framework. The suite is **202 tests**:
+plain JUnit — no server, no mocking framework. The suite is **189 tests**:
 
-- **Core (103)** — game lifecycle, and the win condition in particular
+- **Core (95)** — game lifecycle, and the win condition in particular
   (`WinConditionTest`): a match must reach a single survivor even when the arena
   declares more teams than were filled, and when a team is abandoned by disconnects.
   `GameHostTest` covers many matches on one server: players fill a match before a new
@@ -187,7 +188,7 @@ plain JUnit — no server, no mocking framework. The suite is **202 tests**:
   consume slots, and finished matches are pruned and unregistered.
   `SuddenDeathDragonTest` covers the dragon plan: one per Dragon Buff level, eliminated
   teams bring none, and the neutral count is honoured.
-- **Spigot (33)** — config (including the `dragon:` block and its clamps), the dragon's
+- **Spigot (28)** — config (including the `dragon:` block and its clamps), the dragon's
   block rules (`DragonRulesTest`: air/indestructible blocks/beds are never broken),
   reporting, template sources, and `SpigotOnlyApiTest`, which enforces the Spigot-only
   constraint.
@@ -202,39 +203,43 @@ plain JUnit — no server, no mocking framework. The suite is **202 tests**:
 `verify` runs the suite. There is no Paper API and no MockBukkit anywhere on the
 classpath.
 
-## 🚀 Running locally
+## 🚀 Running it
 
-The plugin adapts to where it is running. The first decision is `deployment.mode` in
-`config.yml`:
+There is one shape: a **game server managed by the controller**. It runs as a container,
+started when players queue and reclaimed when its match ends. Docker and Kubernetes are
+both supported through the same `ServerProvisioner` seam; there is no unmanaged
+"run the jar on a host" mode.
 
-| Mode | Behaviour |
+The game-server image's engine is a build argument, and the image only compiles anything
+when it has no other option — see [`server-jars/README.md`](server-jars/README.md):
+
+| Source | Cost |
 |---|---|
-| `POD` | Kubernetes game pod: reports to the controller, pulls a Slime template, writes stats. |
-| `STANDALONE` | An ordinary server. **No controller requests at all**, no pod lifecycle. |
-| `AUTO` (default) | Probes `<controller.base-url>/healthz` at boot and picks one. |
-
-So the same jar runs both as an ephemeral pod and on a plain dev server without
-config edits. At boot the plugin logs exactly what it decided:
-
-```
-bedwars_setup mode=STANDALONE (configured AUTO) controller_reporting=not used (not a pod) ...
-bedwars_setup server_id=pod-mybox arena_group=solo teams=2x2 template=Glacier@1.0.0(LOCAL) persistence=disabled
-```
-
-Running it:
+| a jar you supply in `server-jars/` | copied straight in, nothing compiled |
+| `SERVER_ENGINE=paper` | downloaded from PaperMC, nothing compiled |
+| `SERVER_ENGINE=spigot` (default), no jar supplied | compiled with BuildTools — minutes |
 
 ```bash
-# A. plain server (any OS) - simplest way to test gameplay
-java -Xms1G -Xmx2G -jar spigot.jar --nogui
-
-# B. the whole stack on one machine
+# A. the whole stack on one machine: MySQL, MinIO, controller, one game server
 cd deploy/compose && docker compose up -d
+docker compose --profile game up -d --build game-pod
 
-# C. Kubernetes
+# B. Kubernetes
 helm install bedwars deploy/helm/bedwars -f deploy/helm/values-minikube.yaml -n bedwars --create-namespace
 kubectl -n bedwars scale gameserversets bedwars-solo --replicas=1
 deploy/tools/join-server.sh          # then connect to localhost:25565
 ```
+
+At boot the plugin logs where it reports and to which controller:
+
+```
+bedwars_setup controller_reporting=enabled controller_url=http://bedwars-controller:8080
+bedwars_setup server_id=pod-local-1 arena_group=solo teams=2x2 games_per_server=3 template=Glacier@1.0.0(LOCAL) persistence=mysql
+```
+
+Settings that used to be split across a `deployment.mode` switch now live where they
+belong: reporting knobs (and `heartbeat-seconds`) under `controller:`, and the
+`server.force-whitelist-off` policy next to the server block.
 
 ## ☸️ Deployment
 
@@ -245,8 +250,9 @@ Dockerfiles for each component.
 
 ## 📚 Documentation
 
-- `docs/SETUP.md` — **step-by-step setup**, from a bare machine to a running match.
-  Three paths (plain server / Docker Compose / Kubernetes), every step explained.
+- `docs/SETUP.md` — **step-by-step setup**, from a bare machine to a running match, with
+  a **Minimum Requirements** section. Two paths (Docker Compose / Kubernetes), every step
+  explained.
 - `docs/CONCEPTS.md` — what containers, Kubernetes and pods are, and **what each
   component of this stack is responsible for** (and what it must never do).
 - `docs/AUDIT.md` — requirement-by-requirement audit against the original brief.
@@ -258,7 +264,7 @@ Dockerfiles for each component.
 - `docs/DEPLOYMENT.md` — Compose stack, Kubernetes platform, verification.
 - `docs/API.md` — public API reference (DTOs, events, services, HTTP endpoints).
 - `docs/MIGRATIONS.md` — how to add database migrations.
-- `deploy/tools/README.md` — the tooling, and which parts are Windows-only.
+- `deploy/tools/README.md` — the RCON, status and port-forward helpers.
 
 New here? Read `docs/CONCEPTS.md` first, then `docs/SETUP.md`.
 
@@ -269,12 +275,13 @@ New here? Read `docs/CONCEPTS.md` first, then `docs/SETUP.md`.
 ```
 
 Runs `mvn verify` (unit + real HTTP integration tests for the controller), the
-deployment-asset verifier (`deploy/verify_deploy.py` — parses every manifest and
-the compose file, 70 structural checks), and the 4 MB JAR gate.
+deployment-asset verifier (`deploy/verify_deploy.py` — parses every manifest and the
+compose file, 88 structural checks), and the 4 MB JAR gate.
 
 `deploy/verify_k8s.sh` additionally lints and renders the Helm chart, renders the
 Kustomize base, and schema-validates both with `kubeconform` (set `HELM`, `KUBECTL`,
-`KUBECONFORM`; on Windows-hosted WSL use `deploy/tools/winrun.sh`).
+`KUBECONFORM` if they are not on `PATH`). `deploy/tools/test-resolve-server-jar.sh`
+proves the image compiles Spigot only when it has no other option.
 
 ## 🔒 Hard constraints honoured
 

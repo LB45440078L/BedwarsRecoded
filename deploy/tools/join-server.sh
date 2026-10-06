@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# join-server.sh - expose a BedwarsRecoded game pod's Minecraft port on THIS machine
-# so a Minecraft client can connect to it.
+# join-server.sh - expose a game server's Minecraft port on THIS machine so a
+# Minecraft client can connect to it.
 #
-# Cross-platform: Linux, macOS, WSL and Git-Bash. It only needs `kubectl` on PATH,
-# because kubectl does the tunnelling itself (it speaks to the API server and
-# forwards a local port to the pod). Nothing here is Windows-specific.
+# Needs only `kubectl` on PATH: kubectl does the tunnelling itself (it talks to the
+# API server and forwards a local port to the pod). Nothing platform-specific here.
 #
 # Usage:
 #   deploy/tools/join-server.sh              # localhost:25565 -> the ready game pod
@@ -28,8 +27,7 @@ POD_SELECTOR="${POD_SELECTOR:-app.kubernetes.io/name=gameserverset}"
 KUBECTL="${KUBECTL:-kubectl}"
 
 if ! command -v "${KUBECTL%% *}" >/dev/null 2>&1 && ! ${KUBECTL} version --client >/dev/null 2>&1; then
-  echo "kubectl not found. Install it, or set KUBECTL to a full command" >&2
-  echo "(on a Windows-hosted WSL box: KUBECTL='deploy/tools/winrun.sh kubectl.exe')." >&2
+  echo "kubectl not found. Install it, or set KUBECTL to a full command." >&2
   exit 1
 fi
 
@@ -56,6 +54,6 @@ echo "    Stop the forward with Ctrl-C (the pod keeps running)."
 echo "    ---------------------------------------------------------------"
 echo
 
-# --address 0.0.0.0 makes the port reachable from other machines/virtualisation
-# layers (e.g. a client on the host while kubectl runs inside WSL).
+# --address 0.0.0.0 makes the port reachable from other hosts and from a client
+# running in a different virtualisation layer than kubectl.
 exec ${KUBECTL} -n "${NAMESPACE}" port-forward --address 0.0.0.0 "pod/${POD}" "${LOCAL_PORT}:${POD_PORT}"

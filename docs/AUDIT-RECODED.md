@@ -46,9 +46,9 @@ Severity: **A** = correctness/critical, **B** = compliance/security, **C** = pol
 | 5 | B | Persistence bootstrap caught only `RuntimeException`; on a server without library support the missing JDBC classes would throw a `LinkageError` and **crash `onEnable`**. | **Fixed** (`catch RuntimeException \| LinkageError`) |
 | 6 | B | **No controller authentication.** `/lobby/queue` and `/pods/*` were fully open; any caller could steal queue slots or report fake readiness. | **Fixed** — shared-secret auth (`BEDWARS_API_TOKEN`), constant-time compare, never logged; 9 new tests |
 | 7 | B | **No `ServerProvisioner` abstraction and no Docker backend** — the controller was hard-wired to OpenKruise `GameServerSet`. The brief requires Docker *and* Kubernetes behind a replaceable interface, with min/max servers and games-per-server. | **Fixed** — `ServerProvisioner` + Kubernetes/Docker/Noop + factory + config; real Docker integration test |
-| 8 | C | A missing world template logged a full `CompletionException` stack trace at ERROR on a plain server. | **Fixed** — one actionable WARN line |
+| 8 | C | A missing world template logged a full `CompletionException` stack trace at ERROR. | **Fixed** — one actionable WARN line |
 | 9 | C | README claimed Paper 26.2, a "135 passing" badge and MockBukkit — inaccurate. | **Fixed** — README corrected to Spigot 26.3 / api 26.1 / 174 tests |
-| 10 | C | `config.yml` defaults assume a cluster (`mysql` host, `templates/Glacier`), producing noise on a fresh standalone server. | **Mitigated** — degrades to a one-line warning; not changed by default (the cluster path is the primary target). |
+| 10 | C | `config.yml` defaults assume a cluster (`mysql` host, `templates/Glacier`), producing noise on a freshly started server. | **Mitigated** — degrades to a one-line warning; not changed by default (the cluster path is the primary target). |
 
 ## Bugs fixed (detail)
 
@@ -82,10 +82,10 @@ session cannot NPE the elimination path.
 
 ## Verification performed
 
-- `mvn clean install`: **202 tests, 0 failures** (Core 103, Spigot 33, Controller 61,
+- `mvn clean install`: **189 tests, 0 failures** (Core 95, Spigot 28, Controller 61,
   API 5). JAR gate passes; jar is 270 KB.
-- **Real Spigot 26.3 server**: plugin loads, bootstraps to STANDALONE, loads libraries,
-  logs `pod_ready`, no stack traces.
+- **Real Spigot 26.3 server**: plugin loads, stages the arena, loads libraries, registers
+  with the controller, logs `pod_ready`, no stack traces.
 - **RCON on the live server**: `/bw help`, `/bw status`, `/bw start` exercised. After
   `start` with no players the match now reaches `ENDED` (previously it would have hung in
   `RUNNING` forever) — the fix is live, not only unit-tested.

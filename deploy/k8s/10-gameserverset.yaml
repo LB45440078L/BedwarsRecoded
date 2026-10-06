@@ -15,7 +15,9 @@ spec:
         app.kubernetes.io/name: gameserverset
     spec:
       containers:
-        - name: spigot
+        # Engine-agnostic name: the image runs whatever SERVER_ENGINE selected (Spigot
+        # by default, Paper optionally), so nothing here should name the engine.
+        - name: gameserver
           image: bedwars-spigot:1.0.0
           # IfNotPresent so a locally built/loaded image (minikube, kind, a private
           # registry) is used as-is; the OpenKruise default of Always would force a
@@ -74,6 +76,10 @@ spec:
           lifecycle:
             preStop:
               exec:
-                # Graceful drain: report DRAINING, finish the game, then exit.
+                # Ask the plugin to start draining while the process is still alive.
+                # It reports DRAINING to the controller and refuses new joins; the
+                # match keeps running until the SIGTERM that follows this hook.
                 command: ["/bin/sh", "-c", "sleep 5"]
+      # The plugin reports DRAINING from its shutdown hook when SIGTERM arrives and then
+      # exits; this grace period is what gives an in-flight match time to finish.
       terminationGracePeriodSeconds: 60

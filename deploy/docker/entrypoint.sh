@@ -96,4 +96,4 @@ else
     log "WARNING: no arena world staged; the match will run on a generated world"
 fi
 
-exec java -jar "$SERVER_DIR/spigot.jar" --nogui
+exec java -jar "$SERVER_DIR/server.jar" --nogui

@@ -129,7 +129,7 @@ public final class HttpPodReporter implements PodReporter {
                 boolean disabledNow = policy.recordFailure(now);
                 if (disabledNow) {
                     LOG.warn("controller_unreachable url={} - reporting disabled for this session after {} "
-                            + "consecutive failures (use deployment.mode: STANDALONE to silence this entirely)",
+                            + "consecutive failures (check BEDWARS_CONTROLLER_URL reaches the controller)",
                             baseUrl, policy.consecutiveFailures());
                 } else if (logNow) {
                     LOG.warn("report_failed path={} error={}", path, e.toString());

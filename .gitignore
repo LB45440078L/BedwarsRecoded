@@ -75,9 +75,8 @@ dev-worlds/
 session.lock
 
 # -----------------------------------------------------------------------------
-# Local Minecraft servers and Windows-host tooling scratch
+# Server jars. A Minecraft server jar is ~50-90 MB of someone else's build output,
+# so the image resolves it at build time (see server-jars/README.md) instead of the
+# repository carrying it. The folder and its README stay tracked; the jars do not.
 # -----------------------------------------------------------------------------
-server/
-plugins/
-*.bat
-.winrun-*.bat
+server-jars/*.jar

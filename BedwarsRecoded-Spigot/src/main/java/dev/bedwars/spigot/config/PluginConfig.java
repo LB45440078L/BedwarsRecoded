@@ -2,7 +2,6 @@ package dev.bedwars.spigot.config;
 
 import dev.bedwars.api.dto.TemplateSource;
 import dev.bedwars.core.config.DatabaseConfig;
-import dev.bedwars.core.reporting.DeploymentMode;
 import dev.bedwars.core.reporting.WhitelistEnforcement;
 import org.bukkit.configuration.file.FileConfiguration;
 
@@ -34,7 +33,6 @@ public record PluginConfig(
         int leaderboardRefreshSeconds,
         int leaderboardPageSize,
         boolean jsonLogs,
-        DeploymentMode mode,
         boolean persistenceEnabled,
         boolean templateEnabled,
         int disableReportingAfterFailures,
@@ -85,12 +83,11 @@ public record PluginConfig(
                 c.getInt("ranking.leaderboard-refresh-seconds", 60),
                 c.getInt("ranking.leaderboard-page-size", 100),
                 c.getBoolean("logging.json", true),
-                DeploymentMode.parse(env("BEDWARS_DEPLOYMENT_MODE", c.getString("deployment.mode", "AUTO"))),
                 c.getBoolean("persistence.enabled", true),
                 Boolean.parseBoolean(env("BEDWARS_TEMPLATE_ENABLED",
                         String.valueOf(c.getBoolean("template.enabled", true)))),
-                Math.max(1, c.getInt("deployment.disable-reporting-after-failures", 5)),
-                Math.max(0, c.getInt("deployment.failure-log-interval-seconds", 300)),
+                Math.max(1, c.getInt("controller.disable-reporting-after-failures", 5)),
+                Math.max(0, c.getInt("controller.failure-log-interval-seconds", 300)),
                 WhitelistEnforcement.parse(env("BEDWARS_WHITELIST",
                         c.getString("server.force-whitelist-off", "AUTO"))),
                 dragon(c));

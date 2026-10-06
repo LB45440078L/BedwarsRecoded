@@ -24,11 +24,11 @@ minutes a virtual machine needs.
   the lower-level runtime that Kubernetes uses.
 
 Why we use them: every component here — the proxy, the controller, a game server — is
-shipped as an image, so it runs the same way on a laptop and on a cluster, and a game
+shipped as an image, so it runs identically on one machine and on a cluster, and a game
 server can be created and thrown away cheaply.
 
 > **Our containers** (`deploy/docker/`):
-> `controller.Dockerfile`, `velocity.Dockerfile`, `spigot.Dockerfile`.
+> `controller.Dockerfile`, `velocity.Dockerfile`, `gameserver.Dockerfile`.
 
 ---
 

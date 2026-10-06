@@ -29,7 +29,9 @@ spec:
     spec:
       terminationGracePeriodSeconds: {{ .Values.gameServerSet.terminationGracePeriodSeconds }}
       containers:
-        - name: spigot
+        # Engine-agnostic name: the image runs whatever SERVER_ENGINE selected (Spigot
+        # by default, Paper optionally), so nothing here should name the engine.
+        - name: gameserver
           image: {{ include "bedwars.image" (dict "name" "bedwars-spigot" "root" .) }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
@@ -110,5 +112,8 @@ spec:
           lifecycle:
             preStop:
               exec:
+                # Ask the plugin to start draining while the process is still alive.
+                # It reports DRAINING to the controller and refuses new joins; the
+                # match keeps running until the SIGTERM that follows this hook.
                 command: ["/bin/sh", "-c", "sleep 5"]
 {{- end }}
