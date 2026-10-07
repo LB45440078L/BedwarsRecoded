@@ -1304,7 +1304,7 @@ This runs `mvn -q verify`, then `deploy/verify_deploy.py`, then the JAR size gat
 `ALL VERIFICATIONS PASSED` only if all three succeed. Its output includes:
 
 ```
-DEPLOY VERIFY: OK (88 checks passed)
+DEPLOY VERIFY: OK (119 checks passed)
     BedwarsRecoded-Spigot/target/BedwarsRecoded-Spigot-1.0.0-SNAPSHOT.jar = 284366 bytes (budget 4194304)
 ```
 
@@ -3023,7 +3023,7 @@ What the layers prove:
 
 ```bash
 $ python3 deploy/verify_deploy.py
-DEPLOY VERIFY: OK (88 checks passed)
+DEPLOY VERIFY: OK (119 checks passed)
 ```
 
 It reads *your actual files* and asserts the deployment contract: that every pod declares
