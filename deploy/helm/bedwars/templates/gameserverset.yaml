@@ -9,16 +9,21 @@ metadata:
 spec:
   {{- /*
     Replicas are owned by the CONTROLLER and KEDA, not by Helm: they scale this set up
-    when players queue and back to zero when the last match ends. If the chart kept
-    writing this field, every `helm upgrade` would fight the controller for ownership
-    of it - and could reset replicas to 0 underneath a running match.
+    when players queue and back to zero when the last match ends. So Helm must not
+    overwrite the field on every upgrade - and it must not *omit* it either: the CRD
+    requires spec.replicas, and Helm's server-side apply prunes a field the manifest
+    stops setting, which fails the whole upgrade with "spec.replicas: Required value"
+    (seen on a real `helm upgrade`).
 
-    So it is rendered only on the very first install (when the object does not exist).
-    Afterwards the field is left exactly as the controller left it.
-    (Under plain `helm template` there is no cluster to look up, so it is always
-    rendered - which keeps `helm template`/kubeconform output reproducible.)
+    So: write the requested replicas when creating the object, and on an upgrade write
+    the live value straight back. The controller's number is left untouched and the
+    required field is never dropped. Under plain `helm template` there is no cluster to
+    look up, so the requested value is used, which keeps that output reproducible.
   */}}
-  {{- if not (lookup "game.kruise.io/v1alpha1" "GameServerSet" .Release.Namespace .Values.gameServerSet.name) }}
+  {{- $existing := lookup "game.kruise.io/v1alpha1" "GameServerSet" .Release.Namespace .Values.gameServerSet.name }}
+  {{- if $existing }}
+  replicas: {{ $existing.spec.replicas }}
+  {{- else }}
   replicas: {{ .Values.gameServerSet.replicas }}
   {{- end }}
   serviceName: {{ .Values.gameServerSet.name }}
