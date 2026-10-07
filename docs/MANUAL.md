@@ -103,7 +103,7 @@ These are not preferences; the design is shaped around them.
    Paper is supported as a *deployment option* for the game server, never as a code
    dependency. (`SpigotOnlyApiTest` enforces this mechanically.)
 2. **Java 25.**
-3. **The plugin JAR stays under 4 MB.** It is 271,621 bytes. Heavy libraries (the JDBC driver,
+3. **The plugin JAR stays under 4 MB.** It is 284,366 bytes. Heavy libraries (the JDBC driver,
    the connection pool) are declared in `plugin.yml` and downloaded by the server at startup
    instead of being bundled.
 4. **Capacity is `servers × games-per-server`**, and both are configurable. Never hard-coded.
@@ -1089,7 +1089,7 @@ Two lists: the **minimum** to get the software running and prove it works, and t
 
 | Component | Minimum | Why this number |
 |---|---|---|
-| **OS** | 64-bit Linux, or macOS 13+ | The tooling is POSIX shell, Python 3 and Docker. Windows is not supported directly; use WSL2 or a Linux host. |
+| **OS** | 64-bit Linux, or macOS 13+ | The tooling is POSIX shell, Python 3 and Docker, and the containers are Linux. A POSIX host is the requirement; nothing here targets a non-POSIX shell. |
 | **CPU** | 2 cores | Maven's reactor and one JVM each want a core. Below two, builds crawl and a single game server starves its own tick loop. |
 | **RAM** | 6 GiB | The build (Maven + tests) peaks around 2 GiB. A game server with a real arena needs ~1.5 GiB. One controller is 256 MiB. Below 6 GiB you cannot run a build and a server at once. |
 | **Disk** | 12 GiB free | Base images (~1.5 GiB), a built game image (~705 MB), a server jar (~82 MB), Maven's dependency cache (~1 GiB), plus build output and logs. |
@@ -1151,21 +1151,26 @@ BedwarsRecoded/
 ├── BedwarsRecoded-API/              interfaces, records, events. No platform code
 ├── BedwarsRecoded-Core/             the game: aggregates, arenas, dragons, ranking, persistence
 ├── BedwarsRecoded-Spigot/           Bukkit adapters, commands, config binding
+│   ├── .../spigot/lobby/            hub protection + the sign/NPC queue (LOBBY role)
+│   ├── .../spigot/proxy/            the plugin-message channel the backends talk over
 │   └── src/main/resources/
 │       ├── plugin.yml               plugin metadata + the runtime `libraries` list
 │       ├── config.yml               the plugin's configuration
 │       └── arena.yml                arena geometry, generators and the shop
-├── BedwarsRecoded-Velocity/         the proxy-side plugin
+├── BedwarsRecoded-Velocity/         the proxy-side plugin: lobby first, then a match
+│   └── .../velocity/                login routing, the queue handshake, pod registration
 ├── BedwarsRecoded-Controller/       matchmaking, capacity, provisioning, HTTP control plane
 ├── deploy/
 │   ├── verify.sh                    tests + the jar size gate
-│   ├── verify_deploy.py             structural checks over every asset (88 checks)
+│   ├── verify_deploy.py             structural checks over every asset (118 checks)
 │   ├── verify_k8s.sh                renders Helm + Kustomize and schema-validates
 │   ├── docker/
 │   │   ├── gameserver.Dockerfile    the game-server image (engine is a build arg)
 │   │   ├── controller.Dockerfile    the controller image
 │   │   ├── velocity.Dockerfile      the proxy image
-│   │   ├── entrypoint.sh            stages the arena world, then execs the server
+│   │   ├── velocity.toml            the proxy config: [servers] + try = ["lobby"]
+│   │   ├── spigot.yml               bungeecord forwarding - required behind a proxy
+│   │   ├── entrypoint.sh            stages the world, then execs the server
 │   │   └── resolve-server-jar.sh    supplied jar -> Paper download -> Spigot compile
 │   ├── compose/
 │   │   ├── docker-compose.yml       the single-host stack
@@ -1174,6 +1179,7 @@ BedwarsRecoded/
 │   ├── helm/bedwars/                the chart (values.yaml + templates/)
 │   ├── helm/values-minikube.yaml    overrides for a small local cluster
 │   ├── templates/Glacier/           the arena map baked into the game image
+│   ├── templates/lobby/             (optional) your hub map, staged in LOBBY role
 │   └── tools/                       rcon.py, server-status.py, join-server.sh, jar tests
 └── docs/                            this manual and the focused documents beside it
 ```
@@ -1186,9 +1192,10 @@ The `deploy/k8s/` files are numbered in application order, and the numbers are m
 | `10-gameserverset.yaml` | The `GameServerSet` (starts at `replicas: 0`) |
 | `11-keda-scaledobject.yaml` | The KEDA `ScaledObject` + an example Karpenter `NodePool` |
 | `12-servicemonitor.yaml` | Prometheus Operator `ServiceMonitor` |
-| `13-networkpolicy.yaml` | Default-deny ingress + explicit allows |
+| `13-networkpolicy.yaml` | Default-deny ingress + explicit allows, for game pods and the lobby |
 | `14-pdb.yaml` | PodDisruptionBudget for the persistent tier |
 | `20-mc-router.yaml` | The hostname router |
+| `25-lobby.yaml` | The lobby: Deployment + Service for the hub players land on |
 | `30-velocity.yaml` | Velocity Deployment + Service |
 | `40-controller.yaml` | Controller Deployment, Service, ServiceAccount, Role, RoleBinding |
 | `50-s3-config.yaml` | The `bedwars-s3` ConfigMap and `bedwars-s3-credentials` Secret |
@@ -1298,7 +1305,7 @@ This runs `mvn -q verify`, then `deploy/verify_deploy.py`, then the JAR size gat
 
 ```
 DEPLOY VERIFY: OK (88 checks passed)
-    BedwarsRecoded-Spigot/target/BedwarsRecoded-Spigot-1.0.0-SNAPSHOT.jar = 271621 bytes (budget 4194304)
+    BedwarsRecoded-Spigot/target/BedwarsRecoded-Spigot-1.0.0-SNAPSHOT.jar = 284366 bytes (budget 4194304)
 ```
 
 That byte count is the 4 MB constraint, enforced on every run. The size gate uses `wc -c`
@@ -1308,7 +1315,7 @@ on one platform is worse than no gate at all.
 ### 13.5 What just got built
 
 ```
-BedwarsRecoded-Spigot/target/BedwarsRecoded-Spigot-1.0.0-SNAPSHOT.jar   271,621 bytes  the plugin
+BedwarsRecoded-Spigot/target/BedwarsRecoded-Spigot-1.0.0-SNAPSHOT.jar   284,366 bytes  the plugin
 BedwarsRecoded-Controller/target/BedwarsRecoded-Controller-*.jar        the controller
 BedwarsRecoded-Velocity/target/BedwarsRecoded-Velocity-*.jar            the proxy plugin
 ```
@@ -1603,7 +1610,7 @@ Read this carefully, because it is the single most informative endpoint in the s
 - `servers: 0` — no game server exists yet. Correct: nothing has been started.
 - `gamesPerServer: 25` — the planning figure from `BEDWARS_GAMES_PER_SERVER`.
 - `authenticated: false` — no `BEDWARS_API_TOKEN` is set, which is the documented single-host
-  development mode. Fine on a laptop, not fine on a public host (chapter 21).
+  development mode. Acceptable on a private host, not on a public one (chapter 21).
 
 Also worth a look, because KEDA would consume exactly this on a cluster:
 
@@ -2061,6 +2068,7 @@ it claimed, end to end, in the cluster — not merely that an image built.
 |---|---|---|---|
 | `mc-router` | LoadBalancer (NodePort on minikube) | 25565 | The stable public entry point |
 | `velocity` | ClusterIP | 25565 | The proxy; mc-router forwards here |
+| `lobby` | ClusterIP | 25565 | The hub every player lands on; Velocity dials it by this name |
 | `bedwars-controller` | ClusterIP | 8080 | The control plane |
 | game pods | none | 25565 | Reachable only from mc-router/Velocity, enforced by NetworkPolicy |
 
@@ -2068,6 +2076,32 @@ Game pods have **no Service**. They are reached through a headless Service that 
 maintains for the GameServerSet, and the NetworkPolicy restricts ingress to mc-router and
 Velocity. A player can never dial a game pod directly, which is the intended shape: the queue
 is the access control.
+
+The **lobby does have a `Service`**, named `lobby`, and the name is a contract rather than a
+convenience: the `velocity.toml` inside the proxy image says `lobby = "lobby:25565"` and
+`try = ["lobby"]`, so the proxy resolves that exact name to place every connecting player. Its
+own `lobby-ingress` NetworkPolicy allows only mc-router and Velocity, for the same reason game
+pods do — the proxy is what authenticates a player, so nothing should reach the hub directly.
+
+That is also how a game pod becomes reachable: the controller names the pod (its pod name, from
+`${HOSTNAME}`) and Velocity expands it with `POD_ADDRESS_SUFFIX` into
+`<pod>.<gameserverset>.<namespace>.svc.cluster.local`. Change `BEDWARS_GAMESERVERSET` and you
+must change `velocity.podAddressSuffix` in the chart's values to match, or the proxy will resolve
+nothing and every queue will end with the player left in the hub.
+
+To check the hub is healthy on a cluster:
+
+```bash
+$ kubectl -n bedwars get deploy lobby
+$ kubectl -n bedwars logs deploy/lobby | grep -E "bedwars_setup|lobby_ready"
+$ kubectl -n bedwars port-forward svc/bedwars-controller 8080:8080 &
+$ curl -s localhost:8080/infra | grep -o '"registeredServers":[0-9]*'
+"registeredServers":0
+```
+
+`registeredServers: 0` with only the infrastructure, the hub and the proxy up is correct — and it
+is the single most useful thing to check, because a hub that ever appears in that number will be
+handed players as if it hosted matches.
 
 ### 16.8 Day-two operations
 
@@ -2326,7 +2360,7 @@ ladder, raise it for faster convergence.
 `logging.json: true` emits one JSON object per gameplay event, carrying `game_id`, `pod_id` and
 `player_uuid` — ready for Loki or ELK. Because every pod logs in the same shape, a query can
 join a match's events across the servers that hosted its parts. Set `false` for human-readable
-lines on a laptop.
+lines on a single host.
 
 ---
 
@@ -3679,7 +3713,7 @@ reader can decide whether they matter for their use.
 | Item | Status |
 |---|---|
 | The S3/MinIO template path | Implemented and structurally verified; not exercised end to end, because the MinIO image cannot be pulled anonymously on this host (quay.io returns 401). Both live runs used the baked `LOCAL` template |
-| Velocity player transfer | The proxy plugin and the controller's dispatch are unit-tested; a real client transfer hop has not been driven |
+| The click-to-match transfer | The lobby boots in `LOBBY` role, the proxy finds it, and the hub is provably absent from the controller's registry — all three were verified live. What has not been driven is the final hop: a real client right-clicking a sign and being moved onto a pod, which needs a Minecraft client |
 | Slime/AdvancedSlimePaper world swap | The adapter exists and is compiled against the ASP API; a live Slime load has not been performed |
 | A full multi-player match on a cluster | Match logic is verified via RCON and the Core suite; a complete 2v2 game has not been played on Kubernetes |
 | KEDA scaling an actual fleet | The `ScaledObject` renders and validates; it has not been observed scaling under real queue load |
@@ -3695,6 +3729,9 @@ reader can decide whether they matter for their use.
 | Pre-warm threshold and backoff are global, not per-group | One arena group's queue depth influences the fleet as a whole |
 | MinIO and MySQL in the chart are development-grade | Single replica, no backup automation. Use managed services in production |
 | No authentication on read-only endpoints | `/infra` reveals fleet size to anyone who can reach the port |
+| The lobby has one replica | A hub restart briefly empties the network's landing point. It cannot destroy a match, but players arriving during the restart are told the lobby is unavailable |
+| A queue NPC needs no NPC plugin, and gets no skin | Any entity named `[bedwars]` works; making it look like a character needs Citizens or ModelEngine, which the plugin deliberately does not depend on |
+| The lobby's default world is generated | No hub map is baked into the image. Supply one at `deploy/templates/lobby/` for a real hub build (see 9.4.4) |
 
 **Operational notes**
 
@@ -3702,7 +3739,8 @@ reader can decide whether they matter for their use.
   historical; the engine is a build argument.
 - `deploy/k8s/` and the Helm chart express the same system; if you edit one, edit the other, or
   pick one and stay there.
-- Nothing in this project has been tested against Windows. Use a Linux host or WSL2.
+- The deployment tooling is POSIX shell, Python 3 and Docker, and the containers are Linux.
+  That is a requirement, not a preference: every script here assumes a POSIX host.
 
 ---
 

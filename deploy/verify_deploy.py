@@ -232,6 +232,14 @@ def verify_lobby() -> None:
         check("BEDWARS_SERVER_ID" not in body,
               "the GameServerSet must not pin BEDWARS_SERVER_ID: the pod name is the address "
               "the proxy dials, and it comes from ${HOSTNAME}")
+        # The DNS suffix is built from the GameServerSet's name, so the two drift apart
+        # silently: rename the set and the proxy resolves a host that no longer exists.
+        for doc in load_all(gss):
+            if doc.get("kind") == "GameServerSet":
+                name = doc["metadata"]["name"]
+                check(f".{name}." in k8s_text,
+                      f"POD_ADDRESS_SUFFIX must be built from the GameServerSet name "
+                      f"('{name}'), or the proxy cannot resolve a pod")
 
     toml_path = DOCKER / "velocity.toml"
     check(toml_path.exists(), "docker: velocity.toml missing (the proxy has no configuration)")

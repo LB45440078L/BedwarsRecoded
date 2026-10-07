@@ -60,6 +60,13 @@ stage_local() {
         log "no local template at '$src' - starting with the server's existing world"
         return 1
     fi
+    # A directory that is not a world must not be staged. `deploy/templates/lobby/` ships with
+    # only a README until an operator drops a hub map in, and copying that over the world
+    # directory would leave a stray file in (and the server generating around) it.
+    if [ ! -f "$src/level.dat" ]; then
+        log "local template directory '$src' holds no world (no level.dat) - ignoring it"
+        return 1
+    fi
     log "staging local template '$NAME' from $src"
     rm -rf "$WORLD_DIR"
     mkdir -p "$WORLD_DIR"
