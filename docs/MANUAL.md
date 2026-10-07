@@ -32,6 +32,7 @@
 11. [Requirements](#11-requirements)
 12. [The repository, file by file](#12-the-repository-file-by-file)
 13. [Build it, command by command](#13-build-it-command-by-command)
+    - [13.8 The guided installer](#138-the-guided-installer-installsh)
 14. [The server jar: Spigot versus Paper](#14-the-server-jar-spigot-versus-paper)
 15. [Path A — the whole stack with Docker Compose](#15-path-a--the-whole-stack-with-docker-compose)
 16. [Path B — Kubernetes](#16-path-b--kubernetes)
@@ -1357,6 +1358,102 @@ $ ./deploy/tools/test-resolve-server-jar.sh
 
 Thirteen assertions covering the supplied-jar path, the engine-authority rule, the foreign-jar
 refusal, and the ambiguous-folder error. It needs bash and Python 3, and does not need Docker.
+
+### 13.8 The guided installer (`install.sh`)
+
+Everything in 13.1–13.7 done by hand, in one command:
+
+```bash
+$ ./install.sh
+```
+
+It is a plain bash script — no Python, no Node, no package manager — and it runs on macOS's
+`/bin/bash` 3.2 as well as any Linux shell. It asks before it does anything, writes a log of
+everything it did, and can undo what it created. It is the intended front door for a first
+install; the manual's command-by-command chapters remain the reference for what it is doing and
+for changing things afterwards.
+
+**What it does, in order**
+
+1. **Preflight.** Probes for `docker` (and its daemon), the compose v2 plugin, `kubectl`, a
+   reachable cluster, `minikube`, `helm`, and `curl`. Reports free disk. Nothing is installed
+   silently — if a tool is missing, it says which path needs it.
+2. **Asks.** Deployment mode (Docker or Kubernetes, with the machine's actual state as the
+   recommendation, not a guess), then every parameter of that path, then the world files.
+   The repository's own defaults are one Enter away; each question validates its answer.
+3. **Copies assets.** Your server jar into `server-jars/` (so the image needs no BuildTools
+   compile), your hub world into `deploy/templates/<name>/`, optionally your arena world over
+   the bundled one. A directory without a `level.dat` is refused, because that is not a world.
+4. **Writes configuration.** `deploy/compose/.env` (mode 600) or
+   `deploy/helm/values-install.yaml` — the answers as a file you can edit and reuse.
+5. **Builds and starts.** Image builds stream their real output with elapsed time, because a
+   spinner over a four-minute compile is a lie.
+6. **Waits for readiness**, then **proves it** — not "the container started" but: the controller
+   answers `/healthz`; `/infra` reports the provisioner you asked for; the lobby logged
+   `role=LOBBY`; the proxy resolved its lobby server; and the registry shows no hub
+   masquerading as a match host.
+7. **Prints how to connect and how to undo it.**
+
+**Options**
+
+| Flag | Effect |
+|---|---|
+| `--mode docker\|kubernetes` | Skip the mode question |
+| `--yes` | Accept every default; fully unattended |
+| `--dry-run` | Print every action, write/build/start nothing |
+| `--resume` | Use `.installer/state` from a previous run as the defaults |
+| `--teardown` | Remove the stack it created, then stop |
+| `--verbose` | Echo each command as it runs |
+| `--no-color` | Plain output (also `NO_COLOR=1`) |
+| `-h`, `--help` | Usage |
+
+**What it writes, and what it will not touch**
+
+- `.installer/install.log` — every command, with timestamps. The pretty screen is scrollback;
+  the log is the record.
+- `.installer/state` — what was created, so `--teardown` and `--resume` work. This is why
+  teardown is safe: it removes what the installer made, not "everything that looks related".
+- `deploy/compose/.env` and `deploy/helm/values-install.yaml` — your answers. Both are
+  gitignored; the `.env` is written mode 600 because it holds passwords.
+- It never sets an existing password to a new one, never deletes a world, and never removes a
+  container it did not create.
+
+**Honest limits**
+
+- The API-token question is deliberately **not** asked. The controller enforces
+  `BEDWARS_API_TOKEN` correctly, but the shipped reporter and proxy do not yet present it, so
+  enabling it would stop the fleet registering. The installer says so on screen rather than
+  offering a switch that breaks the thing it just built. See 21.2.
+- The plain-manifest Kubernetes path applies the repository's manifests, which are written for
+  the `bedwars` namespace and the `solo` arena group. Ask for anything else and the installer
+  says so and uses the Helm path's parameterisation instead of deploying somewhere the DNS
+  suffix does not point.
+- A local cluster cannot pull an image that exists only on your machine. On minikube/kind the
+  installer loads the images and then **verifies** they are visible to the cluster
+  (`minikube image ls`), because `minikube image load` exits 0 even when it did nothing.
+- Object storage is optional; when the default registry refuses the MinIO pull (a common
+  locked-down-network symptom, and one this machine has), the installer offers the documented
+  Bitnami mirrors and records the choice in `.env` instead of failing half an hour later.
+
+**Testing the installer itself**
+
+`deploy/tools/test-install-interactive.py` drives `install.sh` through a real pty and asserts what
+a user cares about: that every answer is honoured, that a nonsense answer is rejected and asked
+again rather than accepted, that the review's `[e]dit` really re-runs the wizard, and that
+`[a]bort` exits having changed nothing. It runs the installer in `--dry-run`, so it needs no
+Docker, no cluster and no network:
+
+```bash
+$ deploy/tools/test-install-interactive.py
+answered 30 of 30 prompts, installer exit code 0
+PASS  the invalid answer was rejected and re-asked
+PASS  the corrected answer was accepted
+PASS  a non-default menu value was honoured
+PASS  the first pass used the chosen stack
+PASS  the re-run used the new stack
+PASS  the engine choice was honoured
+PASS  aborting reported that nothing changed
+```
 
 ---
 
@@ -3274,6 +3371,15 @@ Properties, as implemented:
 note the rotation consequence: the token is read once at startup, so rotating it means
 restarting the controller and every game server that reports to it.
 
+**Enforced, but not yet end-to-end usable.** The controller checks the header on every mutating
+request, and does so correctly. What no shipped client does is *present* one: `HttpPodReporter`
+(the game server's reporter) and the proxy's controller client send no `X-Bedwars-Token`. Set
+`BEDWARS_API_TOKEN` today and every pod report and every lobby enqueue returns `401` — the fleet
+disappears from the registry and the network stops accepting queues. Treat the variable as
+reserved: the code that honours it is finished and tested, the code that answers it is not. Until
+it is, `/infra` reporting `"authenticated": false` is the expected state and not a
+misconfiguration to fix.
+
 ### 21.3 Credential handling rules
 
 Three rules, and they are absolute in this project:
@@ -3336,8 +3442,10 @@ compromised cluster.
 
 A checklist, in order of importance:
 
-1. **Set `BEDWARS_API_TOKEN`** on the controller, and give it to every game server and lobby
-   that reports. Verify: `/infra` must say `"authenticated": true`.
+1. **Leave `BEDWARS_API_TOKEN` unset** until the reporting clients send the header (see 21.2).
+   Setting it now stops the fleet registering rather than protecting it. Confirm the expected
+   state instead: `/infra` reports `"authenticated": false`, and the control plane is protected
+   by being ClusterIP-only (§21.6).
 2. **Change every default password**: MySQL user and root, MinIO/S3 keys, the database password
    in `config.yml`.
 3. **Do not mount the Docker socket** in production. Use the Kubernetes path.
@@ -3729,6 +3837,7 @@ reader can decide whether they matter for their use.
 | Pre-warm threshold and backoff are global, not per-group | One arena group's queue depth influences the fleet as a whole |
 | MinIO and MySQL in the chart are development-grade | Single replica, no backup automation. Use managed services in production |
 | No authentication on read-only endpoints | `/infra` reveals fleet size to anyone who can reach the port |
+| No shipped client presents the API token | Setting `BEDWARS_API_TOKEN` returns `401` to every pod report and lobby enqueue, so the fleet stops registering. Controller-side enforcement is complete and tested; the client-side header is not implemented (21.2) |
 | The lobby has one replica | A hub restart briefly empties the network's landing point. It cannot destroy a match, but players arriving during the restart are told the lobby is unavailable |
 | A queue NPC needs no NPC plugin, and gets no skin | Any entity named `[bedwars]` works; making it look like a character needs Citizens or ModelEngine, which the plugin deliberately does not depend on |
 | The lobby's default world is generated | No hub map is baked into the image. Supply one at `deploy/templates/lobby/` for a real hub build (see 9.4.4) |

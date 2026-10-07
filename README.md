@@ -12,7 +12,7 @@
   <a href="https://kubernetes.io/"><img src="https://img.shields.io/badge/Kubernetes-native-326CE5?logo=kubernetes&amp;logoColor=white" alt="Kubernetes"></a>
   <a href="https://helm.sh/"><img src="https://img.shields.io/badge/Helm-chart-0F1689?logo=helm&amp;logoColor=white" alt="Helm chart"></a>
   <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-images-2496ED?logo=docker&amp;logoColor=white" alt="Docker images"></a>
-  <a href="#-testing"><img src="https://img.shields.io/badge/tests-202%20passing-brightgreen" alt="Tests"></a>
+  <a href="#-testing"><img src="https://img.shields.io/badge/tests-194%20passing-brightgreen" alt="Tests"></a>
   <a href="#-build"><img src="https://img.shields.io/badge/plugin%20JAR-%3C%204%20MB-brightgreen" alt="Plugin JAR under 4 MB"></a>
   <a href="https://github.com/LB45440078L/BedwarsRecoded/issues"><img src="https://img.shields.io/badge/PRs-welcome-blueviolet" alt="PRs welcome"></a>
 </p>
@@ -117,6 +117,10 @@ Honest list of what is modelled but not fully wired, or absent:
 - **gRPC** — controller communication is HTTP only (the brief allowed HTTP webhooks).
 - **K8s annotations for pod state** — state is reported over HTTP webhooks only.
 - **NPC via Citizens** — join NPCs use a named entity, not a Citizens hook.
+- **The controller API token is enforced but never presented** — the controller checks
+  `BEDWARS_API_TOKEN` on every mutating endpoint (constant-time, never logged), but the
+  game-server reporter and the proxy do not send the header, so setting it would stop the fleet
+  registering. Leave it unset until the clients send it; see `docs/MANUAL.md` §21.2.
 - **Structured concurrency (`StructuredTaskScope`)** — still a preview API in JDK 25
   (verified: `javac --release 25` rejects it without `--enable-preview`), so plain
   virtual threads are used. Scoped Values *are* used, since those are final.
@@ -178,7 +182,7 @@ by the server at startup, so they are never shaded.
 ## 🧪 Testing
 
 JUnit 5 + AssertJ. `Core` is deliberately Bukkit-free, so game logic is tested with
-plain JUnit — no server, no mocking framework. The suite is **189 tests**:
+plain JUnit — no server, no mocking framework. The suite is **194 tests**:
 
 - **Core (95)** — game lifecycle, and the win condition in particular
   (`WinConditionTest`): a match must reach a single survivor even when the arena
@@ -188,7 +192,7 @@ plain JUnit — no server, no mocking framework. The suite is **189 tests**:
   consume slots, and finished matches are pruned and unregistered.
   `SuddenDeathDragonTest` covers the dragon plan: one per Dragon Buff level, eliminated
   teams bring none, and the neutral count is honoured.
-- **Spigot (28)** — config (including the `dragon:` block and its clamps), the dragon's
+- **Spigot (33)** — config (including the `dragon:` block and its clamps), the dragon's
   block rules (`DragonRulesTest`: air/indestructible blocks/beds are never broken),
   reporting, template sources, and `SpigotOnlyApiTest`, which enforces the Spigot-only
   constraint.
@@ -204,6 +208,22 @@ plain JUnit — no server, no mocking framework. The suite is **189 tests**:
 classpath.
 
 ## 🚀 Running it
+
+The fastest route from a fresh checkout to a running network is the guided installer:
+
+```bash
+./install.sh              # guided: Docker or Kubernetes, every parameter prompted
+./install.sh --dry-run    # print every action, change nothing
+./install.sh --teardown   # undo exactly what it created
+```
+
+It probes the machine and tells you which path it is ready for, asks every parameter (the
+repository's own defaults are one Enter away), copies your world files and server jar into
+place, streams the real image-build output with elapsed time, waits for readiness, and then
+**proves** the result: controller health, the lobby logging `role=LOBBY`, the proxy resolving
+its lobby server, and no hub masquerading as a match host in the registry. `--yes` accepts every
+default for an unattended run; `--mode kubernetes` skips the mode question. Walkthrough:
+[`docs/MANUAL.md`](docs/MANUAL.md) §13.8.
 
 There is one shape: a **game server managed by the controller**. It runs as a container,
 started when players queue and reclaimed when its match ends. Docker and Kubernetes are
@@ -280,12 +300,14 @@ then `docs/SETUP.md` if you prefer the short path.
 
 Runs `mvn verify` (unit + real HTTP integration tests for the controller), the
 deployment-asset verifier (`deploy/verify_deploy.py` — parses every manifest and the
-compose file, 88 structural checks), and the 4 MB JAR gate.
+compose file, 119 structural checks), and the 4 MB JAR gate.
 
 `deploy/verify_k8s.sh` additionally lints and renders the Helm chart, renders the
 Kustomize base, and schema-validates both with `kubeconform` (set `HELM`, `KUBECTL`,
 `KUBECONFORM` if they are not on `PATH`). `deploy/tools/test-resolve-server-jar.sh`
-proves the image compiles Spigot only when it has no other option.
+proves the image compiles Spigot only when it has no other option, and
+`deploy/tools/test-install-interactive.py` drives `install.sh` through a pty to prove the
+guided wizard honours, validates and re-asks for its answers (dry-run: no Docker needed).
 
 ## 🔒 Hard constraints honoured
 
@@ -301,6 +323,7 @@ proves the image compiles Spigot only when it has no other option.
 ## 🗂️ Repository layout
 
 ```
+install.sh                  guided installer: Docker or Kubernetes, end to end
 BedwarsRecoded-API/         public contracts
 BedwarsRecoded-Core/        domain + persistence
 BedwarsRecoded-Spigot/      Spigot plugin
