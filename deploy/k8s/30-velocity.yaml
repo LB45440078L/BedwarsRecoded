@@ -27,6 +27,18 @@ spec:
           env:
             - name: CONTROLLER_URL
               value: "http://bedwars-controller:8080"
+            # Which registered server a player is placed on when they connect, and
+            # where finished matches are sent back to. Must match the [servers] entry
+            # and `try` in the proxy image's velocity.toml.
+            - name: LOBBY_SERVER
+              value: "lobby"
+            # Game pods are ephemeral, so they are not in velocity.toml. The controller
+            # names a pod by its id (which is its hostname), and the proxy dials
+            # `<pod-id><POD_ADDRESS_SUFFIX>`. The GameServerSet's headless Service gives
+            # every replica the DNS name <pod>.<gameserverset>.<namespace>.svc.cluster.local,
+            # so this suffix is what makes an ephemeral pod addressable.
+            - name: POD_ADDRESS_SUFFIX
+              value: ".bedwars-solo.bedwars.svc.cluster.local"
           ports:
             - name: proxy
               containerPort: 25565

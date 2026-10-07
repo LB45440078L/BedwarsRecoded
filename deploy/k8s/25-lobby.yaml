@@ -1,0 +1,91 @@
+# OpenKruise is not required for the lobby: it is a permanent server, not an
+# ephemeral match pod, so a plain Deployment is exactly right.
+#
+# The lobby is the server every player lands on after connecting to the proxy.
+# It hosts no matches. Its plugin runs in LOBBY role, which means it never reports
+# capacity to the controller - a lobby that registered as a match host would be
+# handed players as if it could host a game.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lobby
+  namespace: bedwars
+  labels:
+    app: lobby
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lobby
+  template:
+    metadata:
+      labels:
+        app: lobby
+    spec:
+      containers:
+        - name: lobby
+          # The same image as a game server, in LOBBY role. One image, two duties.
+          image: bedwars-spigot:1.0.0
+          imagePullPolicy: IfNotPresent
+          env:
+            # What makes this a hub instead of a match host.
+            - name: BEDWARS_ROLE
+              value: "LOBBY"
+            - name: BEDWARS_SERVER_ID
+              value: "lobby"
+            # The world players wait in. Staged from the image by the entrypoint; if no
+            # template named 'lobby' is present, the server generates one and says so.
+            - name: BEDWARS_TEMPLATE_NAME
+              value: "lobby"
+            - name: BEDWARS_TEMPLATE_SOURCE
+              value: "LOCAL"
+            # A flat world: a hub with no terrain generation and a predictable spawn.
+            - name: BEDWARS_LEVEL_TYPE
+              value: "flat"
+            # The lobby never contacts the controller (matchmaking is the proxy's job),
+            # so no controller URL is set here on purpose.
+            - name: BEDWARS_RETURN_TO_LOBBY
+              value: "false"
+          ports:
+            - name: minecraft
+              containerPort: 25565
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+          readinessProbe:
+            tcpSocket:
+              port: 25565
+            initialDelaySeconds: 15
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 25565
+            initialDelaySeconds: 45
+            periodSeconds: 15
+            failureThreshold: 4
+          lifecycle:
+            preStop:
+              exec:
+                # Give the proxy a moment to stop sending players here before the
+                # process is signalled, so a player is never mid-handshake.
+                command: ["/bin/sh", "-c", "sleep 5"]
+      terminationGracePeriodSeconds: 30
+---
+# The lobby needs a Service because Velocity dials it by name: the velocity.toml
+# shipped in the proxy image says `lobby = "lobby:25565"`.
+apiVersion: v1
+kind: Service
+metadata:
+  name: lobby
+  namespace: bedwars
+spec:
+  selector:
+    app: lobby
+  ports:
+    - name: minecraft
+      port: 25565
+      targetPort: 25565

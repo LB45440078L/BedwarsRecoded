@@ -21,3 +21,16 @@ commands:
     # run `/bw join`, `/bw shop`, `/bw lang`, ... A blanket permission here blocked
     # all gameplay commands for regular players. Admin subcommands (start/stop/reload)
     # are gated individually in BedwarsCommand.
+#
+# Permission nodes MUST be declared here. Bukkit evaluates a node that no plugin declares
+# as `PermissionDefault.FALSE`, which is false even for an operator — so a permission
+# checked in code but missing from this file silently denies everyone, server owner
+# included.
+permissions:
+  bedwars.admin:
+    description: "Administrative subcommands (start, stop, create, upgrades, reload)."
+    default: op
+  bedwars.lobby.build:
+    description: "Build in the network lobby: place the matchmaking signs and NPCs. The hub
+      otherwise refuses block place/break for everyone, so hedged staff need this to set it up."
+    default: op

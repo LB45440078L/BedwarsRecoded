@@ -1,0 +1,86 @@
+{{- if .Values.lobby.enabled }}
+# The network lobby: the hub every player lands on after connecting to the proxy.
+# Same image as a game server, running in LOBBY role. It hosts no matches and never
+# reports capacity to the controller, so the controller can never hand it players as
+# if it were a game server.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lobby
+  labels:
+    app: lobby
+    {{- include "bedwars.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.lobby.replicas }}
+  selector:
+    matchLabels:
+      app: lobby
+  template:
+    metadata:
+      labels:
+        app: lobby
+    spec:
+      containers:
+        - name: lobby
+          image: {{ include "bedwars.image" (dict "name" "bedwars-spigot" "root" .) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: BEDWARS_ROLE
+              value: "LOBBY"
+            - name: BEDWARS_SERVER_ID
+              value: "lobby"
+            - name: BEDWARS_TEMPLATE_NAME
+              value: {{ .Values.lobby.world | quote }}
+            - name: BEDWARS_TEMPLATE_SOURCE
+              value: {{ .Values.lobby.templateSource | quote }}
+            {{- if .Values.lobby.levelType }}
+            - name: BEDWARS_LEVEL_TYPE
+              value: {{ .Values.lobby.levelType | quote }}
+            {{- end }}
+            # A lobby does not queue players itself: the proxy owns matchmaking.
+            - name: BEDWARS_RETURN_TO_LOBBY
+              value: "false"
+          ports:
+            - name: minecraft
+              containerPort: 25565
+          resources:
+            requests:
+              cpu: {{ .Values.lobby.cpuRequest | quote }}
+              memory: {{ .Values.lobby.memoryRequest | quote }}
+            limits:
+              cpu: {{ .Values.lobby.cpuLimit | quote }}
+              memory: {{ .Values.lobby.memoryLimit | quote }}
+          readinessProbe:
+            tcpSocket:
+              port: 25565
+            initialDelaySeconds: 15
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 25565
+            initialDelaySeconds: 45
+            periodSeconds: 15
+            failureThreshold: 4
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
+      terminationGracePeriodSeconds: 30
+---
+# Velocity dials the lobby by name: the proxy image's velocity.toml says
+# `lobby = "lobby:25565"`, and `try = ["lobby"]` is where a connecting player is put.
+apiVersion: v1
+kind: Service
+metadata:
+  name: lobby
+  labels:
+    app: lobby
+    {{- include "bedwars.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: lobby
+  ports:
+    - name: minecraft
+      port: 25565
+      targetPort: 25565
+{{- end }}

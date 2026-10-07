@@ -26,8 +26,16 @@ import java.util.List;
 public final class BedwarsCommand implements CommandExecutor, TabCompleter {
 
     private static final List<String> SUBCOMMANDS = List.of(
-            "help", "status", "join", "leave", "start", "stop", "create", "gui", "shop", "quickbuy",
+            "help", "status", "queue", "join", "leave", "start", "stop", "create", "gui", "shop", "quickbuy",
             "upgrades", "lang", "reload");
+
+    /**
+     * Subcommands that only exist on a match host. In the lobby {@code plugin.host()},
+     * the shop and the language service are not wired at all, so reaching them would be a
+     * NullPointerException — better to say what this server is.
+     */
+    private static final java.util.Set<String> GAME_ONLY = java.util.Set.of(
+            "start", "stop", "create", "shop", "quickbuy", "upgrades", "gui", "leave", "lang");
 
     private final BedwarsRecodedPlugin plugin;
 
@@ -38,9 +46,15 @@ public final class BedwarsCommand implements CommandExecutor, TabCompleter {
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         String sub = args.length == 0 ? "help" : args[0].toLowerCase();
+        if (plugin.isLobby() && GAME_ONLY.contains(sub)) {
+            sender.sendMessage(ChatColor.RED + "This is the network lobby - matches run on game servers."
+                    + " Use " + ChatColor.YELLOW + "/bw queue" + ChatColor.RED + " to join one.");
+            return true;
+        }
         switch (sub) {
             case "help" -> help(sender);
             case "status" -> status(sender);
+            case "queue" -> queue(sender);
             case "start" -> start(sender, args);
             case "stop" -> stop(sender, args);
             case "create" -> create(sender, args);
@@ -65,6 +79,15 @@ public final class BedwarsCommand implements CommandExecutor, TabCompleter {
 
     private void help(CommandSender sender) {
         sender.sendMessage(ChatColor.GOLD + "Bedwars commands");
+        if (plugin.isLobby()) {
+            sender.sendMessage(ChatColor.YELLOW + "/bw queue" + ChatColor.GRAY
+                    + " - find a match and be sent to it");
+            sender.sendMessage(ChatColor.GRAY + "Or right-click a BedWars sign / NPC in the lobby.");
+            if (!(sender instanceof Player) || sender.hasPermission("bedwars.admin")) {
+                sender.sendMessage(ChatColor.YELLOW + "/bw reload" + ChatColor.GRAY + " - reload config.yml");
+            }
+            return;
+        }
         sender.sendMessage(ChatColor.YELLOW + "/bw status" + ChatColor.GRAY + " - list matches on this server");
         sender.sendMessage(ChatColor.YELLOW + "/bw join" + ChatColor.GRAY + " - join a match");
         sender.sendMessage(ChatColor.YELLOW + "/bw leave" + ChatColor.GRAY + " - leave your match");
@@ -80,6 +103,16 @@ public final class BedwarsCommand implements CommandExecutor, TabCompleter {
     }
 
     private void status(CommandSender sender) {
+        if (plugin.isLobby()) {
+            String world = sender instanceof Player player ? player.getWorld().getName() : "(console)";
+            sender.sendMessage(ChatColor.GOLD + "Network lobby" + ChatColor.GRAY
+                    + " - no matches here; players are routed to game servers.");
+            sender.sendMessage(ChatColor.GRAY + "  world=" + world
+                    + "  role=" + ChatColor.YELLOW + "LOBBY");
+            sender.sendMessage(ChatColor.YELLOW + "  /bw queue" + ChatColor.GRAY
+                    + " - search for a match (or right-click a [bedwars] sign/NPC)");
+            return;
+        }
         List<Game> games = plugin.host().games();
         if (games.isEmpty()) {
             sender.sendMessage(ChatColor.YELLOW + "No matches running. Capacity: "
@@ -156,9 +189,27 @@ public final class BedwarsCommand implements CommandExecutor, TabCompleter {
         return plugin.host().byId(target).map(List::of).orElse(List.of());
     }
 
+    private void queue(CommandSender sender) {
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(ChatColor.RED + "Players only.");
+            return;
+        }
+        if (plugin.isLobby()) {
+            plugin.lobbyQueue().queue(player);
+            return;
+        }
+        // On a match host the player is already on the server that would host the game,
+        // so "queue" is simply "join the local match".
+        join(sender);
+    }
+
     private void join(CommandSender sender) {
         if (!(sender instanceof Player player)) {
             sender.sendMessage(ChatColor.RED + "Players only.");
+            return;
+        }
+        if (plugin.isLobby()) {
+            plugin.lobbyQueue().queue(player);
             return;
         }
         if (plugin.joinService().isPlaying(player)) {

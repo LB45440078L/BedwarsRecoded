@@ -29,7 +29,30 @@ VERSION="${BEDWARS_TEMPLATE_VERSION:-1.0.0}"
 LOCAL_ROOT="${BEDWARS_TEMPLATE_LOCAL_ROOT:-/templates}"
 FORCE="${BEDWARS_TEMPLATE_FORCE:-false}"
 
+# What the staged world is called depends on the role: a game pod stages an arena, the lobby
+# stages a hub. Only the log wording differs, but a hub warning that "the match will run on a
+# generated world" is nonsense, and misleading log lines cost debugging time.
+if [ "${BEDWARS_ROLE:-GAME}" = "LOBBY" ]; then
+    ROLE_LABEL="hub"
+else
+    ROLE_LABEL="arena"
+fi
+
 log() { echo "[entrypoint] $*"; }
+
+# Optional world generator, applied before the server starts.
+#
+# A lobby usually wants a flat world (BEDWARS_LEVEL_TYPE=flat) so it does not spend
+# time generating terrain around a hub build. A game pod leaves this unset and the
+# staged template decides the world.
+if [ -n "${BEDWARS_LEVEL_TYPE:-}" ] && [ -f "$SERVER_DIR/server.properties" ]; then
+    if grep -q '^level-type=' "$SERVER_DIR/server.properties"; then
+        sed -i "s/^level-type=.*/level-type=${BEDWARS_LEVEL_TYPE}/" "$SERVER_DIR/server.properties"
+    else
+        printf 'level-type=%s\n' "${BEDWARS_LEVEL_TYPE}" >> "$SERVER_DIR/server.properties"
+    fi
+    log "world generator set to '${BEDWARS_LEVEL_TYPE}'"
+fi
 
 stage_local() {
     local src="$LOCAL_ROOT/$NAME"
@@ -91,9 +114,9 @@ else
 fi
 
 if [ -f "$WORLD_DIR/level.dat" ]; then
-    log "arena ready: $(du -sh "$WORLD_DIR" 2>/dev/null | cut -f1) world at $WORLD_DIR"
+    log "${ROLE_LABEL} world ready: $(du -sh "$WORLD_DIR" 2>/dev/null | cut -f1) at $WORLD_DIR"
 else
-    log "WARNING: no arena world staged; the match will run on a generated world"
+    log "WARNING: no ${ROLE_LABEL} world staged; the server will run on a generated world"
 fi
 
 exec java -jar "$SERVER_DIR/server.jar" --nogui

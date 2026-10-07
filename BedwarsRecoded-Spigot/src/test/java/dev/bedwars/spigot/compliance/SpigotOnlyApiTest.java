@@ -14,9 +14,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Enforces the hard constraint that the plugin is built against the <b>Spigot API
- * exclusively</b>. A Paper/Folia/Adventure import anywhere in a {@code src/main}
- * tree would mean the plugin silently requires a non-Spigot server; this test turns
- * that into a build failure instead of a runtime surprise.
+ * exclusively</b>. A Paper/Folia/Adventure import in the Spigot module's
+ * {@code src/main} tree would mean the plugin silently requires a non-Spigot server;
+ * this test turns that into a build failure instead of a runtime surprise.
  *
  * <p>It also asserts that no module POM declares a Paper artifact and that
  * {@code plugin.yml} keeps {@code api-version: 26.1}.
@@ -83,9 +83,19 @@ class SpigotOnlyApiTest {
                 .isEmpty();
     }
 
+    /**
+     * Main sources of the Spigot plugin — the one artifact that has to load on a plain
+     * Spigot server.
+     *
+     * <p>The Velocity module is deliberately NOT scanned. A proxy is not a Spigot
+     * server, and Velocity's API is Adventure-native, so {@code net.kyori.adventure}
+     * there is the correct API rather than an accidental Paper dependency. Scanning it
+     * would force the proxy to avoid its own messaging API to satisfy a rule about a
+     * different runtime.
+     */
     private static boolean isMainSource(Path path) {
         String normalised = path.toString().replace('\\', '/');
-        return normalised.contains("/src/main/java/");
+        return normalised.contains("/BedwarsRecoded-Spigot/src/main/java/");
     }
 
     /** Walks up from the working directory to the reactor root. */

@@ -92,6 +92,10 @@ COPY --from=plugin /src/BedwarsRecoded-Spigot/target/BedwarsRecoded-Spigot-*.jar
 RUN printf 'eula=true\n' > /server/eula.txt \
     && printf 'online-mode=false\nlevel-name=world\nspawn-protection=0\nmax-players=40\nview-distance=6\nsimulation-distance=4\nwhite-list=false\nenforce-whitelist=false\n' > /server/server.properties
 
+# This server sits behind a proxy: bungeecord forwarding must be on, or a player the
+# proxy sends here cannot complete the handshake. The same file is used by the lobby.
+COPY deploy/docker/spigot.yml /server/spigot.yml
+
 # The arena templates the server can stage as its main world. In production these live in
 # object storage and are fetched at boot; a template baked here makes the image
 # self-contained (and is how the dev/test cluster gets a real map).

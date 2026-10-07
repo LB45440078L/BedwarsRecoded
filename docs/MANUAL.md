@@ -24,7 +24,7 @@
 6. [Docker Compose](#6-docker-compose)
 7. [Kubernetes, and the parts this project uses](#7-kubernetes-and-the-parts-this-project-uses)
 8. [OpenKruise, KEDA, and Karpenter](#8-openkruise-keda-and-karpenter)
-9. [Velocity and mc-router: how players reach a match](#9-velocity-and-mc-router-how-players-reach-a-match)
+9. [Velocity, the lobby, and mc-router: how players reach a match](#9-velocity-the-lobby-and-mc-router-how-players-reach-a-match)
 10. [The data layer: MySQL, object storage, and Slime worlds](#10-the-data-layer-mysql-object-storage-and-slime-worlds)
 
 **Part III — Getting it running**
@@ -699,7 +699,7 @@ small node quickly. On a managed cluster without Karpenter or the cluster autosc
 
 ---
 
-## 9. Velocity and mc-router: how players reach a match
+## 9. Velocity, the lobby, and mc-router: how players reach a match
 
 ### 9.1 The problem
 
@@ -715,16 +715,20 @@ vanilla server — can transfer a connected player to a *different* backend serv
 disconnecting. That transfer is what makes "the lobby queued you and now you are in a match"
 feel seamless.
 
-This repository ships a Velocity plugin (`BedwarsRecoded-Velocity`) whose job is the bridge:
+This repository ships a Velocity plugin (`BedwarsRecoded-Velocity`) with exactly three jobs:
 
-1. A player connects to the proxy.
-2. The proxy plugin POSTs to the controller's `/lobby/queue` with the player's details.
-3. The controller replies with either a game server address and a member list
-   (`DispatchResult`) or `retryAfterMillis` — "no room yet, come back in N ms".
-4. On success, the player is transferred to that game server.
+1. **Land every connecting player on the lobby.** On login the plugin places the player on the
+   registered server named by `LOBBY_SERVER`. It does *not* put them into a match. (An earlier
+   version did, which meant anyone who logged in while the fleet was scaled to zero had no
+   server to be placed on at all.)
+2. **Act on a matchmaking request from the lobby.** The lobby cannot move a player off itself —
+   only the proxy can — so the lobby sends `bedwars:queue`, and the plugin asks the controller,
+   then transfers the player onto the pod it names.
+3. **Put finished players back in the lobby** when a game server sends `bedwars:return`.
 
-Two things are deliberately *not* in the proxy: game logic, and knowledge of where servers are.
-Velocity asks; it does not decide.
+Two things are deliberately *not* in the proxy: game logic, and a fixed list of servers. Velocity
+asks; it does not decide. Game pods are ephemeral and cannot be listed in advance, so the proxy
+registers each one the first time the controller names it (see 9.4).
 
 ### 9.3 mc-router
 
@@ -739,17 +743,227 @@ domain goes to Velocity". Both tools take player traffic; mc-router defers to Ve
 Velocity defers to the controller. The chain is: **player -> mc-router -> Velocity ->
 controller decides -> game pod**.
 
-### 9.4 What is deliberately absent
+### 9.4 The lobby: a real server role
 
-There is **no lobby server** running BedWars game logic. The "lobby" is the proxy plus the
-queue. This is a real design choice with a real consequence: the queue is authoritative and
-stateless with respect to the game, so a lobby restart cannot destroy anyone's match. The
-cost is that anything you want in a lobby (NPCs showing live player counts, for instance) must
-be driven from data — which is exactly what `/lobby/arena-status` provides:
+The lobby is **not** a metaphor for the proxy. It is a real, self-standing Spigot server — the
+same image as a game server, started with `BEDWARS_ROLE=LOBBY` — whose entire job is to hold the
+players who have just arrived through the proxy and let them choose what to play.
+
+That is the shape every large network uses (Hypixel, Mineplex): you connect to one address, you
+land in a hub with NPCs and signs, you click one, and a moment later you are in a match. When the
+match ends you are returned to the hub, ready to queue again. The hub is a *server*, not a menu,
+because the queue must never be able to destroy a running game, and because a hub is where you
+put the things players look at while they wait.
+
+#### 9.4.1 The player's journey, component by component
+
+| # | What happens | Which component does it |
+|---|---|---|
+| 1 | The player connects to the network address | **Velocity** (published on 25565) |
+| 2 | Velocity places them on the server named by `try` in `velocity.toml` — `lobby` | Velocity |
+| 3 | They arrive in the hub world, at its spawn, in adventure mode, unharmed | **Lobby** (`LobbyProtectionListener`) |
+| 4 | They right-click a sign, or an NPC named `[bedwars]`, or type `/bw queue` | Lobby (`LobbyQueueListener`) |
+| 5 | The lobby sends a plugin message on `bedwars:queue` carrying the player's UUID | Lobby (`ProxyChannel`) |
+| 6 | Velocity reads it and POSTs the player to the controller's `/lobby/queue` | Velocity (`ControllerClient`) |
+| 7 | The controller answers with a pod address and member list, or `retryAfterMillis` | **Controller** |
+| 8 | Velocity registers that pod with itself (if new) and transfers the player onto it | Velocity |
+| 9 | The match runs on the pod; when it ends the pod asks for its players back | **Game pod** |
+| 10 | Velocity moves those players to the lobby — the loop closes | Velocity |
+
+Nothing in that table is a metaphor: steps 2, 8 and 10 are real `createConnectionRequest`
+transfers, and steps 5 and 9 are real plugin messages.
+
+#### 9.4.2 Why one image, two roles
+
+The lobby is the *same image* as a game server (`bedwars-spigot:1.0.0`) run with a different
+role. One codebase, one build, two jobs:
+
+| | `GAME` (default) | `LOBBY` |
+|---|---|---|
+| Hosts BedWars matches | yes — one or more, per `games-per-server` | never |
+| Reports capacity to the controller | yes, on every heartbeat | **never** |
+| Appears in the controller's registry | yes | no |
+| Staged world | the arena template (`Glacier`, or a Slime world) | the hub world (`lobby`) |
+| Dragon, shop, stats, scoreboard, arena code | all wired | none of it loaded |
+| Extra listeners | game/join/shop/join-sign | hub protection + sign/NPC queue |
+| `/bw` subcommands | the full set | `queue`, `join`, `status`, `help` |
+
+The single most important row is the second one. **A lobby that reported capacity would be
+handed players as if it could host a match**, because the controller's registry means exactly
+"this server can host a game". The role check in the plugin's bootstrap exits before the
+reporter is even constructed, so a lobby has no code path that can enrol it as a game server.
+That is why it is a role switch and not a configuration convention.
+
+`ServerRole.parse` maps anything unrecognised to `GAME`. Failing towards the old behaviour is
+deliberate: a typo in `BEDWARS_ROLE` must not silently turn a game pod into a hub.
+
+#### 9.4.3 The transfer protocol: plugin messages
+
+A backend server cannot move a player to another server — the connection belongs to the proxy.
+So the backends *ask*. Both directions use a Minecraft **plugin message** on a namespaced
+channel, which is the standard, in-band way for a backend to talk to a proxy:
+
+| Channel | Sent by | Payload | Meaning |
+|---|---|---|---|
+| `bedwars:queue` | lobby | one player UUID, UTF-8 | "put this player into a match" |
+| `bedwars:return` | game pod | comma-separated UUIDs, or empty | "send these players back to the lobby" |
+
+The payloads are plain UTF-8 text rather than a packed binary format so the contract stays
+readable in a packet capture or a debug log. An **empty** `bedwars:return` payload means
+"everyone on the server that sent this"; a pod hosting several concurrent matches sends the
+explicit list so it moves only the players whose match actually ended.
+
+Velocity must have `bungee-plugin-message-channel = true` (it does, in the shipped
+`velocity.toml`), and each backend registers the channels as *outgoing* when the plugin enables.
+
+Why not RCON? RCON is an admin console, not a player-routing API: it would mean a second set of
+credentials on every pod, a TCP connection to the proxy per transfer, and no natural association
+between the message and the player it is about. The plugin-message channel rides the connection
+the player already has.
+
+#### 9.4.4 How a lobby gets its world
+
+The lobby world is staged **before the JVM starts**, exactly like an arena, because a Minecraft
+server reads its main world at boot and a plugin cannot swap it afterwards. The container's
+entrypoint (`deploy/docker/entrypoint.sh`) copies `BEDWARS_TEMPLATE_NAME` out of
+`BEDWARS_TEMPLATE_LOCAL_ROOT` (or pulls it from S3) into `/server/world`.
+
+Two deliberate defaults apply to the lobby:
+
+- **No hub map is baked into the image.** If no template named `lobby` is present, the entrypoint
+  logs that and the server generates a world. To use your own hub, drop a world directory at
+  `deploy/templates/lobby/` (a `level.dat` and region files) and it is staged instead. Nothing
+  about the lobby requires a specific map.
+- **`BEDWARS_LEVEL_TYPE=flat`.** This is written into `server.properties` by the entrypoint and
+  selects a superflat generator: no terrain generation to wait for, and a predictable surface for
+  a hub build. Leave it unset on a game pod — there the staged arena decides the world.
+
+#### 9.4.5 Addressability: why `server-id` had to change
+
+The controller hands the proxy a **pod address**, and the proxy dials it. That makes the pod's
+identity a networking detail, not just a label:
+
+- The plugin's `server-id` must therefore be a name that **resolves**. It used to default to
+  `pod-${HOSTNAME}`, which matches no DNS record in either runtime — the proxy would have been
+  told to connect to a host called `pod-bedwars-solo-0`, which does not exist. It is now
+  `${HOSTNAME}`, the bare name.
+- **In Kubernetes** the pod name resolves through the GameServerSet's headless Service as
+  `<pod>.<gameserverset>.<namespace>.svc.cluster.local`, so the manifest supplies the rest via
+  `POD_ADDRESS_SUFFIX: ".bedwars-solo.bedwars.svc.cluster.local"`.
+- **In Docker** a container name resolves on the shared network by itself, so
+  `POD_ADDRESS_SUFFIX` is empty and the Docker provisioner passes each container its own name as
+  `BEDWARS_SERVER_ID`.
+
+The proxy registers a pod with itself the first time it sees the address, then reuses it. This is
+why ephemeral game servers do not appear in `velocity.toml`: they cannot, because they do not
+exist until the controller creates them.
+
+#### 9.4.6 What the lobby blocks, and why
+
+`LobbyProtectionListener` makes the hub behave like a hub, and every rule is scoped to the lobby
+world so a server that also hosts matches keeps normal gameplay where it belongs:
+
+| Event | Action | Why |
+|---|---|---|
+| Block break / place | cancelled, unless the player has `bedwars.lobby.build` | a waiting crowd should not be able to edit (or grief) the hub build, but staff must be able to build it |
+| Item drop | cancelled | no item litter in the hub |
+| Any damage to a player | cancelled | a hub must never kill anyone — including fall damage and fire |
+| Hunger | cancelled | no starvation in a hub |
+| Weather turning to rain | cancelled | cosmetic, and a sunny hub looks deliberate |
+| Creature spawn | cancelled **unless deliberate** | no night ambushes or lag |
+
+Two of those rows need explanation, because both are the difference between a lobby that works
+and one that cannot be set up at all.
+
+**The build exemption.** The protection rules apply to players; the hub still has to be *built*.
+A queue sign is a block, so if placement were refused unconditionally the sign could never be put
+down on a running server. Staff who hold `bedwars.lobby.build` (operators have it by default —
+the node is declared in `plugin.yml`, so the default actually applies) keep normal build rights;
+everyone else is refused.
+
+**The spawn exemption.** NPC-based matchmaking is the primary way a Hypixel-style lobby is used,
+so an admin placing a queue NPC with a spawn egg, `/summon`, or Citizens must not have it deleted
+the instant it appears. The listener therefore allows spawns whose reason is `CUSTOM`, `PLUGIN`,
+`COMMAND`, `SPAWNER_EGG`, `DISPENSE_EGG`, `BUILD_*`, `BREEDING` or `CURED`, and cancels the
+world's own ambient spawning.
+
+#### 9.4.7 Configuring a lobby
+
+Three keys in `config.yml`, each with an environment override, plus the proxy's own settings:
+
+| Where | Key | Env override | Default | Meaning |
+|---|---|---|---|---|
+| plugin | `server.role` | `BEDWARS_ROLE` | `GAME` | `LOBBY` makes this process the hub |
+| plugin | `lobby.world` | `BEDWARS_LOBBY_WORLD` | `lobby` | the world the protection listener treats as the hub |
+| plugin | `lobby.return-to-lobby` | `BEDWARS_RETURN_TO_LOBBY` | `true` | ask the proxy to return finished matches to the lobby |
+| container | — | `BEDWARS_TEMPLATE_NAME` | `Glacier` | set to `lobby` on the hub, so the hub world is staged |
+| container | — | `BEDWARS_LEVEL_TYPE` | *(unset)* | `flat` for a hub: no terrain generation |
+| proxy | `velocity.toml` `[servers]` | — | — | `lobby = "lobby:25565"` — the name players land on |
+| proxy | `velocity.toml` `try` | — | — | `["lobby"]` — where a connecting player is placed |
+| proxy plugin | — | `LOBBY_SERVER` | `lobby` | which registered server is the hub |
+| proxy plugin | — | `POD_ADDRESS_SUFFIX` | `""` | how a pod name becomes a dialable address |
+| proxy plugin | — | `QUEUE_RETRY_ATTEMPTS` | `12` | how many times to ask the controller for a slot |
+| proxy plugin | — | `QUEUE_RETRY_MILLIS` | `1000` | floor for the controller's `retryAfterMillis` backoff |
+
+`LOBBY_SERVER` and the `[servers]` entry must agree, or the plugin logs a warning at startup
+that the lobby it was told about is not registered with the proxy — the single most common way to
+get a network where "nobody can join".
+
+#### 9.4.8 The lobby in the deployments
+
+Both deployment paths ship a lobby, because a network without a hub cannot place a player:
+
+- **Compose** — `deploy/compose/docker-compose.yml` declares `lobby` and `velocity` behind the
+  `network` profile. The lobby publishes 25566 and the game pod 25567 purely for debugging; the
+  proxy publishes 25565 and is the only real entry point.
+- **Kubernetes** — `deploy/k8s/25-lobby.yaml` is a plain `Deployment` + `Service` (not a
+  GameServerSet: a hub is permanent, not ephemeral), with its own `NetworkPolicy` so only
+  mc-router and Velocity may connect. The Helm chart's `lobby:` values block renders the same
+  pair from `deploy/helm/bedwars/templates/lobby.yaml`.
+
+#### 9.4.9 Verifying the loop
+
+Each step of the chain can be checked on a live stack:
+
+```bash
+# 1. The lobby booted as a hub, not as a match host. These two lines are the proof.
+$ docker compose logs lobby | grep -E "bedwars_setup|lobby_ready"
+[entrypoint] no local template 'lobby' - the server will generate a world
+[lobby] bedwars_setup role=LOBBY lobby_world=lobby server_id=lobby return_to_lobby=false \
+        controller_reporting=disabled (a lobby must never be routed players as a match host)
+[lobby] lobby_ready world=lobby - players arrive from the proxy; signs and NPCs named ...
+
+# 2. The proxy knows where to put a connecting player, and can dial a pod by name.
+$ docker compose logs velocity | grep -E "proxy initialised|Registering game pod"
+
+# 3. The lobby is NOT in the controller's registry. This is the assertion that matters:
+#    a registered server means "this can host a match".
+$ curl -s localhost:8080/infra | python3 -c "import json,sys; print(json.load(sys.stdin)['registeredServers'])"
+0
+```
+
+If step 3 returns anything but `0` while only the lobby and the proxy are up, the lobby is
+misconfigured as a game server and will be handed players it cannot serve.
+
+### 9.5 What is deliberately absent
+
+The proxy holds **no game logic and no server list**, and the lobby holds **no matchmaking
+decision**. The division is: the lobby collects intent, the proxy owns the connection to the
+controller, and the controller owns the decision. A lobby restart therefore cannot destroy
+anyone's match — it only empties the hub for as long as it takes to come back.
+
+The cost is that anything you want in a lobby must be driven from data. Live player counts on a
+sign, or a "26 players in matches" hologram, are not pushed into the hub; they are drawn from the
+controller's `/lobby/arena-status`:
 
 ```json
 {"solo": {"freeSlots": 25, "queued": 0}}
 ```
+
+The lobby also has no NPC plugin dependency: a queue NPC is any entity whose custom name is
+`[bedwars]` (or `[bw]` / `[bwqueue]`), and a queue sign is any sign whose first line is one of
+those. A real network would use Citizens or ModelEngine for the skin; the trigger contract — the
+part the plugin defines — is the same either way.
 
 ---
 
@@ -1503,9 +1717,19 @@ system.
 
 ### 15.9 Step 8 — connect a client (optional)
 
-The Compose file publishes `25565`, so point a Minecraft client at `localhost:25565`. There is
-no lobby: this is a game server, and the queue is how players are normally placed on it. For
-driving a server without a client, see chapter 18.4.
+On the plain stack no port is published for players: this is a game server, and the queue is how
+players are normally placed on it. For driving a server without a client, see chapter 18.4.
+
+To play the way a player does — connect to the proxy, land in the lobby, click a sign, and be
+moved into a match — bring up the `network` profile as well (the lobby and the proxy are in
+chapter 9.4, and the commands are in 15.13):
+
+```bash
+$ docker compose --profile network up -d --build
+```
+
+Then point a Minecraft client at `localhost:25565`: you will land in the lobby world, and the
+signs/NPCs there put you into a match.
 
 ### 15.10 Inspecting the provisioned containers
 
@@ -1526,9 +1750,12 @@ $ docker rm -f $(docker ps -aq --filter "label=bedwars.provisioned=true")
 ### 15.11 Shutting down
 
 ```bash
-$ docker compose --profile game down            # stop, keep volumes (data survives)
-$ docker compose --profile game down -v         # stop and delete volumes (data is gone)
+$ docker compose --profile game --profile network down      # stop, keep volumes
+$ docker compose --profile game --profile network down -v   # stop and delete volumes
 ```
+
+Name every profile you started. Compose only stops the services of the profiles it is given, so
+shutting down with `--profile game` alone leaves the lobby and the proxy running.
 
 `down` removes containers and networks; named volumes are kept unless you pass `-v`. Use `-v`
 when you want a genuinely clean slate, such as after changing database credentials — MySQL
@@ -1550,6 +1777,67 @@ production:
 
 For a home server with friends, several of those are acceptable. For anything public, they are
 not, and chapter 16 is the answer.
+
+### 15.13 Bringing up the lobby and the proxy (the `network` profile)
+
+Everything above runs the platform the way the *controller* sees it. To run it the way a *player*
+does, add the `network` profile. That starts the two services that face players: the **lobby**
+(the hub, chapter 9.4) and the **proxy** that fronts it.
+
+```bash
+$ docker compose --profile network up -d --build
+```
+
+Give it a minute on the first run: the proxy image is built here. The lobby image is the game
+image you may already have.
+
+The Compose file deliberately skips object storage on this path. `minio` and `minio-init` are not
+in a profile, and some hosts refuse unauthenticated `quay.io` pulls (a plain `401 UNAUTHORIZED`
+from the registry), so if you hit that, name the services you actually need:
+
+```bash
+$ docker compose up -d --build mysql controller lobby velocity
+```
+
+Then check the three things that prove the hub is really a hub:
+
+```bash
+# 1. The lobby booted in LOBBY role and switched controller reporting off.
+$ docker compose logs lobby | grep -E "bedwars_setup|lobby_ready"
+[entrypoint] no local template 'lobby' - the server will generate a world
+[lobby] bedwars_setup role=LOBBY lobby_world=lobby server_id=lobby ...
+[lobby] lobby_ready world=lobby - players arrive from the proxy; ...
+
+# 2. The proxy found the lobby it was told about, and can dial a pod by name.
+$ docker compose logs velocity | grep -E "proxy initialised|not registered|Registering game pod"
+
+# 3. The lobby is NOT a match host. This is the assertion that matters, and it must be 0.
+$ curl -s localhost:8080/infra | python3 -c "import json,sys; print(json.load(sys.stdin)['registeredServers'])"
+0
+```
+
+`registeredServers` counts servers that have offered capacity. A lobby appearing there means the
+controller will hand it players as if it hosted matches — which is precisely the failure the
+`LOBBY` role exists to prevent.
+
+Now connect a Minecraft client to `localhost:25565`. You arrive in the lobby world (generated and
+flat if you supplied no hub map). Set up the queue, then use it:
+
+1. Join the hub with an operator account. Place a sign and set its **first line** to `[bedwars]`.
+   The other three lines are yours — only the first is read.
+2. Right-click it. You should be moved into a match: the lobby sends `bedwars:queue`, the proxy
+   asks the controller, the controller names a pod, the proxy transfers you.
+3. Play the match to its end. When it finishes, the game server sends `bedwars:return` and the
+   proxy puts you back in the hub. That is the whole loop of 9.4.1, and the only part of it you
+   can verify without a second player is the transfer itself.
+
+A game pod must exist for step 2 to succeed. Either start one by hand
+(`docker compose --profile game up -d game-pod`) or let the controller start one — it will, as
+soon as the queue request arrives and no server has room.
+
+If you only want the hub without the proxy, `docker compose up -d lobby` is enough to see it boot;
+you just cannot queue from it, because nothing can move a player off a backend server except the
+proxy.
 
 ---
 
@@ -1840,7 +2128,7 @@ the environment variables noted below.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `server-id` | string | `pod-${HOSTNAME}` | The name this server uses in every report to the controller. |
+| `server-id` | string | `${HOSTNAME}` | The name this server uses in every report to the controller. In Kubernetes this is the pod name, which is also the DNS name the proxy dials — see 9.4.5. |
 
 `${HOSTNAME}` is expanded from the environment. In Kubernetes the Downward API sets `HOSTNAME`
 to the pod name, so each pod identifies itself uniquely without configuration. The
@@ -1918,7 +2206,13 @@ wall-clock duration — a subtle coupling worth remembering when performance tun
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
+| `role` | string | `"GAME"` | `GAME` is a match host; `LOBBY` makes this process the network hub. See 9.4. |
 | `force-whitelist-off` | string | `"OFF"` | `OFF` switches the whitelist off at boot; `LEAVE` never touches it. |
+
+`role` is the switch that decides whether this process registers with the controller as a match
+host. It is read once, at boot, and a `LOBBY` process never constructs a reporter at all — so no
+later configuration can turn a hub into a game server by accident. Anything unrecognised parses
+as `GAME`.
 
 There is real, hard-won reasoning here. A Minecraft server may default `white-list=true`, and an
 **empty** whitelist then rejects every player with *"You are not whitelisted on this server!"*.
@@ -1929,6 +2223,19 @@ then responsible for whitelist contents yourself.
 
 Overridable with the `BEDWARS_WHITELIST` environment variable. Unknown values are mapped to
 `OFF` — failing open, which is correct for a game server.
+
+#### `lobby:` — hub behaviour
+
+Only read when `server.role` is `LOBBY`; the keys are harmless on a game server.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `world` | string | `"lobby"` | The world the hub protection rules apply to. Must match the world the entrypoint staged as the main world (`BEDWARS_TEMPLATE_NAME`). |
+| `return-to-lobby` | bool | `true` | When a match ends, ask the proxy to move its players back to the hub. This is what closes the loop; without it players are left on a pod that is about to be deleted. |
+
+`return-to-lobby` needs the proxy. On a server with no proxy the request is simply dropped, which
+is why leaving it `true` on a game pod is safe. It is set to `false` on the lobby itself, which
+has no matches to return anyone from.
 
 #### `template:` — the arena world
 
@@ -2212,6 +2519,11 @@ image runs anywhere. Defaults are shown; blank means "no default".
 | `BEDWARS_DOCKER_IMAGE` | `bedwars-recoded-game:latest` | Image the Docker backend runs. |
 | `BEDWARS_CONTAINER_MEMORY` | `1536m` | Per-container memory cap (Docker backend). |
 | `BEDWARS_ARENA_GROUP` | `solo` | Arena group containers join. |
+| `BEDWARS_ROLE` | `GAME` | `LOBBY` makes this process the hub instead of a match host. |
+| `BEDWARS_LOBBY_WORLD` | `lobby` | World the hub protection rules apply to (lobby role only). |
+| `BEDWARS_RETURN_TO_LOBBY` | `true` | Ask the proxy to return finished matches to the hub. |
+| `BEDWARS_LEVEL_TYPE` | *(unset)* | Written into `server.properties` before boot; `flat` for a hub. |
+| `BEDWARS_TEMPLATE_NAME` | `Glacier` | Which template the entrypoint stages as the main world — `lobby` on the hub. |
 | `BEDWARS_CONTROLLER_ADVERTISE_URL` | `http://host.docker.internal:8080` | URL a **newly created** game server is told to report to. |
 | `BEDWARS_DOCKER_NETWORK` | `""` | Docker network game containers join so they can resolve the controller by name. |
 

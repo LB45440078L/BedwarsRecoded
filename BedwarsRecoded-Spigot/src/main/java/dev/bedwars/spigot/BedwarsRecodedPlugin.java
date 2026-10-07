@@ -41,10 +41,15 @@ import dev.bedwars.core.upgrade.UpgradeCatalog;
 import dev.bedwars.core.upgrade.UpgradeService;
 import dev.bedwars.spigot.command.BedwarsCommand;
 import dev.bedwars.spigot.config.PluginConfig;
+import dev.bedwars.spigot.config.ServerRole;
 import dev.bedwars.spigot.dragon.DragonService;
 import dev.bedwars.spigot.effects.UpgradeEffectApplier;
 import dev.bedwars.spigot.game.JoinService;
 import dev.bedwars.spigot.gui.JoinMenu;
+import dev.bedwars.spigot.lobby.LobbyProtectionListener;
+import dev.bedwars.spigot.lobby.LobbyQueueListener;
+import dev.bedwars.spigot.lobby.LobbyQueueService;
+import dev.bedwars.spigot.proxy.ProxyChannel;
 import dev.bedwars.spigot.listener.DomainEventBridge;
 import dev.bedwars.spigot.listener.GameListener;
 import dev.bedwars.spigot.listener.JoinSignListener;
@@ -138,6 +143,7 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
     private JoinMenu joinMenu;
     private DragonService dragonService;
     private List<String> startItems = List.of();
+    private LobbyQueueService lobbyQueue;
 
     private final Map<String, Integer> countdownRemaining = new ConcurrentHashMap<>();
 
@@ -150,6 +156,22 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
             // No bundled sample arena; a config-derived arena will be used.
         }
         this.config = PluginConfig.from(getConfig(), defaultServerId());
+        this.startedAtMillis = System.currentTimeMillis();
+        applyWhitelistPolicy();
+
+        // Both roles talk to the proxy: the lobby asks for a match, a game server asks
+        // for its finished players to be sent back. Register the channels once here.
+        ProxyChannel.register(this);
+
+        // A lobby is a hub, not a match host. It must not register with the controller
+        // (the controller's registry means "can host a match", so a lobby registering
+        // there would be handed players as if it were a game server), and it needs none
+        // of the game wiring: no matches, no arenas, no dragons, no stats.
+        if (config.role().isLobby()) {
+            enableLobby();
+            return;
+        }
+
         this.reporter = new HttpPodReporter(config.controllerBaseUrl(), new ReportingPolicy(
                 config.disableReportingAfterFailures(),
                 config.failureLogIntervalSeconds() * 1000L));
@@ -204,6 +226,32 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
     }
 
     // ---- wiring ----------------------------------------------------------
+
+    /**
+     * Boots this process as the network lobby instead of as a match host.
+     *
+     * <p>What a lobby does: accept the players the proxy sends here, keep them safe in
+     * the hub world, and offer signs/NPCs that ask the proxy for a match. What it must
+     * never do: report capacity to the controller. That single omission is what keeps
+     * the controller's player-routing correct.
+     */
+    private void enableLobby() {
+        this.lobbyQueue = new LobbyQueueService(this);
+        var pm = getServer().getPluginManager();
+        pm.registerEvents(new LobbyQueueListener(lobbyQueue), this);
+        pm.registerEvents(new LobbyProtectionListener(config.lobbyWorldName()), this);
+        getCommand("bedwars").setExecutor(new BedwarsCommand(this));
+        LOG.info("bedwars_setup role=LOBBY lobby_world={} server_id={} return_to_lobby={} "
+                        + "controller_reporting=disabled (a lobby must never be routed players as a match host)",
+                config.lobbyWorldName(), config.serverId(), config.returnToLobby());
+        LOG.info("lobby_ready world={} - players arrive from the proxy; signs and NPCs named "
+                + "'[bedwars]' (or '[bwqueue]') send them into a match", config.lobbyWorldName());
+    }
+
+    /** True when this process is the hub rather than a match host. */
+    public boolean isLobby() {
+        return config != null && config.role().isLobby();
+    }
 
     private void registerListeners() {
         var pm = getServer().getPluginManager();
@@ -400,7 +448,14 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         reloadConfig();
         PluginConfig fresh = PluginConfig.from(getConfig(), config.serverId());
         this.config = fresh;
-        dragonService.updateSettings(fresh.dragon());
+        if (dragonService != null) {
+            dragonService.updateSettings(fresh.dragon());
+        }
+        if (isLobby()) {
+            LOG.info("config_reloaded role=LOBBY lobby_world={} (restart to change the role or world)",
+                    fresh.lobbyWorldName());
+            return;
+        }
         ArenaDefinition arena = loadArenaDefinition(fresh);
         if (arena != null) {
             this.shop = arena.shop();
@@ -606,18 +661,62 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         if (finished.isEmpty()) {
             return;
         }
+        StringBuilder returning = new StringBuilder();
         for (String id : finished) {
             dragonService.clearGame(id);
             host.byId(id).ifPresent(game -> {
-                broadcastTo(game, "&eThis match has ended.");
+                broadcastTo(game, config.returnToLobby()
+                        ? "&eThis match has ended. Returning you to the lobby..."
+                        : "&eThis match has ended.");
                 for (UUID uuid : game.sessions().keySet()) {
                     scoreboardRenderer.forget(uuid);
+                    if (config.returnToLobby()) {
+                        if (returning.length() > 0) {
+                            returning.append(',');
+                        }
+                        returning.append(uuid);
+                    }
                 }
             });
         }
         host.pruneFinished();
         finished.forEach(worlds::release);
         reportCapacityIfChanged(false);
+        sendPlayersBackToLobby(returning.toString());
+    }
+
+    /**
+     * Asks the proxy to move finished players back to the lobby — the "match over, everyone
+     * back to the hub" step every network does.
+     *
+     * <p>Only the proxy can move a player between servers, so the game server does not move
+     * anyone itself; it sends the list of players over {@link ProxyChannel#CHANNEL_RETURN}
+     * and Velocity does the transfer. The list is explicit rather than "everyone here"
+     * because one server can host several matches at once, and only the players of the
+     * match that just ended should be moved.
+     */
+    private void sendPlayersBackToLobby(String csv) {
+        if (csv.isEmpty()) {
+            return;
+        }
+        Player carrier = null;
+        for (String raw : csv.split(",")) {
+            try {
+                Player candidate = getServer().getPlayer(UUID.fromString(raw));
+                if (candidate != null) {
+                    carrier = candidate;
+                    break;
+                }
+            } catch (IllegalArgumentException ignored) {
+                // Not a UUID: it can never carry the message.
+            }
+        }
+        if (carrier == null) {
+            return;
+        }
+        boolean sent = ProxyChannel.requestReturn(this, carrier, csv);
+        LOG.info("return_to_lobby players={} sent={} (the proxy performs the actual transfer)",
+                csv.split(",").length, sent);
     }
 
     private void broadcastTo(Game game, String legacyMessage) {
@@ -677,6 +776,11 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         return joinService;
     }
 
+    /** The lobby's matchmaking client; null on a match host. */
+    public LobbyQueueService lobbyQueue() {
+        return lobbyQueue;
+    }
+
     public GameWorldService worlds() {
         return worlds;
     }
@@ -719,6 +823,10 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (isLobby()) {
+            LOG.info("lobby_shutdown complete");
+            return;
+        }
         if (dragonService != null) {
             dragonService.shutdown();
         }

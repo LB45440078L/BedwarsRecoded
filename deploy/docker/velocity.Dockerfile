@@ -28,4 +28,9 @@ RUN curl -fsSL "https://fill.papermc.io/v3/projects/velocity/versions/${VELOCITY
 COPY --from=build /src/BedwarsRecoded-Velocity/target/BedwarsRecoded-Velocity-*.jar /proxy/plugins/BedwarsRecoded-Velocity.jar
 
 ENV CONTROLLER_URL=http://bedwars-controller:8080
+
+# The proxy's own configuration: `try = ["lobby"]` and the [servers] entry for the
+# lobby are what make players land in a hub instead of being dropped. See the file.
+COPY deploy/docker/velocity.toml /proxy/velocity.toml
+
 ENTRYPOINT ["java", "-jar", "velocity.jar"]

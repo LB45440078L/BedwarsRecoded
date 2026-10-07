@@ -113,12 +113,12 @@ def verify_compose() -> None:
         errors.append(f"compose: invalid YAML: {exc}")
         return
     services = compose.get("services", {})
-    for required in ["mysql", "minio", "minio-init", "controller"]:
+    for required in ["mysql", "minio", "minio-init", "controller", "lobby", "velocity"]:
         check(required in services, f"compose: missing service {required}")
     check("healthcheck" in services.get("mysql", {}), "compose: mysql needs a healthcheck")
     check("game-pod" in services and "game" in services["game-pod"].get("profiles", []),
           "compose: game-pod must be behind the 'game' profile")
-    for name in ("controller", "game-pod"):
+    for name in ("controller", "game-pod", "velocity", "lobby"):
         build = services.get(name, {}).get("build", {})
         dockerfile = ROOT / build.get("dockerfile", "")
         check(dockerfile.exists(), f"compose: {name} dockerfile {build.get('dockerfile')} not found")
@@ -189,12 +189,95 @@ def verify_no_standalone_mode() -> None:
           "reporting knobs belong under `controller:` now that `deployment:` is gone")
 
 
+def verify_lobby() -> None:
+    """The lobby is a first-class server ROLE, not a coincidence of configuration.
+
+    The chain a player walks is: connect to the proxy -> land in a dedicated hub ->
+    queue -> play a match -> be returned to the hub. Each assertion below guards a
+    specific way that chain breaks silently:
+
+      * a lobby that reports capacity is handed players as if it hosted a game;
+      * a proxy with no `try` server has nowhere to put a connecting player;
+      * a game pod the proxy cannot address by name is unreachable once started;
+      * a backend that has not enabled forwarding refuses the proxy's handshake.
+    """
+    config = ROOT / "BedwarsRecoded-Spigot" / "src" / "main" / "resources" / "config.yml"
+    text = config.read_text(encoding="utf-8")
+    check("role:" in text, "plugin config.yml must expose the server `role:` (GAME|LOBBY)")
+    check("pod-${HOSTNAME}" not in text,
+          "server-id must be the bare hostname: it is the name the proxy dials, and a "
+          "`pod-` prefix resolves to nothing in either Docker or Kubernetes")
+    check("return-to-lobby" in text, "config.yml must expose the return-to-lobby switch")
+
+    # A permission checked in code but not declared here is FALSE for everyone, operators
+    # included: the hub would be unbuildable and admin subcommands unusable by its owner.
+    plugin_yml = (ROOT / "BedwarsRecoded-Spigot" / "src" / "main" / "resources" / "plugin.yml")
+    yml = plugin_yml.read_text(encoding="utf-8")
+    for node in ("bedwars.lobby.build", "bedwars.admin"):
+        check(f"{node}:" in yml, f"plugin.yml must declare the {node} permission node")
+
+    k8s_text = "\n".join(p.read_text(encoding="utf-8") for p in sorted(K8S.glob("*.yaml")))
+    check("name: lobby" in k8s_text, "k8s: no lobby Deployment/Service")
+    check('value: "LOBBY"' in k8s_text,
+          "k8s: the lobby must set BEDWARS_ROLE=LOBBY, or it reports itself as a match host")
+    check("lobby-ingress" in k8s_text, "k8s: the lobby needs its own NetworkPolicy")
+    check("POD_ADDRESS_SUFFIX" in k8s_text,
+          "k8s: velocity needs POD_ADDRESS_SUFFIX, or it cannot dial an ephemeral pod by name")
+    # A GameServerSet must NOT pin BEDWARS_SERVER_ID: the plugin's fallback is ${HOSTNAME},
+    # which in Kubernetes is the pod name -- exactly the DNS label POD_ADDRESS_SUFFIX
+    # completes. Pinning another value silently makes the pod undialable by the proxy.
+    gss = ROOT / "deploy" / "k8s" / "10-gameserverset.yaml"
+    if gss.exists():
+        body = gss.read_text(encoding="utf-8")
+        check("BEDWARS_SERVER_ID" not in body,
+              "the GameServerSet must not pin BEDWARS_SERVER_ID: the pod name is the address "
+              "the proxy dials, and it comes from ${HOSTNAME}")
+
+    toml_path = DOCKER / "velocity.toml"
+    check(toml_path.exists(), "docker: velocity.toml missing (the proxy has no configuration)")
+    if toml_path.exists():
+        toml = toml_path.read_text(encoding="utf-8")
+        check('try = ["lobby"]' in toml,
+              'velocity.toml must set try = ["lobby"]: without it a connecting player has '
+              "no server to be placed on")
+        check('lobby = "lobby:25565"' in toml,
+              "velocity.toml must register the lobby under the name the plugin transfers to")
+        check("bungee-plugin-message-channel = true" in toml,
+              "velocity.toml must enable the plugin-message channel the lobby speaks over")
+
+    spigot = DOCKER / "spigot.yml"
+    check(spigot.exists(), "docker: spigot.yml missing (backends cannot accept proxy joins)")
+    if spigot.exists():
+        check("bungeecord: true" in spigot.read_text(encoding="utf-8"),
+              "spigot.yml must enable bungeecord forwarding to match the proxy's legacy mode")
+    for dockerfile, shipped in (("gameserver", "spigot.yml"), ("velocity", "velocity.toml")):
+        path = DOCKER / f"{dockerfile}.Dockerfile"
+        if path.exists():
+            check(shipped in path.read_text(encoding="utf-8"),
+                  f"{dockerfile}.Dockerfile must ship {shipped}")
+
+    compose_text = COMPOSE.read_text(encoding="utf-8")
+    check('BEDWARS_ROLE: "LOBBY"' in compose_text,
+          "compose: the lobby service must run in LOBBY role")
+    check("LOBBY_SERVER" in compose_text,
+          "compose: velocity must be told which registered server is the lobby")
+
+    helm = ROOT / "deploy" / "helm" / "bedwars"
+    check((helm / "templates" / "lobby.yaml").exists(), "helm: no lobby template")
+    values = helm / "values.yaml"
+    if values.exists():
+        body = values.read_text(encoding="utf-8")
+        check("podAddressSuffix" in body, "helm: velocity values must carry podAddressSuffix")
+        check("\nlobby:" in body, "helm: values must carry a lobby block")
+
+
 def main() -> int:
     verify_k8s()
     verify_compose()
     verify_dockerfiles()
     verify_server_jar_resolution()
     verify_no_standalone_mode()
+    verify_lobby()
     if errors:
         print(f"DEPLOY VERIFY: {len(errors)} problem(s) across {checks} checks")
         for err in errors:

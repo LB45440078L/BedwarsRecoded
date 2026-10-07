@@ -1,0 +1,34 @@
+# =============================================================================
+#  spigot.yml - shipped inside the game-server and lobby images
+# =============================================================================
+#  Only the settings that matter for running behind a proxy are set here; Spigot
+#  fills in every other default itself on first start.
+#
+#  `bungeecord: true` is the important one. It switches the server into
+#  BungeeCord-style player forwarding, which is the mode Velocity's
+#  `player-info-forwarding-mode = "legacy"` speaks. Without it the handshake
+#  between proxy and backend does not complete and players cannot join.
+#
+#  In this mode the backend trusts the proxy completely: it accepts the UUID and
+#  address the proxy passes in, and an unauthenticated client hitting the backend
+#  directly could claim any identity. That is why game pods are only reachable
+#  from the proxy (see the NetworkPolicy) and must never be exposed directly.
+# =============================================================================
+
+settings:
+  bungeecord: true
+  # The proxy owns player identity, so the backend never needs its own auth.
+  restart-on-crash: false
+  netty-threads: 4
+  timeout-time: 60
+  # A game pod is destroyed, not restarted, so a crash must not spin up a second
+  # server inside the same container.
+  restart-script: ./start.sh
+  save-user-cache-on-stop-only: false
+
+world-settings:
+  default:
+    # Modest view distances keep a game pod inside its memory limit. They are the
+    # cheapest performance lever a Minecraft server has.
+    view-distance: default
+    simulation-distance: default

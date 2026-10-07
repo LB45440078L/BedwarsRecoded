@@ -111,13 +111,37 @@ services:
       retries: 20
     networks: [bedwars]
 
-  # Optional: one real game server. Enable with `--profile game`.
-  #
-  # It builds with the Spigot engine unless you say otherwise. Drop a jar in
-  # server-jars/ first to skip the Spigot compile; set SERVER_ENGINE=paper to run
-  # Paper instead (never compiled). See server-jars/README.md.
-  game-pod:
-    profiles: [game]
+  # Optional: one real client-facing proxy. Enable with `--profile network`.
+  # Players connect here (port 25565); the proxy puts them in the lobby and then
+  # moves them into a match. Without it there is no way to place a player anywhere.
+  velocity:
+    profiles: [network]
+    image: bedwars-velocity:1.0.0
+    build:
+      context: ../..
+      dockerfile: deploy/docker/velocity.Dockerfile
+    environment:
+      CONTROLLER_URL: "http://controller:8080"
+      # Must match the [servers] entry and `try` in deploy/docker/velocity.toml.
+      LOBBY_SERVER: "lobby"
+      # Empty in Docker: a container name resolves on the shared network by itself.
+      # Kubernetes sets this to the GameServerSet's headless-Service suffix.
+      POD_ADDRESS_SUFFIX: ""
+    ports:
+      - "25565:25565"
+    depends_on:
+      controller:
+        condition: service_started
+      lobby:
+        condition: service_started
+    networks: [bedwars]
+
+  # Optional: the network lobby, the hub every player lands on. Enable with
+  # `--profile network`. The SAME image as a game server, in LOBBY role: it hosts no
+  # matches and never registers with the controller as a match host.
+  lobby:
+    profiles: [network]
+    image: bedwars-spigot:1.0.0
     build:
       context: ../..
       dockerfile: deploy/docker/gameserver.Dockerfile
@@ -126,7 +150,39 @@ services:
         SPIGOT_REV: ${SPIGOT_REV:-26.3}
         PAPER_VERSION: ${PAPER_VERSION:-}
     environment:
-      BEDWARS_SERVER_ID: "pod-local-1"
+      BEDWARS_ROLE: "LOBBY"
+      BEDWARS_SERVER_ID: "lobby"
+      # The world players wait in is staged from the image like an arena. No template
+      # named 'lobby' is baked in, so the server generates a flat one and logs it.
+      BEDWARS_TEMPLATE_NAME: "lobby"
+      BEDWARS_TEMPLATE_SOURCE: "LOCAL"
+      BEDWARS_LEVEL_TYPE: "flat"
+      BEDWARS_RETURN_TO_LOBBY: "false"
+    ports:
+      # Debug-only direct access. Players normally arrive through the proxy.
+      - "25566:25565"
+    networks: [bedwars]
+
+  # Optional: one real game server. Enable with `--profile game`.
+  #
+  # It builds with the Spigot engine unless you say otherwise. Drop a jar in
+  # server-jars/ first to skip the Spigot compile; set SERVER_ENGINE=paper to run
+  # Paper instead (never compiled). See server-jars/README.md.
+  game-pod:
+    profiles: [game]
+    image: bedwars-spigot:1.0.0
+    build:
+      context: ../..
+      dockerfile: deploy/docker/gameserver.Dockerfile
+      args:
+        SERVER_ENGINE: ${SERVER_ENGINE:-spigot}
+        SPIGOT_REV: ${SPIGOT_REV:-26.3}
+        PAPER_VERSION: ${PAPER_VERSION:-}
+    environment:
+      # Must be a name the proxy can resolve: the controller hands this to Velocity as
+      # the address to send a player to. The compose service name resolves on the
+      # shared network.
+      BEDWARS_SERVER_ID: "game-pod"
       BEDWARS_ARENA_GROUP: "solo"
       BEDWARS_CONTROLLER_URL: "http://controller:8080"
       BEDWARS_TEMPLATE_NAME: "Glacier"
@@ -140,7 +196,8 @@ services:
       BEDWARS_DB_USER: ${BEDWARS_DB_USER:-bedwars}
       BEDWARS_DB_PASSWORD: ${BEDWARS_DB_PASSWORD:-bedwars}
     ports:
-      - "25565:25565"
+      # Debug-only direct access; the proxy publishes 25565 and is the real entry point.
+      - "25567:25565"
     depends_on:
       mysql:
         condition: service_healthy

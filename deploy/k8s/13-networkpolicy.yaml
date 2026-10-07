@@ -49,3 +49,28 @@ spec:
       ports:
         - protocol: TCP
           port: 25565
+---
+# The lobby accepts Minecraft connections from mc-router and Velocity only, exactly
+# like a game pod. A player never dials it directly: they arrive through the proxy,
+# which is also what authenticates them.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: lobby-ingress
+  namespace: bedwars
+spec:
+  podSelector:
+    matchLabels:
+      app: lobby
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: mc-router
+        - podSelector:
+            matchLabels:
+              app: velocity
+      ports:
+        - protocol: TCP
+          port: 25565

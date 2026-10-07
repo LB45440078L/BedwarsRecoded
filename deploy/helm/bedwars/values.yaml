@@ -23,6 +23,22 @@ arena:
   teamCount: 2
   playersPerTeam: 2
 
+# The network lobby: the hub every player lands on, and where matches return them.
+# The same image as a game server, running in LOBBY role.
+lobby:
+  enabled: true
+  replicas: 1
+  # The world players wait in. Not baked into the image, so the server generates one
+  # and logs that it did. Drop a hub map into deploy/templates/<name>/ to stage yours.
+  world: lobby
+  templateSource: LOCAL
+  # flat = no terrain generation around the hub, and a predictable spawn.
+  levelType: flat
+  cpuRequest: "500m"
+  memoryRequest: "1Gi"
+  cpuLimit: "1"
+  memoryLimit: "2Gi"
+
 # Ephemeral game pods.
 gameServerSet:
   # Requires the OpenKruise GameServerSet CRD. Disable to install the persistent
@@ -61,6 +77,14 @@ mcRouter:
 
 velocity:
   replicas: 2
+  # The registered server a player is placed on when they connect, and where finished
+  # matches are sent back to. Must match the [servers] entry and `try` in the proxy
+  # image's velocity.toml.
+  lobbyServer: lobby
+  # Game pods are ephemeral, so they are not in velocity.toml. The proxy dials
+  # <pod-id><podAddressSuffix>: the GameServerSet's headless Service gives each replica
+  # the name <pod>.<gameserverset>.<namespace>.svc.cluster.local.
+  podAddressSuffix: ".bedwars-solo.bedwars.svc.cluster.local"
 
 controller:
   replicas: 1

@@ -22,6 +22,13 @@ spec:
           env:
             - name: CONTROLLER_URL
               value: {{ include "bedwars.controllerUrl" . | quote }}
+            # Players land in the lobby when they connect; finished matches return there.
+            - name: LOBBY_SERVER
+              value: {{ .Values.velocity.lobbyServer | quote }}
+            # How an ephemeral game pod's name becomes a dialable address the proxy
+            # can connect to (the GameServerSet's headless-Service DNS suffix).
+            - name: POD_ADDRESS_SUFFIX
+              value: {{ .Values.velocity.podAddressSuffix | quote }}
           ports:
             - name: proxy
               containerPort: 25565

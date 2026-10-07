@@ -11,7 +11,13 @@
 # Identity of this server in every controller report. ${VAR} placeholders are
 # expanded from the environment (falling back to the local hostname for HOSTNAME /
 # COMPUTERNAME); in Kubernetes the Downward API sets HOSTNAME to the pod name.
-server-id: "pod-${HOSTNAME}"
+#
+# This id MUST be a name the proxy can resolve, because the controller hands it to
+# Velocity as the address of the server to send a player to. In Kubernetes the pod
+# name resolves as <pod>.<gameserverset>.<namespace>.svc.cluster.local, so the id is
+# the bare pod name and POD_ADDRESS_SUFFIX supplies the rest. The Docker provisioner
+# overrides this with the container name, which resolves on the shared network.
+server-id: "${HOSTNAME}"
 
 # -----------------------------------------------------------------------------
 # The match this server hosts (exactly one match, one arena group, per pod).
@@ -62,6 +68,16 @@ dragon:
 # Server-level guarantees the plugin applies at boot.
 # -----------------------------------------------------------------------------
 server:
+  # What this process is. One image serves both roles:
+  #   GAME  (default) a dedicated match host. It reports free match slots to the
+  #         controller so players can be routed to it, and it hosts BedWars matches.
+  #   LOBBY the persistent hub every player lands on after connecting to the proxy.
+  #         It hosts no matches and never reports capacity, so the controller can never
+  #         hand it players as if it were a game server. Signs and NPCs in the lobby
+  #         ask the proxy to send a player into a match.
+  # Overridable with BEDWARS_ROLE (the container sets it per deployment).
+  role: "GAME"
+
   # A Minecraft server can have its whitelist switched on by its own default, and an
   # EMPTY whitelist then rejects everyone with "You are not whitelisted on this
   # server!" - fatal for a game server, whose job is to accept the players the
@@ -72,6 +88,19 @@ server:
   #
   # Overridable with BEDWARS_WHITELIST.
   force-whitelist-off: "OFF"
+
+lobby:
+  # Off by default because most servers are game pods. Set server.role: "LOBBY" (or
+  # BEDWARS_ROLE=LOBBY) to make this process the hub. See docs/MANUAL.md chapter 9.
+  #
+  # The world players wait in. The container's entrypoint stages it as the server's main
+  # world before the JVM starts (BEDWARS_TEMPLATE_NAME), exactly like an arena.
+  world: "lobby"
+  # When a match ends, ask the proxy to move its players back here. This is what makes
+  # the loop a loop: lobby -> match -> lobby, and not "match, then stranded on a pod
+  # that is about to be deleted". Needs the network proxy; a standalone server simply
+  # drops the request.
+  return-to-lobby: true
 
 # -----------------------------------------------------------------------------
 # World template. Production reads a Slime world from S3-compatible storage and

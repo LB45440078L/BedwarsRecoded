@@ -38,7 +38,10 @@ public record PluginConfig(
         int disableReportingAfterFailures,
         int failureLogIntervalSeconds,
         WhitelistEnforcement whitelistEnforcement,
-        DragonConfig dragon
+        DragonConfig dragon,
+        ServerRole role,
+        String lobbyWorldName,
+        boolean returnToLobby
 ) {
 
     /** Matches {@code ${NAME}} placeholders in configuration values. */
@@ -89,8 +92,12 @@ public record PluginConfig(
                 Math.max(1, c.getInt("controller.disable-reporting-after-failures", 5)),
                 Math.max(0, c.getInt("controller.failure-log-interval-seconds", 300)),
                 WhitelistEnforcement.parse(env("BEDWARS_WHITELIST",
-                        c.getString("server.force-whitelist-off", "AUTO"))),
-                dragon(c));
+                        c.getString("server.force-whitelist-off", "OFF"))),
+                dragon(c),
+                ServerRole.parse(env("BEDWARS_ROLE", c.getString("server.role", "GAME"))),
+                env("BEDWARS_LOBBY_WORLD", c.getString("lobby.world", "lobby")),
+                Boolean.parseBoolean(env("BEDWARS_RETURN_TO_LOBBY",
+                        String.valueOf(c.getBoolean("lobby.return-to-lobby", true)))));
     }
 
     /**
@@ -157,9 +164,10 @@ public record PluginConfig(
      * Expands {@code ${NAME}} placeholders against the environment (then system
      * properties, then the local hostname for HOSTNAME/COMPUTERNAME).
      *
-     * <p>Without this the shipped default {@code server-id: "pod-${HOSTNAME}"} stays
-     * literal — pods reported the string {@code pod-${HOSTNAME}} to the controller
-     * instead of their real identity.
+     * <p>Without this the shipped {@code server-id: "${HOSTNAME}"} stays literal — pods
+     * reported the string {@code ${HOSTNAME}} to the controller instead of their real
+     * identity, and the proxy would then be told to send players to a server named
+     * {@code ${HOSTNAME}}.
      */
     static String expand(String value) {
         if (value == null || !value.contains("${")) {

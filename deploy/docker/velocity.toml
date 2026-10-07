@@ -1,0 +1,81 @@
+# =============================================================================
+#  BedwarsRecoded Velocity configuration
+# =============================================================================
+#  Shipped inside the proxy image so the network behaves the same way in Docker
+#  Compose and in Kubernetes.
+#
+#  The two settings that make the lobby architecture work are the [servers] block
+#  and `try`:
+#    * `lobby` is a permanent backend server, reachable by that name (a Compose
+#      service name, or a Kubernetes Service).
+#    * `try = ["lobby"]` is where a player is put when they have no server yet,
+#      which is exactly what happens after they connect. Without it, the proxy
+#      has nowhere to place a player and disconnects them.
+#
+#  Game pods are NOT listed here: they are ephemeral. The proxy plugin registers
+#  each pod with Velocity the first time the controller names it (see
+#  BedwarsVelocityPlugin#serverForPod).
+# =============================================================================
+
+config-version = "2.7"
+
+# Bind address. In a container this must be 0.0.0.0, not 127.0.0.1.
+bind = "0.0.0.0:25565"
+
+motd = "<#09ADD3>BedwarsRecoded <gray>- connecting you to the lobby"
+show-max-players = 500
+
+# The proxy is the authenticator for the whole network. Every backend runs with
+# online-mode=false and trusts the identity the proxy forwards, so this MUST stay
+# true: turning it off would let anyone connect as anyone.
+online-mode = true
+force-key-authentication = false
+prevent-client-proxy-connections = false
+
+# Backends are plain Spigot, which supports BungeeCord-style (legacy) forwarding.
+# "modern" forwarding needs Paper's own handshake. With legacy forwarding the
+# backend must also set `settings.bungeecord: true` in spigot.yml — the game and
+# lobby images do exactly that.
+player-info-forwarding-mode = "legacy"
+
+# Let a player be moved between servers without reconnecting.
+kick-existing-players = false
+
+# Backends talk to us over plugin messages ("put this player in a match",
+# "send these players back to the lobby") — required for the lobby to work.
+bungee-plugin-message-channel = true
+
+[servers]
+# The hub every player lands on. Name must match LOBBY_SERVER in the proxy plugin.
+lobby = "lobby:25565"
+
+# Where a player goes when they are not assigned to anything. This is the setting
+# that puts players in the lobby instead of dropping them.
+try = ["lobby"]
+
+[forced-hosts]
+# Optional: a hostname that always lands on the lobby.
+"lobby.bedwars.local" = ["lobby"]
+
+[advanced]
+compression-threshold = 256
+compression-level = -1
+login-ratelimit = 3000
+connection-timeout = 5000
+read-timeout = 30000
+haproxy-protocol = false
+tcp-fast-open = false
+bungee-plugin-message-channel = true
+show-ping-requests = false
+# If a game pod dies mid-match, put the player back in the lobby rather than
+# disconnecting them — the pod being destroyed is the normal end of a match.
+failover-on-unexpected-server-disconnect = true
+announce-proxy-commands = true
+log-command-executions = false
+log-player-connections = true
+accepts-transfers = false
+
+[query]
+enabled = false
+port = 25577
+show-plugins = false

@@ -12,6 +12,9 @@ resources:
   - 13-networkpolicy.yaml
   - 14-pdb.yaml
   - 20-mc-router.yaml
+  # The lobby: the hub players land on. A plain Deployment, not a GameServerSet — a hub is
+  # permanent, and a GameServerSet replica is something the controller deletes when idle.
+  - 25-lobby.yaml
   - 30-velocity.yaml
   - 40-controller.yaml
 labels:
