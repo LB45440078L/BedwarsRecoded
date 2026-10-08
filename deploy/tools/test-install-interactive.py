@@ -178,6 +178,7 @@ def main():
     # out of the output: a dry run has to be safe to paste into a bug report.
     ok = check_unattended_redaction() and ok
     ok = check_missing_dependency_flow() and ok
+    ok = check_broken_tools_do_not_abort() and ok
     return 0 if ok else 1
 
 
@@ -193,19 +194,52 @@ HIDDEN = ("docker", "kubectl", "curl", "helm", "minikube", "java", "mvn")
 PATH_DIRS = ("/usr/bin", "/bin", "/usr/sbin", "/sbin", "/usr/local/bin")
 
 
-def fake_path_without_hidden(tmpdir):
-    """A PATH containing everything except HIDDEN, so `command -v docker` fails."""
+def build_fake_path(tmpdir, hide=(), stubs=None):
+    """Build a PATH that is exactly what the test needs.
+
+    `hide` removes a tool entirely (so `command -v` fails); `stubs` replaces one with a
+    script of our choosing -- which is how a tool that EXISTS but MISBEHAVES is
+    reproduced, the shape that used to kill the installer.
+    """
+    stubs = stubs or {}
     for d in PATH_DIRS:
         if not os.path.isdir(d):
             continue
         for name in os.listdir(d):
-            if name in HIDDEN or name in os.listdir(tmpdir):
+            if name in hide or name in stubs or name in os.listdir(tmpdir):
                 continue
             try:
                 os.symlink(os.path.join(d, name), os.path.join(tmpdir, name))
             except OSError:
                 pass            # dangling links and duplicates are not interesting
+    for name, body in stubs.items():
+        path = os.path.join(tmpdir, name)
+        if os.path.lexists(path):
+            os.remove(path)     # a symlink: writing through it would hit /usr/bin
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(body)
+        os.chmod(path, 0o755)
     return tmpdir
+
+
+def fake_path_without_hidden(tmpdir):
+    """A PATH containing everything except HIDDEN, so `command -v docker` fails."""
+    return build_fake_path(tmpdir, hide=HIDDEN)
+
+
+#  A tool that is installed but cannot work: `mvn` with no JDK is the everyday case,
+#  and it is what the reported crash looked like.
+BROKEN_TOOL = "#!/bin/sh\nexit 1\n"
+
+#  Docker Desktop's Windows binary, seen from WSL: it prints advice, exits 0, and is not
+#  a daemon. Counting that text as a version made the installer report a reachable
+#  daemon and then fail later on the compose check.
+WINDOWS_DOCKER_SHIM = (
+    "#!/bin/sh\n"
+    "echo \"The command 'docker' could not be found in this WSL 2 distro.\"\n"
+    "echo \"We recommend to activate the WSL integration in Docker Desktop settings.\"\n"
+    "exit 0\n"
+)
 
 
 def check_missing_dependency_flow():
@@ -255,6 +289,55 @@ def check_missing_dependency_flow():
             return False
 
     print("PASS  missing dependencies are offered, and declining explains what to install")
+    return True
+
+
+def check_broken_tools_do_not_abort():
+    """A tool that exists but fails must never take the installer down with it.
+
+    Reported from a WSL host: `mvn` was on the PATH with no JDK behind it, so `mvn -v`
+    failed -- and because `VAR=$(probe | ...)` takes the pipeline's status under
+    `set -e -o pipefail`, the run died at a *version row*. Docker was worse: the Windows
+    binary answered with advice, exited 0, and was recorded as a reachable daemon.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="bedwars-broken-") as tmpdir:
+        # Everything present, but mvn/java broken and docker a prose-printing shim.
+        build_fake_path(tmpdir, stubs={
+            "mvn": BROKEN_TOOL,
+            "java": BROKEN_TOOL,
+            "docker": WINDOWS_DOCKER_SHIM,
+        })
+        env = dict(os.environ)
+        env["PATH"] = tmpdir
+        env["NO_COLOR"] = "1"
+        env.pop("JAVA_HOME", None)
+
+        run = subprocess.run(
+            [INSTALLER, "--dry-run", "--mode", "docker", "--no-install-deps"],
+            capture_output=True, text=True, cwd=REPO_ROOT, env=env, timeout=300)
+        out = ANSI.sub("", run.stdout + run.stderr)
+
+        if "unexpected failure" in out:
+            print("FAIL  a failing tool probe aborted the installer")
+            print(out[-1200:])
+            return False
+        if "daemon reachable" in out:
+            print("FAIL  prose from a docker shim was accepted as a reachable daemon")
+            print(out[-1200:])
+            return False
+        # It must still get all the way to the report and the dependency offer.
+        for expected in ("Checking this machine", "maven", "Missing dependencies"):
+            if expected not in out:
+                print(f"FAIL  the run did not reach '{expected}'")
+                print(out[-1200:])
+                return False
+        if "mvn" in out and "Traceback" in out:
+            print("FAIL  the probe left a stack trace in the output")
+            return False
+
+    print("PASS  a broken tool probe reports instead of aborting, and a docker shim is not a daemon")
     return True
 
 

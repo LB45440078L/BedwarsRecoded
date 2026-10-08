@@ -452,7 +452,7 @@ copy_tree_progress() {
     if [ ! -d "$src" ]; then
         return 0
     fi
-    total=$(find "$src" -type f 2>/dev/null | wc -l | tr -d ' ')
+    total=$(find "$src" -type f 2>/dev/null | wc -l | tr -d ' ' || echo 0)
     [ "$total" -lt 1 ] && total=1 || true
     log_line "COPY: $src -> $dst ($total files)"
     mkdir -p "$dst"
@@ -641,10 +641,10 @@ random_secret() {
     if command -v openssl >/dev/null 2>&1; then
         #  Ask for more bytes than needed: base64 then drops '+', '/' and '=' below, so
         #  a fixed 32 would sometimes come back as 30 characters.
-        s=$(openssl rand -base64 $(( n + 8 )) 2>/dev/null | tr -dc 'A-Za-z0-9' | cut -c1-"$n")
+        s=$(openssl rand -base64 $(( n + 8 )) 2>/dev/null | tr -dc 'A-Za-z0-9' | cut -c1-"$n" || true)
     fi
     if [ -z "$s" ]; then
-        s=$( (date +%s; printf '%s' "$RANDOM$RANDOM$RANDOM") | cksum | tr -dc '0-9' | cut -c1-"$n")
+        s=$( (date +%s; printf '%s' "$RANDOM$RANDOM$RANDOM") | cksum | tr -dc '0-9' | cut -c1-"$n" || true)
     fi
     [ -z "$s" ] && s="bedwars-secret" || true
     printf '%s' "$s"
@@ -854,6 +854,8 @@ ENV_FAILED="0"
 #  Platform facts, decided once by detect_platform. They drive both the offer to
 #  install missing dependencies and the manual instructions printed when declined.
 OS_FAMILY="unknown"      # debian | fedora | arch | suse | macos | unknown
+DOCKER_BIN=""            # the docker that `command -v` resolves
+DOCKER_SHIM="0"          # 1 when that docker is the Windows one WSL exposes
 PKG_MGR=""               # apt-get | dnf | pacman | zypper | brew | (empty)
 SUDO=""                  # "sudo" unless already root
 IS_ROOT="0"
@@ -882,19 +884,39 @@ probe_tools() {
     #  Both paths need it: the images (the Spigot server, the controller, the proxy)
     #  are built here and then either run or loaded into the cluster.
     if command -v docker >/dev/null 2>&1; then
-        DOCKER_VERSION=$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)
-        if [ -n "$DOCKER_VERSION" ]; then
-            HAVE_DOCKER="1"
-            record_env ok "docker" "$DOCKER_VERSION, daemon reachable"
-            if docker compose version >/dev/null 2>&1; then
-                HAVE_DOCKER_COMPOSE="1"
-                record_env ok "docker compose" "$(docker compose version --short 2>/dev/null || echo v2)"
-            else
-                record_env warn "docker compose" "the v2 'docker compose' plugin is missing; the Docker path needs it"
-            fi
+        DOCKER_BIN=$(command -v docker)
+        DOCKER_SHIM="0"
+        case "$DOCKER_BIN" in
+            # WSL PATH interop puts the Windows docker.exe on the PATH. It cannot mount
+            # this filesystem and answers with "activate the WSL integration" instead of
+            # talking to a daemon, so it is not a runtime this distribution can use.
+            /mnt/*|*.exe) DOCKER_SHIM="1" ;;
+        esac
+        if [ "$DOCKER_SHIM" = "1" ]; then
+            record_env warn "docker" "the Windows docker ($DOCKER_BIN) is not usable inside WSL"
+            ui_hint "enable WSL integration in Docker Desktop, or install docker in this distro:"
+            ui_hint "  sudo apt-get install -y docker.io && sudo service docker start"
+            ui_hint "then /usr/bin/docker has to come before /mnt/... on PATH for it to be used"
         else
-            record_env warn "docker" "installed, but its daemon is not answering"
-            ui_hint "start it, then re-run: Docker Desktop, or 'sudo systemctl start docker' on Linux"
+            DOCKER_VERSION=$(docker version --format '{{.Server.Version}}' 2>/dev/null | head -1 || true)
+            # A binary that is not docker prints prose and still exits 0, so an answer
+            # that looks like a version is what tells a daemon from an instruction leaflet.
+            case "$DOCKER_VERSION" in
+                ""|*[!0-9.]*) DOCKER_VERSION="" ;;
+            esac
+            if [ -n "$DOCKER_VERSION" ]; then
+                HAVE_DOCKER="1"
+                record_env ok "docker" "$DOCKER_VERSION, daemon reachable"
+                if docker compose version >/dev/null 2>&1; then
+                    HAVE_DOCKER_COMPOSE="1"
+                    record_env ok "docker compose" "$(docker compose version --short 2>/dev/null | head -1 || echo v2)"
+                else
+                    record_env warn "docker compose" "the v2 'docker compose' plugin is missing; the Docker path needs it"
+                fi
+            else
+                record_env warn "docker" "installed, but its daemon is not answering"
+                ui_hint "start it, then re-run: Docker Desktop, or 'sudo systemctl start docker' on Linux"
+            fi
         fi
     else
         record_env warn "docker" "not found -- the images are built with it on both paths"
@@ -932,29 +954,41 @@ probe_tools() {
     #  build the plugin inside the build stage. It is needed to build the plugin here,
     #  or to run the repository's own test suite, so it is reported, never required.
     if command -v java >/dev/null 2>&1; then
-        JAVA_VERSION=$(java -version 2>&1 | head -1 | sed 's/.*version "\([^"]*\)".*/\1/')
+        JAVA_VERSION=$(java -version 2>&1 | head -1 | sed 's/.*version "\([^"]*\)".*/\1/' || true)
         JAVA_MAJOR=$(printf '%s' "$JAVA_VERSION" | cut -d. -f1)
         case "$JAVA_MAJOR" in ''|*[!0-9]*) JAVA_MAJOR="" ;; esac
         if [ -n "$JAVA_MAJOR" ] && [ "$JAVA_MAJOR" -ge 25 ]; then
             record_env ok "java" "$JAVA_VERSION -- can build the plugin on this machine"
+        elif [ -n "$JAVA_VERSION" ]; then
+            record_env info "java" "$JAVA_VERSION -- the plugin is built with Java 25"
         else
-            record_env info "java" "${JAVA_VERSION:-present} -- the plugin is built with Java 25"
+            # `java` on the PATH that will not answer is usually a broken or empty JDK
+            # home, and saying "present" would hide exactly the problem worth fixing.
+            record_env warn "java" "installed, but it did not report a version -- check the JDK"
         fi
     else
         record_env info "java" "absent -- not needed to run the network (the images carry a JDK)"
     fi
     if command -v mvn >/dev/null 2>&1; then
-        MAVEN_VERSION=$(mvn -v 2>/dev/null | head -1 | awk '{print $3}')
-        record_env ok "maven" "${MAVEN_VERSION:-present} -- can build the plugin and run its tests"
+        # `mvn -v` fails outright without a JDK, and a bare assignment takes that
+        # failure's status: under `set -e` one broken tool killed the whole run.
+        MAVEN_VERSION=$(mvn -v 2>/dev/null | head -1 | awk '{print $3}' || true)
+        if [ -n "$MAVEN_VERSION" ]; then
+            record_env ok "maven" "$MAVEN_VERSION -- can build the plugin and run its tests"
+        else
+            # Maven needs a JDK to run at all, so this is the common "mvn installed, no
+            # java" state: report it rather than claiming it can build anything.
+            record_env warn "maven" "installed, but it failed to start -- maven needs a JDK"
+        fi
     else
         record_env info "maven" "absent -- only needed to build the plugin on this machine"
     fi
     if command -v git >/dev/null 2>&1; then
-        GIT_VERSION=$(git --version 2>/dev/null | awk '{print $3}')
+        GIT_VERSION=$(git --version 2>/dev/null | awk '{print $3}' || true)
         record_env info "git" "${GIT_VERSION:-present}"
     fi
     if command -v python3 >/dev/null 2>&1; then
-        PYTHON_VERSION=$(python3 --version 2>/dev/null | awk '{print $2}')
+        PYTHON_VERSION=$(python3 --version 2>/dev/null | awk '{print $2}' || true)
         record_env info "python3" "${PYTHON_VERSION:-present} -- used by the helper scripts"
     fi
 
@@ -969,7 +1003,7 @@ probe_tools() {
 check_disk() {
     # Images plus MySQL data are a few gigabytes; warn early rather than halfway.
     local avail_kb
-    avail_kb=$(df -Pk "$ROOT" 2>/dev/null | awk 'NR==2 {print $4}')
+    avail_kb=$(df -Pk "$ROOT" 2>/dev/null | awk 'NR==2 {print $4}' || true)
     case "$avail_kb" in ''|*[!0-9]*) return 0 ;; esac
     local avail_gb=$(( avail_kb / 1024 / 1024 ))
     if [ "$avail_gb" -lt 5 ]; then
@@ -1069,6 +1103,15 @@ tool_ok() {
         maven)   command -v mvn >/dev/null 2>&1 ;;
         *)       return 1 ;;
     esac
+}
+
+#  A docker this machine can actually use: present, and not the Windows one that WSL
+#  PATH interop exposes. Starting a daemon is pointless for a binary that cannot reach
+#  a Linux one.
+docker_binary_usable() {
+    command -v docker >/dev/null 2>&1 || return 1
+    [ "$DOCKER_SHIM" = "1" ] && return 1
+    return 0
 }
 
 tool_label() {
@@ -1453,7 +1496,7 @@ offer_start_docker() {
 #  their images here).
 ensure_dependencies() {
     # A present binary with a dead daemon is a different problem from a missing one.
-    if [ "$HAVE_DOCKER" != "1" ] && command -v docker >/dev/null 2>&1; then
+    if [ "$HAVE_DOCKER" != "1" ] && docker_binary_usable; then
         offer_start_docker || true
         probe_tools >/dev/null 2>&1 || true
     fi
@@ -1558,7 +1601,7 @@ ensure_dependencies() {
     # An installed Docker whose daemon is silent is not a missing package, so deal with
     # the daemon first and only then decide what is genuinely absent. This is the normal
     # shape after a fresh install, and on WSL, where nothing starts dockerd for you.
-    if [ "$HAVE_DOCKER" != "1" ] && command -v docker >/dev/null 2>&1; then
+    if [ "$HAVE_DOCKER" != "1" ] && docker_binary_usable; then
         if offer_start_docker; then
             probe_tools >/dev/null 2>&1 || true
         fi
@@ -1571,7 +1614,9 @@ ensure_dependencies() {
         # missing tool, which the manual route has to describe instead.
         case "$t2" in
             docker|compose)
-                if ! command -v docker >/dev/null 2>&1; then daemon_only="0"; fi
+                # A shim is "not installed" for our purposes, so this is a package to
+                # install, not a daemon to start.
+                if ! docker_binary_usable; then daemon_only="0"; fi
                 ;;
             *) daemon_only="0" ;;
         esac
@@ -1985,7 +2030,7 @@ wizard_assets() {
             "point at the FOLDER that contains level.dat, e.g. ~/.minecraft/saves/MyHub"
         ask CFG_HUB_WORLD_NAME "Name to stage it as" "lobby" v_identifier
         local files
-        files=$(find "$CFG_HUB_WORLD_SRC" -type f 2>/dev/null | wc -l | tr -d ' ')
+        files=$(find "$CFG_HUB_WORLD_SRC" -type f 2>/dev/null | wc -l | tr -d ' ' || echo 0)
         local mb
         mb=$(du -sm "$CFG_HUB_WORLD_SRC" 2>/dev/null | cut -f1 || echo 0)
         ui_ok "hub world found: $files files, ${mb} MB"
@@ -2000,7 +2045,7 @@ wizard_assets() {
         local arena_baked="Glacier"
         if [ -d "$ROOT/deploy/templates/$arena_baked" ]; then
             local baked_files
-            baked_files=$(find "$ROOT/deploy/templates/$arena_baked" -type f 2>/dev/null | wc -l | tr -d ' ')
+            baked_files=$(find "$ROOT/deploy/templates/$arena_baked" -type f 2>/dev/null | wc -l | tr -d ' ' || echo 0)
             ui_ok "arena template bundled: $arena_baked ($baked_files files)"
         fi
         local have_arena="n"
