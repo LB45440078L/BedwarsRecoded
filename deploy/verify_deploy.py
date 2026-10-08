@@ -9,6 +9,8 @@ Usage:  python3 deploy/verify_deploy.py
 """
 from __future__ import annotations
 
+import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -189,6 +191,51 @@ def verify_no_standalone_mode() -> None:
           "reporting knobs belong under `controller:` now that `deployment:` is gone")
 
 
+def verify_installer() -> None:
+    """The installer is the front door, and it is three thousand lines of bash that
+    nothing else type-checks.
+
+    It must parse; it must stay inside bash 3.2, because macOS still ships 3.2 and the
+    guided flow is meant to run there as well as on Ubuntu/WSL; and every flag it
+    accepts has to be described in its own --help.
+    """
+    installer = ROOT / "install.sh"
+    if not installer.exists():
+        errors.append("install.sh is missing")
+        return
+    text = installer.read_text(encoding="utf-8")
+
+    parsed = subprocess.run(["bash", "-n", str(installer)], capture_output=True, text=True)
+    check(parsed.returncode == 0, f"install.sh does not parse: {parsed.stderr.strip()[:200]}")
+
+    # Only real code: the comments deliberately name the features the script avoids,
+    # and a guard that trips on its own documentation is worse than no guard.
+    code = "\n".join(line for line in text.split("\n") if not line.lstrip().startswith("#"))
+
+    for feature, pattern in [
+        ("associative arrays", r"declare\s+-A"),
+        ("case-modifying expansion (${v,,} / ${v^^})", r"\$\{[A-Za-z_][A-Za-z0-9_]*(,,|\^\^)"),
+        ("mapfile/readarray", r"\b(mapfile|readarray)\b"),
+        ("&>> redirection", r"&>>"),
+    ]:
+        check(re.search(pattern, code) is None,
+              f"install.sh uses {feature}, which bash 3.2 does not have")
+
+    # Flags are easy to add and easy to forget to document; a user who cannot find a
+    # flag does not have it.
+    for flag in ["--dry-run", "--yes", "--mode", "--resume", "--teardown",
+                 "--install-deps", "--no-install-deps", "--verbose", "--no-color", "--help"]:
+        check(text.count(flag) >= 2,
+              f"install.sh accepts {flag} but does not describe it in --help")
+
+    # The dependency offer is the difference between "it told me what was missing and
+    # closed" and "it offered to fix it": guard the pieces that make it work.
+    check("ensure_dependencies" in text, "install.sh no longer offers to install dependencies")
+    check("detect_platform" in text, "install.sh no longer detects the platform")
+    for family in ["debian", "fedora", "arch", "suse", "macos"]:
+        check(f"{family})" in text, f"install.sh has no package-manager mapping for {family}")
+
+
 def verify_lobby() -> None:
     """The lobby is a first-class server ROLE, not a coincidence of configuration.
 
@@ -286,6 +333,7 @@ def main() -> int:
     verify_server_jar_resolution()
     verify_no_standalone_mode()
     verify_lobby()
+    verify_installer()
     if errors:
         print(f"DEPLOY VERIFY: {len(errors)} problem(s) across {checks} checks")
         for err in errors:

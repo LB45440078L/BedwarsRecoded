@@ -47,6 +47,8 @@ OPT_VERBOSE="0"
 OPT_NO_COLOR="0"
 OPT_TEARDOWN="0"
 OPT_RESUME="0"
+#  "" = ask (the default), "yes" = install without asking, "no" = never install.
+OPT_INSTALL_DEPS=""
 
 # Every decision the wizard collects. The defaults are what the repository
 # already ships, so pressing Enter through the wizard reproduces the documented
@@ -689,6 +691,13 @@ Options:
                               written, built or started.
   --resume                    Reuse the .installer/state from a previous run as
                               the defaults, instead of the shipped defaults.
+  --install-deps              Install missing dependencies with the system package
+                              manager without asking. Without this flag the installer
+                              asks; with --yes it does NOT install (installing system
+                              packages unattended is too invasive) and prints the
+                              commands instead.
+  --no-install-deps           Never install anything: report what is missing, print
+                              the commands for your distribution, and stop.
   --teardown                  Remove the stack this installer created, and stop.
   --verbose                   Echo each command as it runs (implies no spinner).
   --no-color                  Plain output. Also honoured: NO_COLOR=1.
@@ -701,7 +710,9 @@ Examples:
   ./install.sh --teardown                       # clean up afterwards
 
 What it does, in order:
-  1. Checks the machine (tools, daemon, cluster, ports, disk).
+  1. Checks the machine (tools, daemon, cluster, ports, disk) and, if something is
+     missing, offers to install it with your distribution's package manager
+     (apt, dnf, pacman, zypper or Homebrew) -- or prints the exact commands to run.
   2. Asks what you want: Docker or Kubernetes, and every parameter, with the
      repository's own defaults as one Enter away.
   3. Copies your world files and server jar into place.
@@ -727,6 +738,8 @@ parse_args() {
             --dry-run) OPT_DRY_RUN="1"; shift ;;
             --resume) OPT_RESUME="1"; shift ;;
             --teardown) OPT_TEARDOWN="1"; shift ;;
+            --install-deps) OPT_INSTALL_DEPS="yes"; shift ;;
+            --no-install-deps) OPT_INSTALL_DEPS="no"; shift ;;
             --verbose|-v) OPT_VERBOSE="1"; shift ;;
             --no-color) OPT_NO_COLOR="1"; shift ;;
             -h|--help) usage; exit 0 ;;
@@ -838,8 +851,23 @@ PYTHON_VERSION=""
 #  "mark<TAB>label<TAB>detail". Newline-separated: no associative arrays on bash 3.2.
 ENV_ROWS=""
 ENV_FAILED="0"
+#  Platform facts, decided once by detect_platform. They drive both the offer to
+#  install missing dependencies and the manual instructions printed when declined.
+OS_FAMILY="unknown"      # debian | fedora | arch | suse | macos | unknown
+PKG_MGR=""               # apt-get | dnf | pacman | zypper | brew | (empty)
+SUDO=""                  # "sudo" unless already root
+IS_ROOT="0"
+IS_WSL="0"
+BIN_DIR="/usr/local/bin" # where a downloaded binary (kubectl, helm, minikube) goes
+BIN_SUDO=""
+PKG_LISTS_UPDATED="0"
+INSTALLED_NOW=""
+FAILED_INSTALL=""
 
 probe_tools() {
+    # Re-runnable: ensure_dependencies probes again after installing something, and
+    # the report must not accumulate a second copy of every row.
+    ENV_ROWS=""
     local missing="0"
     # --- required on every path ---------------------------------------------
     if command -v curl >/dev/null 2>&1; then
@@ -930,8 +958,10 @@ probe_tools() {
         record_env info "python3" "${PYTHON_VERSION:-present} -- used by the helper scripts"
     fi
 
-    if [ "$missing" = "1" ]; then
-        fail "a required tool is missing" "install what is marked above and re-run"
+    # Deliberately quiet about a missing tool here: whether it is fatal depends on
+    # the path the user picks, and ensure_dependencies offers to install it.
+    if [ -n "$OS_FAMILY" ] && [ "$OS_FAMILY" != "unknown" ]; then
+        record_env info "platform" "$(platform_label)$( [ "$IS_WSL" = "1" ] && printf ' -- on WSL' || true )"
     fi
     return 0
 }
@@ -957,6 +987,630 @@ check_port_free() {
         return 1
     fi
     ui_ok "port $port is free ($what)"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+#  Dependencies: what is missing, and installing it
+# ---------------------------------------------------------------------------
+#  The installer is the front door, so it must not stop at "docker is missing"
+#  and leave the user to work out the rest. It detects the platform, offers to
+#  install what is missing with that platform's own package manager, and when the
+#  answer is no (or there is no package manager) prints the exact commands for
+#  that platform before exiting.
+detect_platform() {
+    OS_FAMILY="unknown"
+    PKG_MGR=""
+    IS_WSL="0"
+    case "$(uname -s 2>/dev/null || echo unknown)" in
+        Darwin)
+            OS_FAMILY="macos"
+            if command -v brew >/dev/null 2>&1; then PKG_MGR="brew"; fi
+            ;;
+        Linux)
+            # WSL reports Linux, but the host is Windows and that changes the advice
+            # for the Docker daemon (Docker Desktop integration vs an in-distro one).
+            if [ -n "${WSL_DISTRO_NAME:-}" ]; then
+                IS_WSL="1"
+            elif [ -r /proc/version ] && grep -qi microsoft /proc/version 2>/dev/null; then
+                IS_WSL="1"
+            fi
+            if command -v apt-get >/dev/null 2>&1; then
+                OS_FAMILY="debian"; PKG_MGR="apt-get"
+            elif command -v dnf >/dev/null 2>&1; then
+                OS_FAMILY="fedora"; PKG_MGR="dnf"
+            elif command -v pacman >/dev/null 2>&1; then
+                OS_FAMILY="arch"; PKG_MGR="pacman"
+            elif command -v zypper >/dev/null 2>&1; then
+                OS_FAMILY="suse"; PKG_MGR="zypper"
+            fi
+            ;;
+    esac
+
+    if [ "$(id -u 2>/dev/null || echo 1)" = "0" ]; then
+        IS_ROOT="1"; SUDO=""
+    else
+        IS_ROOT="0"
+        if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; else SUDO=""; fi
+    fi
+
+    # A downloaded binary needs a home. Prefer /usr/local/bin, but never require
+    # root: fall back to ~/.local/bin, which is where a user can write.
+    if [ "$IS_ROOT" = "1" ]; then
+        BIN_DIR="/usr/local/bin"; BIN_SUDO=""
+    elif [ -n "$SUDO" ]; then
+        BIN_DIR="/usr/local/bin"; BIN_SUDO="$SUDO"
+    else
+        BIN_DIR="$HOME/.local/bin"; BIN_SUDO=""
+    fi
+}
+
+platform_label() {
+    case "$OS_FAMILY" in
+        debian) printf 'Debian / Ubuntu (apt)' ;;
+        fedora) printf 'Fedora / RHEL (dnf)' ;;
+        arch)   printf 'Arch (pacman)' ;;
+        suse)   printf 'openSUSE (zypper)' ;;
+        macos)  if [ -n "$PKG_MGR" ]; then printf 'macOS (Homebrew)'; else printf 'macOS (no Homebrew)'; fi ;;
+        *)      printf 'unrecognised platform' ;;
+    esac
+}
+
+#  Is this tool usable right now? Presence is enough for the build-only tools: a
+#  java older than 25 cannot build the plugin but does not stop the network, and
+#  installing a package would not fix the version anyway.
+tool_ok() {
+    case "$1" in
+        curl)    [ "$HAVE_CURL" = "1" ] ;;
+        docker)  [ "$HAVE_DOCKER" = "1" ] ;;
+        compose) [ "$HAVE_DOCKER_COMPOSE" = "1" ] ;;
+        kubectl) [ "$HAVE_KUBECTL" = "1" ] ;;
+        java)    command -v java >/dev/null 2>&1 ;;
+        maven)   command -v mvn >/dev/null 2>&1 ;;
+        *)       return 1 ;;
+    esac
+}
+
+tool_label() {
+    case "$1" in
+        curl)    printf 'curl' ;;
+        docker)  printf 'docker' ;;
+        compose) printf 'docker compose (the v2 plugin)' ;;
+        kubectl) printf 'kubectl' ;;
+        java)    printf 'java' ;;
+        maven)   printf 'maven' ;;
+        *)       printf '%s' "$1" ;;
+    esac
+}
+
+tool_role() {
+    case "$1" in
+        java|maven) printf 'only needed to build the plugin on this machine' ;;
+        *)          printf 'required for this path' ;;
+    esac
+}
+
+#  Package names for the current platform, one per line, most preferred first.
+#  Empty output means no package manager here ships it: use a binary download.
+pkg_candidates() {
+    case "$1" in
+        curl)
+            case "$OS_FAMILY" in
+                macos) if command -v curl >/dev/null 2>&1; then :; else printf 'curl\n'; fi ;;
+                *)     printf 'curl\n' ;;
+            esac
+            ;;
+        docker)
+            case "$OS_FAMILY" in
+                debian) printf 'docker.io\n' ;;
+                fedora) printf 'moby-engine\n' ;;
+                arch)   printf 'docker\n' ;;
+                suse)   printf 'docker\n' ;;
+                macos)  printf 'docker\n' ;;   # a cask; install_docker_macos handles it
+            esac
+            ;;
+        compose)
+            case "$OS_FAMILY" in
+                # Ubuntu 24.04+ ships the v2 plugin under this name. Older releases
+                # only have the v1 'docker-compose' package, which the installer
+                # cannot use, hence the fallback to the plugin binary below.
+                debian) printf 'docker-compose-v2\ndocker-compose-plugin\n' ;;
+                fedora) printf 'docker-compose\n' ;;
+                arch)   printf 'docker-compose\n' ;;
+                suse)   printf 'docker-compose\n' ;;
+                macos)  printf 'docker-compose\n' ;;
+            esac
+            ;;
+        kubectl)
+            case "$OS_FAMILY" in
+                # Only these two carry it in their own repositories.
+                fedora) printf 'kubernetes-client\n' ;;
+                arch)   printf 'kubectl\n' ;;
+                macos)  printf 'kubectl\n' ;;
+            esac
+            ;;
+        helm)
+            case "$OS_FAMILY" in
+                arch)  printf 'helm\n' ;;
+                macos) printf 'helm\n' ;;
+                *)     printf '' ;;
+            esac
+            ;;
+        java)
+            case "$OS_FAMILY" in
+                # 25 first, then whatever the distribution has. A 21 install is still
+                # useful for everything except compiling this plugin.
+                debian) printf 'openjdk-25-jdk\nopenjdk-24-jdk\nopenjdk-21-jdk\n' ;;
+                fedora) printf 'java-25-openjdk-devel\njava-latest-openjdk-devel\n' ;;
+                arch)   printf 'jdk-openjdk\n' ;;
+                suse)   printf 'java-21-openjdk-devel\n' ;;
+                macos)  printf 'openjdk\n' ;;
+            esac
+            ;;
+        maven)
+            case "$OS_FAMILY" in
+                macos) printf 'maven\n' ;;
+                *)     printf 'maven\n' ;;
+            esac
+            ;;
+    esac
+}
+
+#  One package-manager invocation for the platform.
+install_packages() {
+    # install_packages <label> <package...>
+    local label="$1"; shift
+    case "$PKG_MGR" in
+        apt-get)
+            if [ "$PKG_LISTS_UPDATED" != "1" ]; then
+                run_streaming "updating the package lists" $SUDO apt-get update || return 1
+                PKG_LISTS_UPDATED="1"
+            fi
+            run_streaming "$label" $SUDO apt-get install -y "$@"
+            ;;
+        dnf)    run_streaming "$label" $SUDO dnf install -y "$@" ;;
+        pacman) run_streaming "$label" $SUDO pacman -S --noconfirm --needed "$@" ;;
+        zypper) run_streaming "$label" $SUDO zypper --non-interactive install "$@" ;;
+        brew)   run_streaming "$label" brew install "$@" ;;
+        *)      return 1 ;;
+    esac
+}
+
+#  Try each candidate package in order, since the same name is not blessed by every
+#  release of the same distribution (openjdk-25 vs openjdk-21, docker-compose-v2 vs
+#  docker-compose-plugin).
+install_with_pkg_mgr() {
+    local tool="$1" label pkg rc=1
+    label="installing $(tool_label "$tool")"
+    while IFS= read -r pkg; do
+        [ -z "$pkg" ] && continue
+        if install_packages "$label" "$pkg"; then
+            INSTALLED_NOW="$INSTALLED_NOW $tool"
+            return 0
+        fi
+        rc=1
+    done <<EOF
+$(pkg_candidates "$tool")
+EOF
+    return "$rc"
+}
+
+#  Where a binary goes when no package manager ships the tool.
+install_binary_file() {
+    # install_binary_file <label> <source-url> <destination-basename>
+    local label="$1" url="$2" name="$3" tmp
+    tmp="$STATE_DIR/$name"
+    run_streaming "$label" curl -fsSL -o "$tmp" "$url" || return 1
+    run_cmd "installing $name" chmod +x "$tmp" || return 1
+    if [ -d /usr/local/bin ] && [ -n "$BIN_SUDO" ]; then
+        run_cmd "installing $name" $BIN_SUDO mv "$tmp" "$BIN_DIR/$name" || return 1
+    else
+        mkdir -p "$BIN_DIR" 2>/dev/null || true
+        run_cmd "installing $name" mv "$tmp" "$BIN_DIR/$name" || return 1
+    fi
+    return 0
+}
+
+arch_suffix() {
+    case "$(uname -m 2>/dev/null || echo x86_64)" in
+        x86_64|amd64)   printf 'amd64' ;;
+        aarch64|arm64)  printf 'arm64' ;;
+        *)              printf 'amd64' ;;
+    esac
+}
+
+linux_only_hint() {
+    # Downloading a Linux binary makes no sense on macOS: say so rather than fail.
+    local tool="$1"
+    ui_warn "no package-manager route to $(tool_label "$tool") on $(platform_label)"
+    ui_hint "install it by hand and re-run; the installer will pick it up"
+    FAILED_INSTALL="$FAILED_INSTALL $tool"
+    return 1
+}
+
+#  Tools that no distribution ships: fetch the official binary instead.
+install_binary_tool() {
+    local tool="$1" arch ver url tmp_script tmp_plugin plugin_dir
+    arch="$(arch_suffix)"
+    if [ "$OS_FAMILY" = "macos" ]; then
+        linux_only_hint "$tool"
+        return 1
+    fi
+    case "$tool" in
+        kubectl)
+            ver=$(curl -fsSL --max-time 25 https://dl.k8s.io/release/stable.txt 2>/dev/null || true)
+            [ -n "$ver" ] || { ui_warn "could not resolve the current kubectl version (no network?)"; FAILED_INSTALL="$FAILED_INSTALL $tool"; return 1; }
+            url="https://dl.k8s.io/release/$ver/bin/linux/$arch/kubectl"
+            install_binary_file "downloading kubectl $ver" "$url" kubectl || { FAILED_INSTALL="$FAILED_INSTALL $tool"; return 1; }
+            ;;
+        helm)
+            # The official installer script, downloaded and run rather than piped in,
+            # so what is about to execute is at least a file that was seen.
+            url="https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3"
+            tmp_script="$STATE_DIR/get-helm-3"
+            run_streaming "downloading the helm installer" curl -fsSL -o "$tmp_script" "$url" || { FAILED_INSTALL="$FAILED_INSTALL $tool"; return 1; }
+            run_streaming "installing helm" sh "$tmp_script" || { FAILED_INSTALL="$FAILED_INSTALL $tool"; return 1; }
+            ;;
+        minikube)
+            url="https://storage.googleapis.com/minikube/releases/latest/minikube-linux-$arch"
+            install_binary_file "downloading minikube" "$url" minikube || { FAILED_INSTALL="$FAILED_INSTALL $tool"; return 1; }
+            ;;
+        compose)
+            # The plugin binary, exactly as the upstream docs install it.
+            url="https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$arch"
+            tmp_plugin="$STATE_DIR/docker-compose"
+            run_streaming "downloading the compose plugin" curl -fsSL -o "$tmp_plugin" "$url" || { FAILED_INSTALL="$FAILED_INSTALL $tool"; return 1; }
+            run_cmd "installing the compose plugin" chmod +x "$tmp_plugin" || { FAILED_INSTALL="$FAILED_INSTALL $tool"; return 1; }
+            plugin_dir="/usr/local/lib/docker/cli-plugins"
+            if [ "$IS_ROOT" != "1" ] && [ -z "$SUDO" ]; then
+                plugin_dir="$HOME/.docker/cli-plugins"
+                mkdir -p "$plugin_dir" 2>/dev/null || true
+                run_cmd "installing the compose plugin" mv "$tmp_plugin" "$plugin_dir/docker-compose" || { FAILED_INSTALL="$FAILED_INSTALL $tool"; return 1; }
+            else
+                run_cmd "installing the compose plugin" $BIN_SUDO mkdir -p "$plugin_dir" || { FAILED_INSTALL="$FAILED_INSTALL $tool"; return 1; }
+                run_cmd "installing the compose plugin" $BIN_SUDO mv "$tmp_plugin" "$plugin_dir/docker-compose" || { FAILED_INSTALL="$FAILED_INSTALL $tool"; return 1; }
+            fi
+            ;;
+        *)  linux_only_hint "$tool"; return 1 ;;
+    esac
+    INSTALLED_NOW="$INSTALLED_NOW $tool"
+    return 0
+}
+
+#  macOS takes Docker from a cask (Docker Desktop), and that is a GUI application
+#  rather than a CLI package, so it is handled separately and never silently.
+install_docker_macos() {
+    if [ -z "$PKG_MGR" ]; then
+        ui_warn "Homebrew is not installed, so Docker cannot be installed here"
+        ui_hint "either install Docker Desktop from https://docker.com/products/docker-desktop"
+        ui_hint "or install Homebrew (https://brew.sh) and re-run this installer"
+        FAILED_INSTALL="$FAILED_INSTALL docker"
+        return 1
+    fi
+    ui_hint "Docker Desktop is a GUI application: Homebrew will install it, but you"
+    ui_hint "must start it once by hand before the daemon answers"
+    if run_streaming "installing Docker Desktop" brew install --cask docker; then
+        INSTALLED_NOW="$INSTALLED_NOW docker"
+        return 0
+    fi
+    FAILED_INSTALL="$FAILED_INSTALL docker"
+    return 1
+}
+
+install_one_tool() {
+    local tool="$1"
+    case "$tool" in
+        docker)
+            if [ "$OS_FAMILY" = "macos" ]; then
+                install_docker_macos
+                return $?
+            fi
+            install_with_pkg_mgr "$tool"
+            return $?
+            ;;
+        compose)
+            if install_with_pkg_mgr "$tool"; then
+                return 0
+            fi
+            # No v2 plugin in this release's repositories: take the official binary.
+            install_binary_tool "$tool"
+            return $?
+            ;;
+        kubectl|helm|minikube)
+            if install_with_pkg_mgr "$tool"; then
+                return 0
+            fi
+            install_binary_tool "$tool"
+            return $?
+            ;;
+        *)
+            install_with_pkg_mgr "$tool"
+            return $?
+            ;;
+    esac
+}
+
+#  The package manager command a user would run by hand, for the manual route.
+manual_command() {
+    local tool="$1" pkgs
+    # Docker on macOS means Docker Desktop, not the 'docker' CLI formula: the CLI
+    # alone has no daemon and would look like a successful install that does nothing.
+    if [ "$OS_FAMILY" = "macos" ]; then
+        case "$tool" in
+            docker)  printf 'brew install --cask docker     # Docker Desktop, then start it once'; return 0 ;;
+            compose) printf 'docker compose ships with Docker Desktop; CLI only: brew install docker-compose'; return 0 ;;
+        esac
+    fi
+    pkgs=$(pkg_candidates "$tool" | tr '\n' ' ')
+    # Trim the trailing space, both for looks and so the copy-paste is exact.
+    pkgs=$(printf '%s' "$pkgs" | sed 's/ *$//')
+    if [ -n "$pkgs" ]; then
+        case "$OS_FAMILY" in
+            debian) printf '%s apt-get install -y %s' "$SUDO" "$pkgs" ;;
+            fedora) printf '%s dnf install -y %s' "$SUDO" "$pkgs" ;;
+            arch)   printf '%s pacman -S --needed %s' "$SUDO" "$pkgs" ;;
+            suse)   printf '%s zypper install %s' "$SUDO" "$pkgs" ;;
+            macos)  printf 'brew install %s' "$pkgs" ;;
+        esac
+        return 0
+    fi
+    local arch
+    arch="$(arch_suffix)"
+    case "$tool" in
+        kubectl) printf 'curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/%s/kubectl" && chmod +x kubectl && sudo mv kubectl /usr/local/bin/' "$arch" ;;
+        helm)    printf 'curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash' ;;
+        minikube) printf 'curl -Lo minikube "https://storage.googleapis.com/minikube/releases/latest/minikube-linux-%s" && chmod +x minikube && sudo mv minikube /usr/local/bin/' "$arch" ;;
+        compose) printf 'install the compose v2 plugin: https://docs.docker.com/compose/install/linux/' ;;
+        *)       printf '' ;;
+    esac
+}
+
+manual_instructions() {
+    # manual_instructions <tool...>
+    local tools="$1" t cmd n
+    # Count the words, not the arguments: the caller passes the whole list as one
+    # string so that an empty list stays one (empty) word.
+    n=0
+    for t in $tools; do n=$(( n + 1 )); done
+    ui_blank
+    if [ "$n" -gt 1 ]; then
+        ui_info "install them yourself, then re-run this installer:"
+    else
+        ui_info "install it yourself, then re-run this installer:"
+    fi
+    ui_blank
+    for t in $tools; do
+        cmd="$(manual_command "$t")"
+        # Compose is part of Docker Desktop (macOS) and of the docker package on most
+        # distributions, so its "command" is sometimes an explanation, not a command.
+        case "$t" in
+            compose)
+                case "$OS_FAMILY" in
+                    macos) ui_hint "$cmd" ;;
+                    *)     if [ -n "$cmd" ]; then ui_hint "$(tool_label "$t"): $cmd"; else ui_hint "docker compose ships with the docker package"; fi ;;
+                esac
+                ;;
+            *)
+                if [ -n "$cmd" ]; then
+                    ui_hint "$(tool_label "$t"): $cmd"
+                else
+                    ui_hint "$(tool_label "$t"): see the documentation for $(platform_label)"
+                fi
+                ;;
+        esac
+    done
+    case "$OS_FAMILY" in
+        macos)
+            if [ -z "$PKG_MGR" ]; then
+                ui_blank
+                ui_hint "Homebrew is not installed: https://brew.sh installs it in one command"
+            fi
+            ;;
+    esac
+    case "$IS_WSL" in
+        1)
+            ui_blank
+            ui_info "you are on WSL:"
+            ui_hint "the least painful route to a Docker daemon is Docker Desktop with WSL integration"
+            ui_hint "https://docs.docker.com/desktop/wsl/  (or install docker here and start dockerd)"
+            ;;
+    esac
+    ui_blank
+    ui_hint "this machine looks like: $(platform_label)"
+}
+
+#  Docker is installed but nothing is listening: that is not an install problem, so
+#  do not send the user off to install it again.
+offer_start_docker() {
+    phase "$(em '🐳') Starting the Docker daemon"
+    ui_warn "the docker command exists, but its daemon is not answering"
+    local start=""
+    if [ "$OS_FAMILY" = "macos" ]; then
+        start=""
+        ui_hint "starting Docker Desktop ..."
+        run_cmd_soft "starting Docker Desktop" open -a Docker || true
+    elif command -v systemctl >/dev/null 2>&1; then
+        start="$SUDO systemctl start docker"
+    elif command -v service >/dev/null 2>&1; then
+        start="$SUDO service docker start"
+    fi
+    if [ -n "$start" ]; then
+        ui_hint "running: $start"
+        # Soft on purpose: it may need a password, or the unit may not exist yet.
+        run_cmd_soft "starting the docker daemon" sh -c "$start" || true
+    fi
+    if wait_for "the docker daemon to answer" 60 docker version --format "{{.Server.Version}}"; then
+        ui_ok "the docker daemon is answering now"
+        return 0
+    fi
+    ui_warn "the daemon still is not answering"
+    ui_hint "start it yourself (Docker Desktop, or: $SUDO systemctl start docker), then re-run"
+    return 1
+}
+
+#  The offer itself. Runs after the mode is known, because what is required depends
+#  on the path: Kubernetes needs kubectl, and both paths need Docker (both build
+#  their images here).
+ensure_dependencies() {
+    # A present binary with a dead daemon is a different problem from a missing one.
+    if [ "$HAVE_DOCKER" != "1" ] && command -v docker >/dev/null 2>&1; then
+        offer_start_docker || true
+        probe_tools >/dev/null 2>&1 || true
+    fi
+
+    local required="curl docker compose" t
+    if [ "$CFG_MODE" = "kubernetes" ]; then required="$required kubectl"; fi
+    local buildtools="java maven"
+
+    local missing_req="" missing_opt=""
+    for t in $required; do tool_ok "$t" || missing_req="$missing_req $t"; done
+    for t in $buildtools; do tool_ok "$t" || missing_opt="$missing_opt $t"; done
+
+    if [ -z "$missing_req" ] && [ -z "$missing_opt" ]; then
+        return 0
+    fi
+
+    phase "$(em '📦') Missing dependencies"
+    if [ -n "$missing_req" ]; then
+        for t in $missing_req; do
+            ui_err "$(tool_label "$t") -- $(tool_role "$t")"
+        done
+    fi
+    if [ -n "$missing_opt" ]; then
+        for t in $missing_opt; do
+            ui_warn "$(tool_label "$t") -- $(tool_role "$t")"
+        done
+    fi
+    ui_blank
+    ui_kv "this machine" "$(platform_label)"
+
+    # Nothing to offer without a package manager, so go straight to instructions.
+    if [ -z "$PKG_MGR" ]; then
+        if [ "$OPT_INSTALL_DEPS" = "yes" ]; then
+            ui_warn "auto-install was requested, but no package manager was found"
+        else
+            ui_info "no package manager was found on this machine"
+        fi
+        manual_instructions "$missing_req $missing_opt"
+        fail "missing dependencies" "install them as shown above, then run this installer again"
+    fi
+
+    local answer="yes"
+    if [ "$OPT_INSTALL_DEPS" = "no" ]; then
+        answer="no"
+    elif [ "$OPT_INSTALL_DEPS" != "yes" ]; then
+        if [ "$OPT_DRY_RUN" = "1" ]; then
+            ui_hint "[dry-run] would ask whether to install these with $PKG_MGR"
+            answer="yes"
+        elif [ "$OPT_YES" = "1" ] || [ "$UI_INTERACTIVE" != "1" ]; then
+            # Unattended: installing system packages without being asked is too
+            # invasive, so treat it as declined and print the commands instead.
+            answer="no"
+        else
+            ui_blank
+            ui_info "the installer can install these now with $PKG_MGR"
+            ui_hint "it only uses $(platform_label)'s own package manager, and everything it"
+            ui_hint "runs is printed first and written to the log"
+            local want="y"
+            ask_yesno want "Install the missing dependencies automatically?" "y"
+            [ "$want" = "y" ] && answer="yes" || answer="no"
+        fi
+    fi
+
+    if [ "$answer" != "yes" ]; then
+        ui_blank
+        ui_warn "not installing anything"
+        manual_instructions "$missing_req $missing_opt"
+        fail "missing dependencies" \
+             "install them as shown above, then run this installer again"
+    fi
+
+    ui_blank
+    local failed=""
+    # Required first, and a failure there is fatal: the chosen path cannot work.
+    for t in $missing_req; do
+        if install_one_tool "$t"; then
+            ui_ok "$(tool_label "$t") installed"
+        else
+            ui_err "$(tool_label "$t") could not be installed"
+            failed="$failed $t"
+        fi
+    done
+    # Build-only tools are best effort: the network runs without them.
+    for t in $missing_opt; do
+        if install_one_tool "$t"; then
+            ui_ok "$(tool_label "$t") installed"
+        else
+            ui_warn "$(tool_label "$t") could not be installed automatically"
+        fi
+    done
+
+    if [ -n "$INSTALLED_NOW" ]; then
+        ui_blank
+        ui_kv "installed" "$INSTALLED_NOW"
+    fi
+
+    # Re-probe rather than assume: a package exists the moment it is installed, but the
+    # daemon it needs may not be running yet, and the compose plugin is only probed
+    # once the daemon answers.
+    probe_tools >/dev/null 2>&1 || true
+
+    # An installed Docker whose daemon is silent is not a missing package, so deal with
+    # the daemon first and only then decide what is genuinely absent. This is the normal
+    # shape after a fresh install, and on WSL, where nothing starts dockerd for you.
+    if [ "$HAVE_DOCKER" != "1" ] && command -v docker >/dev/null 2>&1; then
+        if offer_start_docker; then
+            probe_tools >/dev/null 2>&1 || true
+        fi
+    fi
+
+    local still="" t2="" daemon_only="1"
+    for t2 in $required; do tool_ok "$t2" || still="$still $t2"; done
+    for t2 in $still; do
+        # Anything left that is not docker-or-compose-with-a-dead-daemon is a genuinely
+        # missing tool, which the manual route has to describe instead.
+        case "$t2" in
+            docker|compose)
+                if ! command -v docker >/dev/null 2>&1; then daemon_only="0"; fi
+                ;;
+            *) daemon_only="0" ;;
+        esac
+    done
+
+    if [ -n "$still" ]; then
+        if [ "$daemon_only" = "1" ]; then
+            ui_blank
+            ui_warn "docker is installed, but its daemon is not running, so nothing can start yet"
+            if [ "$OS_FAMILY" = "macos" ]; then
+                ui_hint "start Docker Desktop, then run this installer again"
+            else
+                ui_hint "start it:  $SUDO systemctl start docker   (or:  $SUDO service docker start)"
+                ui_hint "then run this installer again"
+            fi
+            fail "the docker daemon is not running" \
+                 "start Docker and run this installer again"
+        fi
+        manual_instructions "$still"
+        fail "some tools are still missing after installing" \
+             "install them as shown above, then run this installer again"
+    fi
+
+    # Present and answering, but not to this user: docker group membership only takes
+    # effect at a new login, which is why this stops rather than pretending to finish.
+    if ! docker info >/dev/null 2>&1; then
+        ui_blank
+        if [ "$OS_FAMILY" = "macos" ]; then
+            ui_warn "docker is installed, but Docker Desktop is not answering yet"
+            ui_hint "start Docker Desktop, let it settle, then re-run this installer"
+        else
+            ui_warn "docker is installed, but this user cannot talk to the daemon yet"
+            ui_hint "if it needs sudo, add yourself to the docker group and log back in:"
+            ui_hint "  $SUDO usermod -aG docker \${USER}   (then log out and back in, or run: newgrp docker)"
+        fi
+        fail "docker is not usable by this user yet" \
+             "log out and back in, then run this installer again"
+    fi
+    ui_ok "every dependency this path needs is present"
     return 0
 }
 
@@ -2450,21 +3104,18 @@ main() {
         ui_warn "DRY RUN: nothing will be written, built or started"
     fi
 
+    detect_platform
     phase "$(em '🔎') Checking this machine"
     probe_tools
     check_disk
 
     wizard_mode
+    # Then, and only then, insist on what this path needs -- offering to install it
+    # rather than stopping with a list of names the user has to chase down.
+    ensure_dependencies
     if [ "$CFG_MODE" = "docker" ]; then
-        if [ "$HAVE_DOCKER" != "1" ] || [ "$HAVE_DOCKER_COMPOSE" != "1" ]; then
-            fail "the Docker path needs a running Docker daemon with the compose v2 plugin" \
-                 "start Docker (or install it), then re-run -- or choose the Kubernetes path"
-        fi
         wizard_docker
     else
-        if [ "$HAVE_KUBECTL" != "1" ]; then
-            fail "the Kubernetes path needs kubectl" "install kubectl, or choose the Docker path"
-        fi
         wizard_kubernetes
     fi
     wizard_assets

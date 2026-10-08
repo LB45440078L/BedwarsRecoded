@@ -33,6 +33,7 @@
 12. [The repository, file by file](#12-the-repository-file-by-file)
 13. [Build it, command by command](#13-build-it-command-by-command)
     - [13.8 The guided installer](#138-the-guided-installer-installsh)
+      - [13.8.1 Missing dependencies](#1381-missing-dependencies)
 14. [The server jar: Spigot versus Paper](#14-the-server-jar-spigot-versus-paper)
 15. [Path A — the whole stack with Docker Compose](#15-path-a--the-whole-stack-with-docker-compose)
 16. [Path B — Kubernetes](#16-path-b--kubernetes)
@@ -1430,8 +1431,8 @@ for changing things afterwards.
    disk. Each line carries a mark: `ok` (present and usable), `warn` (present but not usable,
    or missing on both paths), or a plain note (`java` and `maven` are *not* needed to run the
    network, because the images carry their own JDK; they are needed to build the plugin here).
-   Only a genuinely required tool fails the run. The same list is printed again in the closing
-   summary, because it is what a bug report needs.
+   Only a genuinely required tool stops the run, and then only after offering to fix it (below).
+   The same list is printed again in the closing summary, because it is what a bug report needs.
 2. **Asks.** Deployment mode (Docker or Kubernetes, with the machine's actual state as the
    recommendation, not a guess), then every parameter of that path, then the world files.
    The repository's own defaults are one Enter away; each question validates its answer.
@@ -1456,6 +1457,73 @@ for changing things afterwards.
 7. **Prints how to connect and how to undo it**, with the preflight report, the token state and
    an offline-mode warning if either needs your attention.
 
+#### 13.8.1 Missing dependencies
+
+A first run on a machine that has none of this is the common case, so the installer does not stop
+at "docker is not installed":
+
+```
+==  Missing dependencies ==
+  ✖ curl -- required for this path
+  ✖ docker -- required for this path
+  ✖ docker compose (the v2 plugin) -- required for this path
+  ▲ java -- only needed to build the plugin on this machine
+  ▲ maven -- only needed to build the plugin on this machine
+
+  this machine               Debian / Ubuntu (apt)
+
+  the installer can install these now with apt-get
+  ? Install the missing dependencies automatically? [y]:
+```
+
+What is required depends on the path chosen a moment earlier: Docker and Compose are needed on
+both (both build their images locally), kubectl only on the Kubernetes path. `java` and `maven`
+are listed separately because the *network* does not need them — the images carry their own JDK —
+they are only needed to build or test the plugin on this machine. A missing one of those is a
+note, not a blocker.
+
+**It uses your distribution's own package manager**, and nothing else:
+
+| Platform | Manager | Docker | Compose v2 | kubectl |
+|---|---|---|---|---|
+| Debian / Ubuntu | `apt-get` | `docker.io` | `docker-compose-v2`, then the plugin binary | official binary from `dl.k8s.io` |
+| Fedora / RHEL | `dnf` | `moby-engine` | `docker-compose` | `kubernetes-client` |
+| Arch | `pacman` | `docker` | `docker-compose` | `kubectl` |
+| openSUSE | `zypper` | `docker` | `docker-compose` | official binary |
+| macOS | Homebrew | `--cask docker` (Docker Desktop) | ships with Docker Desktop | `kubectl` |
+
+Where a distribution does not ship the tool, the installer falls back to the vendor's own
+download — the same binary the upstream documentation tells you to fetch — into
+`/usr/local/bin` (or `~/.local/bin` when there is no root and no `sudo`): `kubectl` from
+`dl.k8s.io`, `helm` from the official installer script, `minikube` from its release bucket, and
+the compose v2 plugin from the Compose releases. Everything it runs is printed and logged, and
+`--dry-run` prints the commands without running them.
+
+If you decline — or pass `--no-install-deps`, or run unattended, where installing system packages
+without being asked would be too invasive — it prints the exact commands for your machine and
+stops:
+
+```
+  • install them yourself, then re-run this installer:
+
+    curl: apt-get install -y curl
+    docker: apt-get install -y docker.io
+    docker compose (the v2 plugin): apt-get install -y docker-compose-v2 docker-compose-plugin
+    java: apt-get install -y openjdk-25-jdk openjdk-24-jdk openjdk-21-jdk
+```
+
+Three things it knows that are easy to get wrong by hand:
+
+- **An installed Docker with a dead daemon is not a missing dependency.** It offers to start the
+  daemon (`systemctl start docker`, `service docker start`, or launching Docker Desktop) instead
+  of sending you off to install it again.
+- **A fresh Docker install does not make this user able to use it.** If the daemon needs `sudo`,
+  the installer prints the `usermod -aG docker` line and stops, because group membership only
+  applies to a new login — re-running after `newgrp docker` or a re-login is the fix, and saying
+  so is better than a confusing "permission denied" ten steps later.
+- **On WSL** it says so and points at the Docker Desktop WSL integration, which is far less
+  painful than running a daemon inside the distribution.
+
 Two of the questions deserve their own explanation, because both change who can join:
 
 - **"Generate a shared API token for the controller?"** (default: yes.) The controller's
@@ -1478,6 +1546,8 @@ Two of the questions deserve their own explanation, because both change who can 
 | `--yes` | Accept every default; fully unattended |
 | `--dry-run` | Print every action, write/build/start nothing |
 | `--resume` | Use `.installer/state` from a previous run as the defaults |
+| `--install-deps` | Install missing dependencies with the system package manager without asking. Under `--yes` the installer deliberately does **not** install (see below) unless this is passed |
+| `--no-install-deps` | Never install anything: report what is missing, print the commands for your distribution, and stop |
 | `--teardown` | Remove the stack it created, then stop |
 | `--verbose` | Echo each command as it runs |
 | `--no-color` | Plain output (also `NO_COLOR=1`) |

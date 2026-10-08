@@ -9,6 +9,9 @@ appears, and asserts what a user actually cares about:
   * the review's [e]dit re-runs the wizard instead of continuing
   * [a]bort exits having changed nothing
   * the generated API token is never printed, even in a dry run
+  * when dependencies are missing, the installer offers to install them and, if
+    declined, prints the commands for this machine and stops cleanly -- it must
+    never just exit with no explanation
 
 Runs `install.sh --dry-run`, so it needs no Docker, no cluster and no network,
 and writes nothing. Requires a POSIX host with a pty (Linux or macOS).
@@ -174,10 +177,85 @@ def main():
     # writes the config. The unattended flow does, and it is where the secret must stay
     # out of the output: a dry run has to be safe to paste into a bug report.
     ok = check_unattended_redaction() and ok
+    ok = check_missing_dependency_flow() and ok
     return 0 if ok else 1
 
 
 UNREDACTED = re.compile(r"^BEDWARS_API_TOKEN=[A-Za-z0-9]{16,}", re.M)
+
+# Tools hidden from the installer in the missing-dependency stage, so the flow is
+# exercised on a machine that has everything (which is the point: it must work when
+# they are NOT there, and that is not testable by accident).
+HIDDEN = ("docker", "kubectl", "curl", "helm", "minikube", "java", "mvn")
+
+#  Where a PATH normally keeps its binaries. Deliberately not os.defpath: this must
+#  work the same whether the test runs on macOS or a Linux CI box.
+PATH_DIRS = ("/usr/bin", "/bin", "/usr/sbin", "/sbin", "/usr/local/bin")
+
+
+def fake_path_without_hidden(tmpdir):
+    """A PATH containing everything except HIDDEN, so `command -v docker` fails."""
+    for d in PATH_DIRS:
+        if not os.path.isdir(d):
+            continue
+        for name in os.listdir(d):
+            if name in HIDDEN or name in os.listdir(tmpdir):
+                continue
+            try:
+                os.symlink(os.path.join(d, name), os.path.join(tmpdir, name))
+            except OSError:
+                pass            # dangling links and duplicates are not interesting
+    return tmpdir
+
+
+def check_missing_dependency_flow():
+    """Missing tools must produce an offer, and a decline must explain itself."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="bedwars-fakebin-") as tmpdir:
+        fake_path_without_hidden(tmpdir)
+        env = dict(os.environ)
+        env["PATH"] = tmpdir
+        env["NO_COLOR"] = "1"
+
+        # Declined: instructions for THIS machine, and a clean stop.
+        declined = subprocess.run(
+            [INSTALLER, "--dry-run", "--mode", "docker", "--no-install-deps"],
+            capture_output=True, text=True, cwd=REPO_ROOT, env=env, timeout=300)
+        out = ANSI.sub("", declined.stdout + declined.stderr)
+
+        if "Missing dependencies" not in out:
+            print("FAIL  missing tools were not reported as missing dependencies")
+            return False
+        missing_named = all(name in out for name in ("docker", "curl", "compose"))
+        if not missing_named:
+            print("FAIL  the missing-dependency list did not name the required tools")
+            return False
+        if "install it yourself" not in out and "install them yourself" not in out:
+            print("FAIL  declining did not print manual instructions")
+            return False
+        if declined.returncode == 0:
+            print("FAIL  the installer exited 0 while dependencies were missing")
+            return False
+        if "installer stopped" not in out:
+            # The bug this stage exists for: the script closing with no explanation.
+            print("FAIL  the installer stopped without saying why")
+            return False
+
+        # Accepted: it must actually drive the package manager (dry-run, so it only
+        # says what it would run) and never claim success it cannot verify.
+        accepted = subprocess.run(
+            [INSTALLER, "--dry-run", "--mode", "docker", "--install-deps"],
+            capture_output=True, text=True, cwd=REPO_ROOT, env=env, timeout=300)
+        accept_out = ANSI.sub("", accepted.stdout + accepted.stderr)
+        drove_pkg_mgr = any(s in accept_out for s in
+                            ("apt-get install", "dnf install", "pacman -S", "brew install"))
+        if not drove_pkg_mgr and "no package manager" not in accept_out:
+            print("FAIL  --install-deps did not run (or describe) a package-manager install")
+            return False
+
+    print("PASS  missing dependencies are offered, and declining explains what to install")
+    return True
 
 
 def check_unattended_redaction():

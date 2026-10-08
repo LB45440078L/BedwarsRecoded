@@ -221,13 +221,20 @@ The fastest route from a fresh checkout to a running network is the guided insta
 ./install.sh              # guided: Docker or Kubernetes, every parameter prompted
 ./install.sh --dry-run    # print every action, change nothing
 ./install.sh --teardown   # undo exactly what it created
+./install.sh --dry-run --install-deps   # show the commands to install what is missing
 ```
 
 It probes the machine and tells you which path it is ready for, asks every parameter (the
 repository's own defaults are one Enter away), copies your world files and server jar into
 place, streams the real image-build output with elapsed time, waits for readiness, and then
 **proves** the result: controller health, the lobby logging `role=LOBBY`, the proxy resolving
-its lobby server, and no hub masquerading as a match host in the registry. `--yes` accepts every
+its lobby server, and no hub masquerading as a match host in the registry. If something is
+missing it detects the distribution (apt, dnf, pacman, zypper or Homebrew) and **offers to
+install it** — Docker, Compose and kubectl from your own package manager, or the vendor binary
+where no distribution ships one — rather than closing with a list of names to chase. Decline and
+it prints the exact commands for your machine and stops cleanly. The images carry their own JDK,
+so a missing `java`/`maven` is a note (they are only needed to build the plugin here), never a
+blocker. `--yes` accepts every
 default for an unattended run; `--mode kubernetes` skips the mode question. Walkthrough:
 [`docs/MANUAL.md`](docs/MANUAL.md) §13.8.
 
@@ -316,7 +323,9 @@ environment variable twice — valid YAML, a valid schema, and silently last-win
 Kubernetes. `deploy/tools/test-resolve-server-jar.sh`
 proves the image compiles Spigot only when it has no other option, and
 `deploy/tools/test-install-interactive.py` drives `install.sh` through a pty to prove the
-guided wizard honours, validates and re-asks for its answers (dry-run: no Docker needed).
+guided wizard honours, validates and re-asks for its answers, and that a machine with missing
+dependencies is offered a fix and, if declined, told exactly what to install before the script
+stops (all dry-run: no Docker needed).
 
 ## 🔒 Hard constraints honoured
 
