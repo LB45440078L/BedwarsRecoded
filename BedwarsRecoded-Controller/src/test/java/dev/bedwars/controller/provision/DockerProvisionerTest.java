@@ -77,8 +77,12 @@ class DockerProvisionerTest {
     }
 
     private DockerProvisioner provisioner(FakeDocker docker, int min, int max) {
+        return provisioner(docker, min, max, "test-token");
+    }
+
+    private DockerProvisioner provisioner(FakeDocker docker, int min, int max, String token) {
         return new DockerProvisioner(docker, "docker", "bedwars-game", "bedwars-recoded-game:1.0.0",
-                "1024m", 25, min, max, "solo", "http://controller:8080", "bedwars_default", List.of(),
+                "1024m", 25, min, max, "solo", "http://controller:8080", token, "bedwars_default", List.of(),
                 LoggerFactory.getLogger("test"));
     }
 
@@ -99,9 +103,24 @@ class DockerProvisionerTest {
         // plugin only reads BEDWARS_CONTROLLER_URL (a bare CONTROLLER_URL is ignored).
         assertThat(run).contains("--network", "bedwars_default");
         assertThat(run).contains("-e", "BEDWARS_CONTROLLER_URL=http://controller:8080");
+        // The pod must present the controller's shared secret or every report is 401.
+        assertThat(run).contains("-e", "BEDWARS_API_TOKEN=test-token");
         assertThat(run.getLast()).isEqualTo("bedwars-recoded-game:1.0.0");
         // No shell is ever involved: the command is an argument list.
         assertThat(run).doesNotContain("-c", "sh", "bash");
+    }
+
+    @Test
+    void noTokenIsPassedWhenTheControllerRunsOpen() {
+        FakeDocker docker = new FakeDocker();
+        DockerProvisioner provisioner = provisioner(docker, 0, 10, "");
+
+        assertThat(provisioner.scaleUpOne()).isEqualTo(1);
+
+        List<String> run = docker.commandsStartingWith("run").getFirst();
+        // An empty variable would read as a presented credential, so it must be absent
+        // entirely rather than present-and-blank.
+        assertThat(run).noneMatch(arg -> arg.startsWith("BEDWARS_API_TOKEN="));
     }
 
     @Test

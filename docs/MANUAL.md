@@ -905,12 +905,61 @@ Three keys in `config.yml`, each with an environment override, plus the proxy's 
 | proxy plugin | — | `POD_ADDRESS_SUFFIX` | `""` | how a pod name becomes a dialable address |
 | proxy plugin | — | `QUEUE_RETRY_ATTEMPTS` | `12` | how many times to ask the controller for a slot |
 | proxy plugin | — | `QUEUE_RETRY_MILLIS` | `1000` | floor for the controller's `retryAfterMillis` backoff |
+| proxy plugin | — | `BEDWARS_API_TOKEN` | `""` | the controller's shared secret; without it every enqueue is refused `401` |
+| proxy container | — | `BEDWARS_OFFLINE_MODE` | `false` | **testing only**: skips the Mojang check, so an unauthenticated client can join |
 
 `LOBBY_SERVER` and the `[servers]` entry must agree, or the plugin logs a warning at startup
 that the lobby it was told about is not registered with the proxy — the single most common way to
 get a network where "nobody can join".
 
-#### 9.4.8 The lobby in the deployments
+`BEDWARS_API_TOKEN` has to match the controller's value. It is the one setting where a mismatch
+is silent: the proxy starts, players see the hub, and every attempt to queue is refused by the
+controller. The proxy prints `controller_auth=token` or `controller_auth=none` on its
+`proxy initialised` line, so the state is visible at a glance (chapter 21.2).
+
+#### 9.4.8 Testing with an offline client (`BEDWARS_OFFLINE_MODE`)
+
+Velocity verifies every player against Mojang (`online-mode = true` in `deploy/docker/velocity.toml`)
+— normally the only authentication in the chain, because the game servers behind it trust the
+proxy. That makes it impossible to connect with a client that has no Mojang session, which is
+awkward when you are testing on a machine with no account configured, or with a client build that
+cannot log in.
+
+`BEDWARS_OFFLINE_MODE=true` removes that step for the proxy:
+
+```bash
+# Docker
+BEDWARS_OFFLINE_MODE=true ./install.sh          # or edit deploy/compose/.env and restart the proxy
+
+# Kubernetes (Helm)
+helm upgrade bedwars deploy/helm/bedwars -n bedwars --reuse-values --set velocity.offlineMode=true
+```
+
+The proxy image's entrypoint rewrites `online-mode = false` in `velocity.toml` at start, and says
+so in its log:
+
+```
+[bedwars] OFFLINE MODE: the proxy will NOT verify players with Mojang.
+[bedwars] velocity.toml online-mode=false
+```
+
+Three things to understand before you use it:
+
+- **It is a testing switch, not a deployment mode.** With it on, anyone who can reach the proxy
+  port can join under any name, including a name that is not theirs. Never enable it on a server
+  the public can reach.
+- **The game servers are already offline-mode.** `server.properties` inside the game image
+  declares `online-mode=false` and the pods trust the proxy's forwarded identity (§21.7 item 6),
+  so this switch only changes the proxy. Nothing else needs editing.
+- **Undo it by setting the variable back to `false`** (or removing it) and restarting the proxy.
+  Nothing is written into the image: the `velocity.toml` inside a running container is rewritten
+  at every start, so the switch is not sticky.
+
+`install.sh` asks about it ("Run the proxy in OFFLINE MODE?"), defaults to no, and the
+installer's verification step reads the proxy log back to confirm which mode is actually running
+rather than trusting the setting.
+
+#### 9.4.9 The lobby in the deployments
 
 Both deployment paths ship a lobby, because a network without a hub cannot place a player:
 
@@ -922,7 +971,7 @@ Both deployment paths ship a lobby, because a network without a hub cannot place
   mc-router and Velocity may connect. The Helm chart's `lobby:` values block renders the same
   pair from `deploy/helm/bedwars/templates/lobby.yaml`.
 
-#### 9.4.9 Verifying the loop
+#### 9.4.10 Verifying the loop
 
 Each step of the chain can be checked on a live stack:
 
@@ -1375,12 +1424,22 @@ for changing things afterwards.
 
 **What it does, in order**
 
-1. **Preflight.** Probes for `docker` (and its daemon), the compose v2 plugin, `kubectl`, a
-   reachable cluster, `minikube`, `helm`, and `curl`. Reports free disk. Nothing is installed
-   silently — if a tool is missing, it says which path needs it.
+1. **Preflight, as a report you keep.** Probes and prints the version of every tool it cares
+   about — `curl`, `docker` and its daemon, the compose v2 plugin, `kubectl`, whether a
+   cluster actually answers, `minikube`, `helm`, `java`, `maven`, `git`, `python3` — plus free
+   disk. Each line carries a mark: `ok` (present and usable), `warn` (present but not usable,
+   or missing on both paths), or a plain note (`java` and `maven` are *not* needed to run the
+   network, because the images carry their own JDK; they are needed to build the plugin here).
+   Only a genuinely required tool fails the run. The same list is printed again in the closing
+   summary, because it is what a bug report needs.
 2. **Asks.** Deployment mode (Docker or Kubernetes, with the machine's actual state as the
    recommendation, not a guess), then every parameter of that path, then the world files.
    The repository's own defaults are one Enter away; each question validates its answer.
+   Questions that only make sense together are explained before they are asked: that one
+   *server* is one Spigot process hosting several *matches*, that the minimum is what stays
+   warm when nobody is playing, and that the product of the maximum and matches-per-server is
+   the capacity — printed back as arithmetic (`10 servers x 25 matches each = 250 matches at
+   once`), not left for you to work out.
 3. **Copies assets.** Your server jar into `server-jars/` (so the image needs no BuildTools
    compile), your hub world into `deploy/templates/<name>/`, optionally your arena world over
    the bundled one. A directory without a `level.dat` is refused, because that is not a world.
@@ -1390,9 +1449,26 @@ for changing things afterwards.
    spinner over a four-minute compile is a lie.
 6. **Waits for readiness**, then **proves it** — not "the container started" but: the controller
    answers `/healthz`; `/infra` reports the provisioner you asked for; the lobby logged
-   `role=LOBBY`; the proxy resolved its lobby server; and the registry shows no hub
-   masquerading as a match host.
-7. **Prints how to connect and how to undo it.**
+   `role=LOBBY`; the proxy resolved its lobby server; the registry shows no hub masquerading as
+   a match host; `/infra`'s `authenticated` flag matches the token decision it just made; and
+   the proxy's log reports the authentication mode it is *actually* running, rather than the one
+   that was requested.
+7. **Prints how to connect and how to undo it**, with the preflight report, the token state and
+   an offline-mode warning if either needs your attention.
+
+Two of the questions deserve their own explanation, because both change who can join:
+
+- **"Generate a shared API token for the controller?"** (default: yes.) The controller's
+  mutating endpoints are the ones a compromised pod could abuse. Yes generates a 32-character
+  token and hands it to the controller, the proxy and every game pod it starts — on Kubernetes
+  into a chart-managed `Secret`, on Docker as an environment variable on each container. You
+  never copy it anywhere by hand, and it is never printed: even `--dry-run` shows
+  `BEDWARS_API_TOKEN=<generated, not shown>`. No leaves those endpoints open, which is the
+  documented single-host mode and is called out on screen. See 21.2.
+- **"Run the proxy in OFFLINE MODE (testing only)?"** (default: no.) Offline mode drops the
+  Mojang check at the proxy so a client with no account can connect — the usual way to test with
+  an offline client. It is asked only for stacks that contain the proxy, and it warns loudly,
+  because it also lets anyone join as anyone. See 9.4.8.
 
 **Options**
 
@@ -1420,10 +1496,12 @@ for changing things afterwards.
 
 **Honest limits**
 
-- The API-token question is deliberately **not** asked. The controller enforces
-  `BEDWARS_API_TOKEN` correctly, but the shipped reporter and proxy do not yet present it, so
-  enabling it would stop the fleet registering. The installer says so on screen rather than
-  offering a switch that breaks the thing it just built. See 21.2.
+- The API-token question **is** asked, and defaults to yes. The installer generates a token,
+  writes it into the config file (mode 600), and hands it to the controller, the proxy and every
+  game pod it starts — on the Kubernetes path into a `Secret` the chart creates, on the Docker
+  path as an environment variable on each container. Declining leaves the controller open: the
+  documented single-host development mode, and the installer says so on screen rather than
+  implying it is safe. See 21.2.
 - The plain-manifest Kubernetes path applies the repository's manifests, which are written for
   the `bedwars` namespace and the `solo` arena group. Ask for anything else and the installer
   says so and uses the Helm path's parameterisation instead of deploying somewhere the DNS
@@ -1706,8 +1784,11 @@ Read this carefully, because it is the single most informative endpoint in the s
   find capacity on this host. That is the classic mistake on this path.
 - `servers: 0` — no game server exists yet. Correct: nothing has been started.
 - `gamesPerServer: 25` — the planning figure from `BEDWARS_GAMES_PER_SERVER`.
-- `authenticated: false` — no `BEDWARS_API_TOKEN` is set, which is the documented single-host
-  development mode. Acceptable on a private host, not on a public one (chapter 21).
+- `authenticated: false` — no `BEDWARS_API_TOKEN` reached this controller, which is the
+  documented single-host development mode. This example is a bare `docker compose up`, where the
+  repository's own `.env.example` ships no token; a stack built by `install.sh` reports `true`
+  here instead, because it generates one and gives it to every client. Acceptable on a private
+  host either way, never on a public one (chapter 21).
 
 Also worth a look, because KEDA would consume exactly this on a cluster:
 
@@ -2685,7 +2766,7 @@ broken by the rename.
 | `BEDWARS_PREWARM_THRESHOLD` | `2` | Queue depth at which the controller pre-warms a server. |
 | `BEDWARS_BASE_BACKOFF_MS` | `500` | Base `retryAfterMillis` handed to the lobby. |
 | `BEDWARS_MAX_BACKOFF_MS` | `10000` | Ceiling for that backoff. |
-| `BEDWARS_API_TOKEN` | `""` | Shared secret required on mutating endpoints. Blank = open. |
+| `BEDWARS_API_TOKEN` | `""` | Shared secret required on mutating endpoints. Set it on the controller *and* on the proxy and game pods, or they are refused. |
 
 **`BEDWARS_BASE_BACKOFF_MS` / `BEDWARS_MAX_BACKOFF_MS`** control the exponential backoff the
 controller returns in `DispatchResult.retryAfterMillis`. The backoff grows with queue depth,
@@ -2697,13 +2778,26 @@ server now rather than waiting for KEDA". It is a latency optimisation; the queu
 it.
 
 **`BEDWARS_API_TOKEN`** protects `POST /pods/*` and `POST /lobby/queue`. Clients present it as
-`X-Bedwars-Token: <token>` or `Authorization: Bearer <token>`. The comparison is
+`X-Bedwars-Token: <token>`, or as `Authorization: Bearer <token>`. The comparison is
 constant-time (`MessageDigest.isEqual`), the token is never logged, and no endpoint returns it
 — `/infra` reports only `authenticated: true|false`. Read-only endpoints stay open so
 monitoring works without the secret. With no token set, the controller logs a loud warning at
-startup and stays open: the documented single-host development mode. Chapter 21 covers this
-properly; the short version is **never expose an unauthenticated controller to a network you do
-not control.**
+startup and stays open: the documented single-host development mode.
+
+The variable has to reach **both halves** of every conversation: the controller checks it, and
+the game server's reporter (`HttpPodReporter`) and the proxy's controller client
+(`ControllerClient`) present it. Set it on the controller alone and every report and every
+enqueue is refused with `401` — the fleet disappears from the registry, which looks like a
+broken network rather than an auth error. Every deployment path wires it for you:
+
+| Path | How the token travels |
+| --- | --- |
+| `install.sh` (Docker) | `BEDWARS_API_TOKEN` in `deploy/compose/.env`; the controller reads it and passes it to each game container it provisions |
+| `install.sh` (Kubernetes) | `controller.apiToken` in the values file; the chart creates the `bedwars-controller-token` Secret and mounts it into the controller, the proxy and the GameServerSet |
+| Plain manifests | the workloads reference the Secret as `optional`; create it before applying, or the pods report `401` |
+
+Chapter 21 covers this properly; the short version is **never expose an unauthenticated
+controller to a network you do not control.**
 
 ---
 
@@ -3371,14 +3465,28 @@ Properties, as implemented:
 note the rotation consequence: the token is read once at startup, so rotating it means
 restarting the controller and every game server that reports to it.
 
-**Enforced, but not yet end-to-end usable.** The controller checks the header on every mutating
-request, and does so correctly. What no shipped client does is *present* one: `HttpPodReporter`
-(the game server's reporter) and the proxy's controller client send no `X-Bedwars-Token`. Set
-`BEDWARS_API_TOKEN` today and every pod report and every lobby enqueue returns `401` — the fleet
-disappears from the registry and the network stops accepting queues. Treat the variable as
-reserved: the code that honours it is finished and tested, the code that answers it is not. Until
-it is, `/infra` reporting `"authenticated": false` is the expected state and not a
-misconfiguration to fix.
+**Both halves are implemented.** The controller checks the header on every mutating request, and
+every shipped client presents it:
+
+| Client | Where | What it sends |
+| --- | --- | --- |
+| Game server reporter | `HttpPodReporter` (`/pods/*`) | `X-Bedwars-Token` when a token is configured, and no header at all when it is not |
+| Velocity proxy | `ControllerClient` (`/lobby/queue`) | the same header |
+| Provisioner | `DockerProvisioner` | passes `BEDWARS_API_TOKEN` into each container it starts, so a pod can report from its first heartbeat |
+| Chart | `bedwars-controller-token` Secret | mounted into the controller, the proxy and the GameServerSet via `secretKeyRef` with `optional: true` |
+
+A blank token means **no header at all**, not an empty one: the controller treats a presented
+empty credential as a failed match, so the blank case has to be genuinely absent. Three tests
+hold that down — `HttpPodReporterTest` reads the header off a real HTTP server,
+`DockerProvisionerTest` asserts the `-e BEDWARS_API_TOKEN=` pair is present when set and absent
+when blank, and the controller's own auth tests cover the `401` path.
+
+The failure mode to know is a **mismatch**, which is indistinguishable from a broken network
+until you look: reports come back `401`, the registry stays empty, queues are refused. Each
+client logs which state it is in — a game server prints `controller_auth=token|none` in its
+`bedwars_setup` line and the proxy prints `controller_auth=token|none` when it initialises — so
+a mismatch is one line per client to find. `install.sh` asserts the state after the stack is up
+(`/infra`'s `authenticated` flag) rather than assuming it.
 
 ### 21.3 Credential handling rules
 
@@ -3442,10 +3550,14 @@ compromised cluster.
 
 A checklist, in order of importance:
 
-1. **Leave `BEDWARS_API_TOKEN` unset** until the reporting clients send the header (see 21.2).
-   Setting it now stops the fleet registering rather than protecting it. Confirm the expected
-   state instead: `/infra` reports `"authenticated": false`, and the control plane is protected
-   by being ClusterIP-only (§21.6).
+1. **Set `BEDWARS_API_TOKEN` on the controller *and* on everything that reports to it** (see
+   21.2). `install.sh` does all of it: it generates the token, writes it into the config and
+   hands it to the pods and the proxy. By hand it is four places — controller, Velocity, the game
+   pods and anything provisioned earlier — and a client that lacks it is refused with `401`,
+   which looks like the fleet vanishing rather than an auth error. Confirm it with `/infra`
+   (`"authenticated": true`) and with the `controller_auth=` field in a game server's
+   `bedwars_setup` line. §21.6 covers the ClusterIP-only posture that protects the read-only
+   endpoints.
 2. **Change every default password**: MySQL user and root, MinIO/S3 keys, the database password
    in `config.yml`.
 3. **Do not mount the Docker socket** in production. Use the Kubernetes path.
@@ -3453,7 +3565,8 @@ A checklist, in order of importance:
    control plane behind your ingress rules.
 5. **Use real secrets management** rather than plaintext Secrets.
 6. **Keep `online-mode=true` on Velocity** — it authenticates players, and it is the only
-   authentication in the chain.
+   authentication in the chain. `BEDWARS_OFFLINE_MODE=true` (§9.4.8) deliberately turns it off
+   for testing and must never reach a public host: it lets anyone join as anyone.
 7. **Verify the NetworkPolicies are actually enforced.** Some CNI plugins ignore them
    silently. Test by trying to reach a game pod from a pod that should not be able to.
 8. **Restrict who can `kubectl exec`.** Anyone who can exec into a game pod can read its
@@ -3787,6 +3900,11 @@ startup and a plugin cannot change it afterwards (chapter 10.5).
 Because Velocity authenticates players and forwards already-authenticated connections. It is
 safe only while game pods are unreachable directly, which is what the NetworkPolicies enforce.
 
+**Can I connect with a client that is not logged into a Minecraft account?**
+Only with `BEDWARS_OFFLINE_MODE=true` on the proxy, which is a testing switch: it drops the
+Mojang check entirely, so any name can be used. See §9.4.8. The game servers are already
+offline-mode; this only affects the proxy, and it is off by default.
+
 **How many matches fit on one server?**
 Measure it. The default is 1 per pod — predictable and safe. Everything you need to reason about
 it is in chapter 22.
@@ -3837,7 +3955,7 @@ reader can decide whether they matter for their use.
 | Pre-warm threshold and backoff are global, not per-group | One arena group's queue depth influences the fleet as a whole |
 | MinIO and MySQL in the chart are development-grade | Single replica, no backup automation. Use managed services in production |
 | No authentication on read-only endpoints | `/infra` reveals fleet size to anyone who can reach the port |
-| No shipped client presents the API token | Setting `BEDWARS_API_TOKEN` returns `401` to every pod report and lobby enqueue, so the fleet stops registering. Controller-side enforcement is complete and tested; the client-side header is not implemented (21.2) |
+| The token travels as an environment variable | Anyone who can read a pod spec or run `docker inspect` on a game container can read it. Kubernetes Secrets are base64, not encryption; 21.3 has the handling rules |
 | The lobby has one replica | A hub restart briefly empties the network's landing point. It cannot destroy a match, but players arriving during the restart are told the lobby is unavailable |
 | A queue NPC needs no NPC plugin, and gets no skin | Any entity named `[bedwars]` works; making it look like a character needs Citizens or ModelEngine, which the plugin deliberately does not depend on |
 | The lobby's default world is generated | No hub map is baked into the image. Supply one at `deploy/templates/lobby/` for a real hub build (see 9.4.4) |

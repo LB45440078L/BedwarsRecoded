@@ -22,6 +22,19 @@ spec:
           env:
             - name: CONTROLLER_URL
               value: {{ include "bedwars.controllerUrl" . | quote }}
+            # TESTING ONLY: true flips the proxy to online-mode=false so clients that
+            # never authenticated with Mojang can connect.
+            - name: BEDWARS_OFFLINE_MODE
+              value: {{ .Values.velocity.offlineMode | default false | quote }}
+            # Shared secret for the controller's mutating endpoints. optional=true: the
+            # Secret is only created when a token is configured, and an absent one
+            # leaves the variable unset, which every service reads as "no token".
+            - name: BEDWARS_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: bedwars-controller-token
+                  key: token
+                  optional: true
             # Players land in the lobby when they connect; finished matches return there.
             - name: LOBBY_SERVER
               value: {{ .Values.velocity.lobbyServer | quote }}

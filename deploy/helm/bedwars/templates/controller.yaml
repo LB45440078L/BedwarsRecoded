@@ -35,6 +35,15 @@ spec:
               value: {{ .Values.keda.minReplicas | quote }}
             - name: BEDWARS_MAX_REPLICAS
               value: {{ .Values.keda.maxReplicas | quote }}
+            # Shared secret for the controller's mutating endpoints. optional=true: when
+            # no token is configured the Secret does not exist and the variable stays
+            # unset, which the controller reads as "run open".
+            - name: BEDWARS_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: bedwars-controller-token
+                  key: token
+                  optional: true
           ports:
             - name: http
               containerPort: 8080

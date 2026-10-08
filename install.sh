@@ -75,6 +75,9 @@ CFG_MINIO_IMAGE=""
 CFG_MC_IMAGE=""
 KRUISE_PRESENT="0"
 CFG_API_TOKEN=""
+#  TESTING ONLY. 'yes' runs the proxy in offline mode (Velocity online-mode=false):
+#  clients are not checked against Mojang, so an unauthenticated client can join.
+CFG_OFFLINE_MODE="no"
 CFG_DEBUG_PORTS="no"
 CFG_HUB_WORLD_SRC=""
 CFG_HUB_WORLD_NAME="lobby"
@@ -118,6 +121,7 @@ log_stream() {
 UI_INTERACTIVE="0"
 UI_WIDTH="80"
 UI_UNICODE="1"
+UI_EMOJI="1"
 UI_TRUE="0"
 C_OFF=""; C_BOLD=""; C_DIM=""; C_ACCENT=""; C_OK=""; C_WARN=""; C_ERR=""; C_MUTED=""
 
@@ -141,6 +145,10 @@ ui_init() {
         *) UI_UNICODE="0" ;;
     esac
     [ "$UI_INTERACTIVE" = "0" ] && UI_UNICODE="0" || true
+    # Emoji live outside the Latin range and a terminal without UTF-8 turns them into
+    # mojibake, so they ride on the same condition as box-drawing. Kept as its own
+    # switch because a terminal can draw boxes and still lack an emoji font.
+    if [ "$UI_UNICODE" = "1" ]; then UI_EMOJI="1"; else UI_EMOJI="0"; fi
 
     if [ "$UI_INTERACTIVE" = "1" ]; then
         case "${COLORTERM:-}" in
@@ -170,6 +178,29 @@ ui_init() {
 #  UI primitives
 # ---------------------------------------------------------------------------
 ui_blank() { printf '\n'; }
+
+#  Prints an emoji when the terminal can render one, nothing otherwise. Never left as
+#  the last statement of a function: under `set -e` a failing test would end the script.
+em() {
+    if [ "$UI_EMOJI" = "1" ]; then
+        printf '%s' "$1"
+    fi
+    return 0
+}
+
+#  Preflight/test result line, and the same line recorded for the final summary.
+#  $1 = mark (ok|warn|err|info), $2 = label, $3 = detail
+record_env() {
+    local mark="$1" label="$2" detail="${3:-}"
+    ENV_ROWS="${ENV_ROWS}${mark}|${label}|${detail}
+"
+    case "$mark" in
+        ok)   ui_ok "$label${detail:+ -- $detail}" ;;
+        warn) ui_warn "$label${detail:+ -- $detail}" ;;
+        err)  ui_err "$label${detail:+ -- $detail}"; ENV_FAILED="1" ;;
+        *)    ui_info "$label${detail:+ -- $detail}" ;;
+    esac
+}
 
 ui_rule() {
     local ch="-" i=0 line=""
@@ -606,7 +637,9 @@ ask_secret() {
 random_secret() {
     local n="${1:-18}" s=""
     if command -v openssl >/dev/null 2>&1; then
-        s=$(openssl rand -base64 24 2>/dev/null | tr -dc 'A-Za-z0-9' | cut -c1-"$n")
+        #  Ask for more bytes than needed: base64 then drops '+', '/' and '=' below, so
+        #  a fixed 32 would sometimes come back as 30 characters.
+        s=$(openssl rand -base64 $(( n + 8 )) 2>/dev/null | tr -dc 'A-Za-z0-9' | cut -c1-"$n")
     fi
     if [ -z "$s" ]; then
         s=$( (date +%s; printf '%s' "$RANDOM$RANDOM$RANDOM") | cksum | tr -dc '0-9' | cut -c1-"$n")
@@ -793,59 +826,113 @@ HAVE_SM_CRD="0"
 HAVE_KEDA_CRD="0"
 DOCKER_VERSION=""
 CLUSTER_CONTEXT=""
+#  Version strings for the preflight report, empty when the tool is absent. Java and
+#  Maven are only needed to build the plugin from source here (the images build their
+#  own), so they are reported, not required.
+JAVA_VERSION=""
+JAVA_MAJOR=""
+MAVEN_VERSION=""
+GIT_VERSION=""
+PYTHON_VERSION=""
+#  One line per preflight result, rendered again in the final summary:
+#  "mark<TAB>label<TAB>detail". Newline-separated: no associative arrays on bash 3.2.
+ENV_ROWS=""
+ENV_FAILED="0"
 
 probe_tools() {
     local missing="0"
+    # --- required on every path ---------------------------------------------
     if command -v curl >/dev/null 2>&1; then
         HAVE_CURL="1"
+        record_env ok "curl" "$(curl --version 2>/dev/null | head -1 | awk '{print $1, $2}')"
     else
-        ui_err "curl is required and was not found"
+        record_env err "curl" "required for the health checks and not installed"
         missing="1"
     fi
+
+    # --- the container runtime ----------------------------------------------
+    #  Both paths need it: the images (the Spigot server, the controller, the proxy)
+    #  are built here and then either run or loaded into the cluster.
     if command -v docker >/dev/null 2>&1; then
         DOCKER_VERSION=$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)
         if [ -n "$DOCKER_VERSION" ]; then
             HAVE_DOCKER="1"
-            ui_ok "docker $DOCKER_VERSION (daemon reachable)"
+            record_env ok "docker" "$DOCKER_VERSION, daemon reachable"
             if docker compose version >/dev/null 2>&1; then
                 HAVE_DOCKER_COMPOSE="1"
-                ui_ok "docker compose v2 present"
+                record_env ok "docker compose" "$(docker compose version --short 2>/dev/null || echo v2)"
             else
-                ui_warn "docker is installed but the 'docker compose' v2 plugin is not (the Docker path needs it)"
+                record_env warn "docker compose" "the v2 'docker compose' plugin is missing; the Docker path needs it"
             fi
         else
-            ui_warn "docker is installed but its daemon is not answering"
+            record_env warn "docker" "installed, but its daemon is not answering"
             ui_hint "start it, then re-run: Docker Desktop, or 'sudo systemctl start docker' on Linux"
         fi
     else
-        ui_warn "docker not found (the Docker path needs it)"
+        record_env warn "docker" "not found -- the images are built with it on both paths"
     fi
+
+    # --- Kubernetes ----------------------------------------------------------
     if command -v kubectl >/dev/null 2>&1; then
         HAVE_KUBECTL="1"
         local kver
         kver=$(kubectl version --client -o yaml 2>/dev/null | grep -m1 'gitVersion' | tr -d ' "' | cut -d: -f2 || true)
-        ui_ok "kubectl ${kver:-present}"
+        record_env ok "kubectl" "${kver:-present}"
         if kubectl cluster-info >/dev/null 2>&1; then
             HAVE_CLUSTER="1"
             CLUSTER_CONTEXT=$(kubectl config current-context 2>/dev/null || echo "unknown")
-            ui_ok "cluster reachable (context: $CLUSTER_CONTEXT)"
+            record_env ok "cluster" "reachable, context '$CLUSTER_CONTEXT'"
         else
-            ui_warn "kubectl is present but no cluster is reachable"
+            record_env warn "cluster" "no cluster is reachable from the current kubectl context"
         fi
     else
-        ui_warn "kubectl not found (the Kubernetes path needs it)"
+        record_env info "kubectl" "absent -- only the Kubernetes path needs it"
     fi
     if command -v minikube >/dev/null 2>&1; then
         HAVE_MINIKUBE="1"
-        ui_info "minikube present -- a local cluster can be started for you"
+        record_env info "minikube" "$(minikube version --short 2>/dev/null || echo present) -- a local cluster can be started for you"
     fi
     if command -v helm >/dev/null 2>&1; then
         HAVE_HELM="1"
-        ui_ok "helm $(helm version --short 2>/dev/null || echo present)"
+        record_env ok "helm" "$(helm version --short 2>/dev/null || echo present)"
     else
-        ui_warn "helm not found (Kubernetes can still use the plain manifests)"
+        record_env info "helm" "absent -- Kubernetes can still use the plain manifests"
     fi
-    [ "$missing" = "1" ] && fail "missing required tooling" "install the tools listed above and re-run" || true
+
+    # --- tooling the repository uses to build and test itself ----------------
+    #  None of this is needed to RUN the network: the images carry their own JDK and
+    #  build the plugin inside the build stage. It is needed to build the plugin here,
+    #  or to run the repository's own test suite, so it is reported, never required.
+    if command -v java >/dev/null 2>&1; then
+        JAVA_VERSION=$(java -version 2>&1 | head -1 | sed 's/.*version "\([^"]*\)".*/\1/')
+        JAVA_MAJOR=$(printf '%s' "$JAVA_VERSION" | cut -d. -f1)
+        case "$JAVA_MAJOR" in ''|*[!0-9]*) JAVA_MAJOR="" ;; esac
+        if [ -n "$JAVA_MAJOR" ] && [ "$JAVA_MAJOR" -ge 25 ]; then
+            record_env ok "java" "$JAVA_VERSION -- can build the plugin on this machine"
+        else
+            record_env info "java" "${JAVA_VERSION:-present} -- the plugin is built with Java 25"
+        fi
+    else
+        record_env info "java" "absent -- not needed to run the network (the images carry a JDK)"
+    fi
+    if command -v mvn >/dev/null 2>&1; then
+        MAVEN_VERSION=$(mvn -v 2>/dev/null | head -1 | awk '{print $3}')
+        record_env ok "maven" "${MAVEN_VERSION:-present} -- can build the plugin and run its tests"
+    else
+        record_env info "maven" "absent -- only needed to build the plugin on this machine"
+    fi
+    if command -v git >/dev/null 2>&1; then
+        GIT_VERSION=$(git --version 2>/dev/null | awk '{print $3}')
+        record_env info "git" "${GIT_VERSION:-present}"
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+        PYTHON_VERSION=$(python3 --version 2>/dev/null | awk '{print $2}')
+        record_env info "python3" "${PYTHON_VERSION:-present} -- used by the helper scripts"
+    fi
+
+    if [ "$missing" = "1" ]; then
+        fail "a required tool is missing" "install what is marked above and re-run"
+    fi
     return 0
 }
 
@@ -856,9 +943,9 @@ check_disk() {
     case "$avail_kb" in ''|*[!0-9]*) return 0 ;; esac
     local avail_gb=$(( avail_kb / 1024 / 1024 ))
     if [ "$avail_gb" -lt 5 ]; then
-        ui_warn "only ${avail_gb} GB free disk -- the images and database want ~5 GB"
+        record_env warn "disk" "only ${avail_gb} GB free -- the images and database want ~5 GB"
     else
-        ui_ok "${avail_gb} GB free disk"
+        record_env ok "disk" "${avail_gb} GB free"
     fi
 }
 
@@ -876,8 +963,72 @@ check_port_free() {
 # ---------------------------------------------------------------------------
 #  Wizard: deployment mode
 # ---------------------------------------------------------------------------
+#  Capacity is servers x matches-per-server, and that product is the only number that
+#  tells a user what they actually bought. Printed wherever the two are asked for.
+capacity_note() {
+    if [ "$CFG_MIN_SERVERS" -gt "$CFG_MAX_SERVERS" ]; then
+        ui_warn "minimum ($CFG_MIN_SERVERS) is above maximum ($CFG_MAX_SERVERS); using the maximum as the minimum"
+        CFG_MIN_SERVERS="$CFG_MAX_SERVERS"
+    fi
+    local cap=$(( CFG_MAX_SERVERS * CFG_GAMES_PER_SERVER ))
+    ui_ok "capacity: $CFG_MAX_SERVERS servers x $CFG_GAMES_PER_SERVER matches each = $cap matches at once (arena group '$CFG_ARENA_GROUP')"
+    if [ "$CFG_MIN_SERVERS" = "0" ]; then
+        ui_hint "with a minimum of 0 the fleet starts empty, and scales back to nothing when idle"
+    else
+        ui_hint "the minimum keeps $CFG_MIN_SERVERS server(s) warm even with nobody playing"
+    fi
+    return 0
+}
+
+#  The controller's write endpoints are the ones a pod could abuse: it could claim
+#  capacity it does not have, or ask to be sent players. A shared secret is what makes
+#  them pod-only. Generated here and written into the deployment config, so the user
+#  never copies it anywhere by hand.
+wizard_api_token() {
+    phase "$(em '🔒') Controller authentication"
+    ui_hint "The controller's write endpoints (/pods/*, /lobby/queue) are called by the game"
+    ui_hint "pods and by the proxy. A shared token means only they can call them."
+    ui_hint "It is generated here and handed to every client automatically."
+    local want="y"
+    if [ "$OPT_YES" != "1" ]; then
+        ask_yesno want "Generate a shared API token for the controller?" "y"
+    fi
+    if [ "$want" = "y" ]; then
+        CFG_API_TOKEN=$(random_secret 32)
+        ui_ok "token generated (${#CFG_API_TOKEN} characters) -- written to the config, never printed"
+    else
+        CFG_API_TOKEN=""
+        ui_warn "the controller's write endpoints will be OPEN to anything that can reach them"
+        ui_hint "fine on a private host; read chapter 21 of docs/MANUAL.md before exposing it"
+    fi
+    return 0
+}
+
+#  Offline mode is a PROXY setting: whether Velocity checks each player with Mojang.
+#  It only makes sense when the stack contains the proxy, so the caller decides.
+wizard_offline_mode() {
+    phase "$(em '🌐') Player authentication"
+    ui_hint "Velocity normally verifies every player against Mojang before letting them in."
+    ui_hint "Offline mode skips that check, so a client with no Mojang session can connect."
+    ui_hint "That is how you test with an offline client -- and it also lets anyone use any name."
+    ui_hint "The game servers behind the proxy already run offline: they trust the proxy."
+    local off="n"
+    if [ "$OPT_YES" != "1" ]; then
+        ask_yesno off "Run the proxy in OFFLINE MODE (testing only)?" "n"
+    fi
+    if [ "$off" = "y" ]; then
+        CFG_OFFLINE_MODE="yes"
+        ui_warn "offline mode ON -- anyone who can reach the proxy port can join as anyone"
+        ui_hint "never leave this on for a server the public can reach"
+    else
+        CFG_OFFLINE_MODE="no"
+        ui_ok "online mode -- players are authenticated with Mojang"
+    fi
+    return 0
+}
+
 wizard_mode() {
-    phase "How should this run?"
+    phase "$(em '🧭') How should this run?"
     if [ -n "$OPT_MODE" ]; then
         CFG_MODE="$OPT_MODE"
         ui_info "deployment mode: $CFG_MODE (from --mode)"
@@ -916,7 +1067,7 @@ wizard_mode() {
 #  Wizard: Docker
 # ---------------------------------------------------------------------------
 wizard_docker() {
-    phase "Docker: what to bring up"
+    phase "$(em '🐳') Docker: what to bring up"
     local choice=""
     ask_menu choice "Which services?" "3" \
         "1|Controller only|MySQL, object storage and the controller (the control plane). No Minecraft server at all." \
@@ -932,7 +1083,7 @@ wizard_docker() {
     ui_ok "stack: $CFG_STACK"
 
     if [ "$CFG_STACK" = "game" ] || [ "$CFG_STACK" = "everything" ]; then
-        phase "Docker: engine for the game servers"
+        phase "$(em '⚙️') Docker: engine for the game servers"
         if [ "$OPT_YES" = "1" ]; then
             ui_info "engine: spigot (supplied jar is used if present)"
         else
@@ -947,7 +1098,7 @@ wizard_docker() {
         ui_ok "engine: $CFG_ENGINE"
     fi
 
-    phase "Docker: database"
+    phase "$(em '🗄️') Docker: database"
     ask CFG_DB_NAME "Database name" "bedwars" v_identifier
     ask CFG_DB_USER "Database user" "bedwars" v_identifier
     ask CFG_DB_PORT "Published MySQL port" "3306" v_port
@@ -963,15 +1114,21 @@ wizard_docker() {
         ui_hint "using the repository's development passwords"
     fi
 
-    phase "Docker: controller and capacity"
+    phase "$(em '🎮') Docker: controller and capacity"
+    ui_kv "what a server is" "one Spigot process, hosting several matches at once"
+    ui_hint "the controller starts and stops those processes as demand changes"
     ask CFG_CONTROLLER_PORT "Controller port on the host" "8080" v_port
     check_port_free "$CFG_CONTROLLER_PORT" "the controller" || true
     ask CFG_ARENA_GROUP "Arena group" "solo" v_identifier
-    ask CFG_GAMES_PER_SERVER "Matches per server (capacity = servers x this)" "25" v_int
-    ask CFG_MIN_SERVERS "Minimum servers (0 allows scaling to zero)" "0" v_int
+    ui_hint "matches per server: how many games run side by side in each Spigot process"
+    ask CFG_GAMES_PER_SERVER "Matches per server" "25" v_int
+    ui_hint "minimum servers: how many stay warm with nobody playing (0 = scale to zero)"
+    ask CFG_MIN_SERVERS "Minimum servers" "0" v_int
+    ui_hint "maximum servers: the ceiling the controller will never exceed"
     ask CFG_MAX_SERVERS "Maximum servers" "10" v_int
+    capacity_note
 
-    phase "Docker: world templates"
+    phase "$(em '🌍') Docker: world templates"
     ask_menu choice "Where do arena worlds come from?" "1" \
         "1|Bundled local template|The Glacier arena baked into the image. Nothing to configure, no object storage." \
         "2|S3-compatible storage|MinIO in the stack. Production-shaped, and needed for Slime worlds later."
@@ -993,19 +1150,21 @@ wizard_docker() {
     fi
     ui_ok "template source: $CFG_TEMPLATE_SOURCE"
 
-    phase "Docker: controller authentication"
-    CFG_API_TOKEN=""
-    ui_info "the controller's write endpoints will be open (no API token)"
-    ui_hint "that is the documented development mode, and fine on a private host"
-    ui_hint "note: the game pods and the proxy cannot present a token yet, so setting"
-    ui_hint "BEDWARS_API_TOKEN today would stop them reporting. See chapter 21."
+    wizard_api_token
+
+    #  Only a stack with the proxy can be put in offline mode.
+    if [ "$CFG_STACK" = "network" ] || [ "$CFG_STACK" = "everything" ]; then
+        wizard_offline_mode
+    else
+        ui_info "no proxy in this stack, so player authentication does not apply"
+    fi
 }
 
 # ---------------------------------------------------------------------------
 #  Wizard: Kubernetes
 # ---------------------------------------------------------------------------
 wizard_kubernetes() {
-    phase "Kubernetes: cluster"
+    phase "$(em '☸️') Kubernetes: cluster"
     if [ "$HAVE_CLUSTER" = "1" ]; then
         ui_ok "using the current context: $CLUSTER_CONTEXT"
         local prov="n"
@@ -1038,7 +1197,7 @@ wizard_kubernetes() {
         esac
     fi
 
-    phase "Kubernetes: what to install"
+    phase "$(em '📦') Kubernetes: what to install"
     ask CFG_NAMESPACE "Namespace" "bedwars" v_dnsname
     ask CFG_RELEASE "Release name" "bedwars" v_dnsname
     if [ "$HAVE_HELM" = "1" ]; then
@@ -1069,11 +1228,17 @@ wizard_kubernetes() {
         CFG_K8S_LOAD_IMAGES="no"
     fi
 
-    phase "Kubernetes: capacity and database"
+    phase "$(em '🎮') Kubernetes: capacity and database"
+    ui_kv "what a replica is" "one game pod (a Spigot process) holding several matches"
+    ui_hint "the GameServerSet is the group of those pods; the controller sizes it"
     ask CFG_ARENA_GROUP "Arena group" "solo" v_identifier
+    ui_hint "matches per replica: how many games run side by side in each pod"
     ask CFG_GAMES_PER_SERVER "Matches per server" "25" v_int
+    ui_hint "minimum replicas: how many pods stay warm with nobody playing"
     ask CFG_MIN_SERVERS "Minimum replicas" "1" v_int
+    ui_hint "maximum replicas: the ceiling the controller will never exceed"
     ask CFG_MAX_SERVERS "Maximum replicas" "10" v_int
+    capacity_note
     local indb="y"
     ask_yesno indb "Run MySQL inside the cluster?" "y"
     if [ "$indb" = "y" ]; then
@@ -1103,13 +1268,18 @@ wizard_kubernetes() {
         CFG_TEMPLATE_SOURCE="LOCAL"
         CFG_OBJECT_STORAGE="no"
     fi
+    ui_ok "template source: $CFG_TEMPLATE_SOURCE"
+
+    wizard_api_token
+    #  The chart always deploys the proxy, so this choice always applies here.
+    wizard_offline_mode
 }
 
 # ---------------------------------------------------------------------------
 #  Wizard: world files and the server jar (shared by both paths)
 # ---------------------------------------------------------------------------
 wizard_assets() {
-    phase "World files and the server jar"
+    phase "$(em '🗂️') World files and the server jar"
 
     # --- the server jar -----------------------------------------------------
     #  Recorded here and printed in the review: the image resolves its own jar,
@@ -1196,9 +1366,9 @@ wizard_assets() {
 #  Review -- everything chosen, in one screen, before anything happens
 # ---------------------------------------------------------------------------
 review_summary() {
-    ui_section "Review"
+    ui_section "$(em '🧾') Review"
     local token_shown="none (open)"
-    [ -n "$CFG_API_TOKEN" ] && token_shown="set (${#CFG_API_TOKEN} chars, in .env)" || true
+    [ -n "$CFG_API_TOKEN" ] && token_shown="set (${#CFG_API_TOKEN} chars, written to the config)" || true
     if [ "$CFG_MODE" = "docker" ]; then
         ui_kv "Mode" "Docker Compose"
         ui_kv "Services" "$CFG_STACK"
@@ -1209,9 +1379,9 @@ review_summary() {
         ui_kv "Arena group" "$CFG_ARENA_GROUP"
         ui_kv "Matches per server" "$CFG_GAMES_PER_SERVER"
         ui_kv "Servers (min/max)" "$CFG_MIN_SERVERS / $CFG_MAX_SERVERS"
+        ui_kv "Capacity" "$(( CFG_MAX_SERVERS * CFG_GAMES_PER_SERVER )) matches at once"
         ui_kv "Template source" "$CFG_TEMPLATE_SOURCE"
         ui_kv "Object storage" "$CFG_OBJECT_STORAGE"
-        ui_kv "Controller API token" "$token_shown"
     else
         ui_kv "Mode" "Kubernetes"
         ui_kv "Cluster" "$( [ "$CFG_K8S_PROVISION_CLUSTER" = "y" ] && echo "start minikube (${CFG_MINIKUBE_CPUS} cpu / ${CFG_MINIKUBE_MEMORY} MB / $CFG_MINIKUBE_DRIVER)" || echo "$CLUSTER_CONTEXT" )"
@@ -1223,12 +1393,20 @@ review_summary() {
         ui_kv "Arena group" "$CFG_ARENA_GROUP"
         ui_kv "Matches per server" "$CFG_GAMES_PER_SERVER"
         ui_kv "Replicas (min/max)" "$CFG_MIN_SERVERS / $CFG_MAX_SERVERS"
+        ui_kv "Capacity" "$(( CFG_MAX_SERVERS * CFG_GAMES_PER_SERVER )) matches at once"
         ui_kv "Database" "$( [ "$CFG_USE_IN_CLUSTER_DB" = "yes" ] && echo "in-cluster MySQL" || echo "$CFG_EXT_DB_HOST / $CFG_EXT_DB_NAME" )"
         ui_kv "Template source" "$CFG_TEMPLATE_SOURCE"
     fi
     ui_kv "Hub world" "$( [ -n "$CFG_HUB_WORLD_SRC" ] && echo "$CFG_HUB_WORLD_SRC -> deploy/templates/$CFG_HUB_WORLD_NAME" || echo "generated flat world" )"
     ui_kv "Arena world" "$( [ -n "$CFG_ARENA_WORLD_SRC" ] && echo "$CFG_ARENA_WORLD_SRC (replaces the bundled arena)" || echo "bundled Glacier" )"
     ui_kv "Server jar" "$CFG_SERVER_JAR_NOTE"
+    ui_kv "Controller API token" "$token_shown"
+    ui_kv "Proxy authentication" "$( [ "$CFG_OFFLINE_MODE" = "yes" ] && echo "OFFLINE MODE -- testing only" || echo "online (checked with Mojang)" )"
+    if [ "$CFG_OFFLINE_MODE" = "yes" ]; then
+        ui_blank
+        ui_warn "offline mode: players will NOT be verified with Mojang"
+        ui_hint "it is a testing switch -- and the game servers behind the proxy always run offline"
+    fi
 }
 
 review_and_confirm() {
@@ -1324,11 +1502,27 @@ write_env_file() {
         printf 'SERVER_ENGINE=%s\n' "$CFG_ENGINE"
         printf 'SPIGOT_REV=%s\n' "$CFG_SPIGOT_REV"
         printf 'PAPER_VERSION=%s\n' "$CFG_PAPER_VERSION"
+        printf '\n'
+        #  Shared secret for the controller's write endpoints. Written only when one was
+        #  generated: absent means the controller runs open, which it logs on start.
+        if [ -n "$CFG_API_TOKEN" ]; then
+            printf 'BEDWARS_API_TOKEN=%s\n' "$CFG_API_TOKEN"
+        else
+            printf '# BEDWARS_API_TOKEN is not set: the controller accepts writes openly\n'
+        fi
+        printf 'BEDWARS_OFFLINE_MODE=%s\n' "$( [ "$CFG_OFFLINE_MODE" = "yes" ] && echo true || echo false )"
     } >"$tmp"
 
     if [ "$OPT_DRY_RUN" = "1" ]; then
         ui_hint "[dry-run] would write $env_file"
-        while IFS= read -r _l; do case "$_l" in '#'*|'') continue ;; esac; ui_hint "  $_l"; done <"$tmp"
+        while IFS= read -r _l; do
+            case "$_l" in
+                '#'*|'') continue ;;
+                #  A dry run must not put the secret on screen or in the log.
+                BEDWARS_API_TOKEN=*) ui_hint "  BEDWARS_API_TOKEN=<generated, not shown>" ;;
+                *) ui_hint "  $_l" ;;
+            esac
+        done <"$tmp"
         return 0
     fi
     mv "$tmp" "$env_file"
@@ -1395,8 +1589,19 @@ write_helm_values() {
         else
             printf '  enabled: false\n'
         fi
+        printf '\ncontroller:\n'
+        if [ -n "$CFG_API_TOKEN" ]; then
+            printf '  # Shared secret for the controller write endpoints. The chart creates the\n'
+            printf '  # Secret and hands it to the controller, the proxy and every game pod.\n'
+            printf '  apiToken: %s\n' "$CFG_API_TOKEN"
+        else
+            printf '  # No token: the controller accepts writes from anything that can reach it.\n'
+            printf '  apiToken: ""\n'
+        fi
         printf '\nvelocity:\n'
         printf '  lobbyServer: lobby\n'
+        printf '  # Offline mode is a testing switch: no Mojang check, any name may join.\n'
+        printf '  offlineMode: %s\n' "$( [ "$CFG_OFFLINE_MODE" = "yes" ] && echo true || echo false )"
         printf '  # Must match the GameServerSet name above and the namespace, or the proxy\n'
         printf '  # resolves a host that does not exist and every queue strands the player.\n'
         printf '  podAddressSuffix: "%s"\n' "$suffix"
@@ -1634,8 +1839,40 @@ docker_verify() {
     else
         ui_warn "the controller reports provisioner '$provisioner' -- on a single host this should be DOCKER"
     fi
+    #  The token is the one setting that breaks the whole control plane silently: with
+    #  it set on the controller and not on the clients, every report is refused with 401
+    #  and the fleet simply looks empty. Assert the state instead of assuming it.
+    local authed
+    authed=$(printf '%s' "$infra" | tr ',' '\n' | grep -o '"authenticated":[a-z]*' | cut -d: -f2 || true)
+    if [ -n "$authed" ]; then
+        if [ -z "$CFG_API_TOKEN" ] && [ "$authed" = "false" ]; then
+            ui_ok "controller authentication: open, as configured (no token)"
+        elif [ -n "$CFG_API_TOKEN" ] && [ "$authed" = "true" ]; then
+            ui_ok "controller authentication: the generated token is required"
+        else
+            ui_warn "the controller reports authenticated=$authed but the config says otherwise"
+            ui_hint "a mismatch means a client cannot report: see chapter 21 of docs/MANUAL.md"
+        fi
+    fi
     case "$CFG_STACK" in
         network|everything)
+            #  The proxy's own view: the entrypoint logs the effective online-mode, so the
+            #  requested mode can be checked rather than trusted.
+            if [ -f "$STATE_DIR/velocity.log" ]; then
+                if file_has "$STATE_DIR/velocity.log" "online-mode=false"; then
+                    if [ "$CFG_OFFLINE_MODE" = "yes" ]; then
+                        ui_ok "the proxy is in OFFLINE MODE, as requested (no Mojang check)"
+                    else
+                        ui_warn "the proxy is in offline mode but online mode was configured"
+                    fi
+                elif file_has "$STATE_DIR/velocity.log" "online-mode=true"; then
+                    if [ "$CFG_OFFLINE_MODE" = "yes" ]; then
+                        ui_warn "offline mode was requested but the proxy reports online-mode=true"
+                    else
+                        ui_ok "the proxy verifies players with Mojang (online mode)"
+                    fi
+                fi
+            fi
             #  The assertion that matters: a hub must never appear as a match host.
             if [ "$registered" = "0" ]; then
                 ui_ok "no server is registered as a match host yet -- correct: the lobby is a hub, not a game server"
@@ -1871,6 +2108,24 @@ k8s_deploy() {
     if [ "$HAVE_KEDA_CRD" = "1" ]; then
         files="$files 11-keda-scaledobject.yaml"
     fi
+    #  The plain path has no chart to render the Secret, and the workloads reference it
+    #  as optional. Create it BEFORE they start, so the pods find it on their first
+    #  attempt instead of needing a rollout. The value is piped in, never an argument:
+    #  an argument is readable by any other process on the machine (ps).
+    if [ -n "$CFG_API_TOKEN" ]; then
+        ui_info "creating the controller's shared-secret Secret"
+        if [ "$OPT_DRY_RUN" = "1" ]; then
+            ui_hint "[dry-run] would create secret bedwars-controller-token in $KUBECTL_NS"
+        else
+            if ! printf '%s' "$CFG_API_TOKEN" | kubectl -n "$KUBECTL_NS" create secret generic \
+                    bedwars-controller-token --from-file=token=/dev/stdin --dry-run=client -o yaml \
+                    | kubectl apply -f - >/dev/null 2>&1; then
+                fail "could not create the controller token Secret" \
+                     "check that you may write Secrets in namespace $KUBECTL_NS"
+            fi
+            ui_ok "secret bedwars-controller-token created (value piped, never on the command line)"
+        fi
+    fi
     local f
     for f in $files; do
         if ! run_cmd "applying $f" kubectl apply -n "$KUBECTL_NS" -f "$ROOT/deploy/k8s/$f"; then
@@ -1950,8 +2205,24 @@ k8s_verify() {
 # ---------------------------------------------------------------------------
 #  The finishing screen: what is running, how to use it, how to undo it
 # ---------------------------------------------------------------------------
+#  The preflight results, printed a second time in the summary: this list is what a bug
+#  report needs, and it is the answer to "did the installer actually check anything?".
+print_env_report() {
+    local mark label detail
+    printf '%s' "$ENV_ROWS" | while IFS='|' read -r mark label detail; do
+        [ -z "$label" ] && continue
+        case "$mark" in
+            ok)   printf '  %s✔%s %-14s %s\n' "$C_OK" "$C_OFF" "$label" "$detail" ;;
+            warn) printf '  %s▲%s %-14s %s\n' "$C_WARN" "$C_OFF" "$label" "$detail" ;;
+            err)  printf '  %s✖%s %-14s %s\n' "$C_ERR" "$C_OFF" "$label" "$detail" ;;
+            *)    printf '  %s•%s %-14s %s\n' "$C_ACCENT" "$C_OFF" "$label" "$detail" ;;
+        esac
+    done
+    return 0
+}
+
 print_summary() {
-    ui_section "Done"
+    ui_section "$(em '🎉') Done"
     if [ "$CFG_MODE" = "docker" ]; then
         ui_ok "the stack is up"
         ui_blank
@@ -1993,6 +2264,10 @@ print_summary() {
     fi
 
     ui_blank
+    ui_section "$(em '🧪') This machine, verified"
+    print_env_report
+
+    ui_blank
     ui_hint "tear it down with: $SCRIPT_PATH --teardown"
 
     if [ -z "$CFG_API_TOKEN" ]; then
@@ -2000,6 +2275,17 @@ print_summary() {
         ui_warn "the controller's write endpoints are open (no API token)"
         ui_hint "that is the documented development mode, and fine on a private host"
         ui_hint "before exposing port $CFG_CONTROLLER_PORT: see chapter 21 of docs/MANUAL.md"
+    else
+        ui_blank
+        ui_ok "the controller requires a generated token; the pods and the proxy were given it"
+        ui_hint "it lives in the config file the installer wrote (mode 600), never in the log"
+    fi
+
+    if [ "$CFG_OFFLINE_MODE" = "yes" ]; then
+        ui_blank
+        ui_warn "the proxy is in OFFLINE MODE: no Mojang check, any name can join"
+        ui_hint "testing only. Undo: set BEDWARS_OFFLINE_MODE=false in deploy/compose/.env"
+        ui_hint "(or velocity.offlineMode: false in the Helm values) and restart the proxy"
     fi
 }
 
@@ -2164,7 +2450,7 @@ main() {
         ui_warn "DRY RUN: nothing will be written, built or started"
     fi
 
-    phase "Checking this machine"
+    phase "$(em '🔎') Checking this machine"
     probe_tools
     check_disk
 

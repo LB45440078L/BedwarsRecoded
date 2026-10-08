@@ -35,6 +35,7 @@ public final class DockerProvisioner implements ServerProvisioner {
     private final int maxServers;
     private final String arenaGroup;
     private final String controllerUrl;
+    private final String apiToken;
     private final String network;
     private final List<String> containerCommand;
     private final Logger log;
@@ -49,6 +50,7 @@ public final class DockerProvisioner implements ServerProvisioner {
                              int maxServers,
                              String arenaGroup,
                              String controllerUrl,
+                             String apiToken,
                              String network,
                              List<String> containerCommand,
                              Logger log) {
@@ -62,6 +64,7 @@ public final class DockerProvisioner implements ServerProvisioner {
         this.maxServers = Math.max(this.minServers, maxServers);
         this.arenaGroup = arenaGroup == null || arenaGroup.isBlank() ? "solo" : arenaGroup;
         this.controllerUrl = controllerUrl == null ? "" : controllerUrl;
+        this.apiToken = apiToken == null ? "" : apiToken;
         this.network = network == null ? "" : network;
         this.containerCommand = containerCommand == null ? List.of() : List.copyOf(containerCommand);
         this.log = log;
@@ -190,8 +193,15 @@ public final class DockerProvisioner implements ServerProvisioner {
                 "-e", "BEDWARS_ARENA_GROUP=" + arenaGroup,
                 // The plugin reads BEDWARS_CONTROLLER_URL; a bare CONTROLLER_URL is
                 // ignored, which silently left every pod on the baked default.
-                "-e", "BEDWARS_CONTROLLER_URL=" + controllerUrl,
-                image));
+                "-e", "BEDWARS_CONTROLLER_URL=" + controllerUrl));
+        // Hand the pod the same secret the controller checks, or it would be refused with
+        // 401 and never register. Omitted entirely when the token is blank, because an
+        // empty variable would read as a presented credential.
+        if (!apiToken.isBlank()) {
+            command.add("-e");
+            command.add("BEDWARS_API_TOKEN=" + apiToken);
+        }
+        command.add(image);
         command.addAll(containerCommand);
         CommandRunner.Result result = runner.run(command);
         if (!result.ok()) {

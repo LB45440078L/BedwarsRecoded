@@ -172,7 +172,8 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
             return;
         }
 
-        this.reporter = new HttpPodReporter(config.controllerBaseUrl(), new ReportingPolicy(
+        this.reporter = new HttpPodReporter(config.controllerBaseUrl(), config.controllerApiToken(),
+                new ReportingPolicy(
                 config.disableReportingAfterFailures(),
                 config.failureLogIntervalSeconds() * 1000L));
         logStartupSummary();
@@ -327,8 +328,9 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
     }
 
     private void logStartupSummary() {
-        LOG.info("bedwars_setup controller_reporting={} controller_url={}",
-                reporter.policy().describe(), config.controllerBaseUrl());
+        LOG.info("bedwars_setup controller_reporting={} controller_url={} controller_auth={}",
+                reporter.policy().describe(), config.controllerBaseUrl(),
+                reporter.authenticated() ? "token" : "none");
         LOG.info("bedwars_setup server_id={} arena_group={} teams={}x{} games_per_server={} template={} persistence={} json_logs={}",
                 config.serverId(), config.arenaGroup(), config.teamCount(), config.playersPerTeam(),
                 config.gamesPerServer(),

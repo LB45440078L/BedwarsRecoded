@@ -37,18 +37,34 @@ public final class HttpPodReporter implements PodReporter {
     private static final Logger LOG = LoggerFactory.getLogger("bedwars-pod");
 
     private final String baseUrl;
+    private final String apiToken;
     private final ReportingPolicy policy;
     private final Gson gson = JsonSupport.gson();
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
 
     public HttpPodReporter(String baseUrl) {
-        this(baseUrl, new ReportingPolicy());
+        this(baseUrl, "", new ReportingPolicy());
     }
 
     public HttpPodReporter(String baseUrl, ReportingPolicy policy) {
+        this(baseUrl, "", policy);
+    }
+
+    /**
+     * @param apiToken the shared secret the controller requires, or blank when the
+     *                 controller is running open. A blank token sends no header at all,
+     *                 because the controller rejects an empty one.
+     */
+    public HttpPodReporter(String baseUrl, String apiToken, ReportingPolicy policy) {
         this.baseUrl = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
+        this.apiToken = apiToken == null ? "" : apiToken;
         this.policy = policy;
+    }
+
+    /** Whether this reporter presents a token. The value itself is never returned. */
+    public boolean authenticated() {
+        return !apiToken.isBlank();
     }
 
     /** The policy in use, so the bootstrap can log the effective decision. */
@@ -116,9 +132,15 @@ public final class HttpPodReporter implements PodReporter {
         String json = gson.toJson(body);
         executor.submit(() -> {
             try {
-                HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + path))
+                HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(baseUrl + path))
                         .timeout(Duration.ofSeconds(5))
-                        .header("Content-Type", "application/json")
+                        .header("Content-Type", "application/json");
+                // Only when a token is configured: the controller treats an empty header
+                // as a presented credential and rejects it with 401.
+                if (!apiToken.isBlank()) {
+                    builder.header("X-Bedwars-Token", apiToken);
+                }
+                HttpRequest request = builder
                         .POST(HttpRequest.BodyPublishers.ofString(json, StandardCharsets.UTF_8))
                         .build();
                 http.send(request, HttpResponse.BodyHandlers.discarding());

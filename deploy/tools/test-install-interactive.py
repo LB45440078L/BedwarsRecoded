@@ -8,6 +8,7 @@ appears, and asserts what a user actually cares about:
   * a nonsense answer is rejected and asked again, not accepted
   * the review's [e]dit re-runs the wizard instead of continuing
   * [a]bort exits having changed nothing
+  * the generated API token is never printed, even in a dry run
 
 Runs `install.sh --dry-run`, so it needs no Docker, no cluster and no network,
 and writes nothing. Requires a POSIX host with a pty (Linux or macOS).
@@ -46,6 +47,8 @@ SCRIPT = [
     ("Minimum servers", "2"),
     ("Maximum servers", "7"),
     ("Where do arena worlds come from?", "1"),
+    ("Generate a shared API token for the controller?", "n"),   # decline: check the warning
+    ("Run the proxy in OFFLINE MODE (testing only)?", "n"),
     ("Do you have a lobby/hub world", "n"),
     ("Replace the bundled arena", "n"),
     ("a]bort", "e"),                                 # edit, not continue
@@ -60,6 +63,8 @@ SCRIPT = [
     ("Minimum servers", ""),
     ("Maximum servers", ""),
     ("Where do arena worlds come from?", "1"),
+    ("Generate a shared API token for the controller?", "y"),   # generate one this time
+    ("Run the proxy in OFFLINE MODE (testing only)?", "y"),      # and enable this
     ("Do you have a lobby/hub world", "n"),
     ("a]bort", "a"),                                 # abort
 ]
@@ -72,6 +77,17 @@ CHECKS = [
     ("the first pass used the chosen stack", lambda t: "stack: everything" in t),
     ("the re-run used the new stack", lambda t: "stack: network" in t),
     ("the engine choice was honoured", lambda t: "engine: spigot" in t),
+    # Capacity is servers x matches-per-server: 7 x 5 must be reported as 35.
+    ("the capacity arithmetic is shown to the user",
+     lambda t: "= 35 matches at once" in t),
+    ("the token question is asked and a token generated",
+     lambda t: "token generated" in t),
+    ("declining the token is possible and called out",
+     lambda t: "will be OPEN" in t),
+    ("offline mode can be switched on and is warned about",
+     lambda t: "offline mode ON" in t),
+    ("the machine check ran",
+     lambda t: "Checking this machine" in t),
     ("aborting reported that nothing changed",
      lambda t: "aborted before changing anything" in t),
 ]
@@ -153,7 +169,41 @@ def main():
         passed = check(text)
         ok = ok and passed
         print(("PASS  " if passed else "FAIL  ") + label)
+
+    # The interactive flow above ends in [a]bort, so it never reaches the step that
+    # writes the config. The unattended flow does, and it is where the secret must stay
+    # out of the output: a dry run has to be safe to paste into a bug report.
+    ok = check_unattended_redaction() and ok
     return 0 if ok else 1
+
+
+UNREDACTED = re.compile(r"^BEDWARS_API_TOKEN=[A-Za-z0-9]{16,}", re.M)
+
+
+def check_unattended_redaction():
+    """Run the unattended dry run and assert the generated token is never printed."""
+    env = dict(os.environ)
+    env["NO_COLOR"] = "1"
+    proc = subprocess.run([INSTALLER, "--dry-run", "--yes", "--mode", "docker"],
+                          capture_output=True, text=True, cwd=REPO_ROOT, env=env, timeout=300)
+    out = ANSI.sub("", proc.stdout + proc.stderr)
+
+    if "would write" not in out:
+        # The run stopped before the config step (typically no Docker daemon here).
+        print("SKIP  the unattended dry run did not reach the config step on this host")
+        return True
+
+    if UNREDACTED.search(out):
+        print("FAIL  the unattended dry run printed the generated token in clear")
+        return False
+    if "BEDWARS_API_TOKEN=<generated, not shown>" not in out:
+        print("FAIL  the unattended dry run did not show the redaction marker")
+        return False
+    if "BEDWARS_OFFLINE_MODE=" not in out:
+        print("FAIL  the unattended dry run did not write the offline-mode setting")
+        return False
+    print("PASS  the unattended dry run redacts the generated token")
+    return True
 
 
 if __name__ == "__main__":

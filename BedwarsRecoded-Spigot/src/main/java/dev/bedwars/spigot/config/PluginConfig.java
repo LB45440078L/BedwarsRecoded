@@ -27,6 +27,7 @@ public record PluginConfig(
         TemplateSource templateSource,
         String localTemplatePath,
         String controllerBaseUrl,
+        String controllerApiToken,
         int heartbeatSeconds,
         DatabaseConfig database,
         int kFactor,
@@ -80,6 +81,10 @@ public record PluginConfig(
                 source,
                 env("BEDWARS_TEMPLATE_LOCAL_PATH", c.getString("template.local-path", "templates")),
                 env("BEDWARS_CONTROLLER_URL", c.getString("controller.base-url", "http://bedwars-controller:8080")),
+                // The shared secret the controller requires on its mutating endpoints.
+                // Blank = the controller is running open. Read from the environment
+                // first: the value must never live in a file in the repository.
+                env("BEDWARS_API_TOKEN", c.getString("controller.api-token", "")),
                 intEnv("BEDWARS_HEARTBEAT_SECONDS", c.getInt("controller.heartbeat-seconds", 15)),
                 db,
                 c.getInt("ranking.k-factor", 32),

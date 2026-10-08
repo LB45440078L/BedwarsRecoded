@@ -50,4 +50,9 @@ $KUBECTL kustomize deploy/k8s > "$OUT/kustomize.yaml"
 echo "==> kubeconform"
 $KUBECONFORM -strict -summary -ignore-missing-schemas "$OUT/helm.yaml" "$OUT/kustomize.yaml"
 
+# kubeconform validates schemas, not semantics: a container listing the same env name
+# twice is valid YAML and a valid schema, and Kubernetes silently keeps the last one.
+echo "==> duplicate env names"
+python3 "$ROOT/deploy/tools/check_env_unique.py" "$OUT/helm.yaml" "$OUT/kustomize.yaml"
+
 echo "K8S VERIFY: OK"

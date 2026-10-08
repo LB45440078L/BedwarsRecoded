@@ -27,6 +27,10 @@ x-controller-env: &controller-env
   # the URL they are handed must use that name rather than the host's loopback.
   BEDWARS_DOCKER_NETWORK: "bedwars_bedwars"
   BEDWARS_CONTROLLER_ADVERTISE_URL: "http://controller:8080"
+  # Shared secret for the controller's mutating endpoints. Blank = open controller.
+  # When set, the controller also hands it to every game container it provisions, and
+  # the proxy presents it on /lobby/queue. Set it in the same .env for all services.
+  BEDWARS_API_TOKEN: "${BEDWARS_API_TOKEN:-}"
 
 services:
   mysql:
@@ -122,6 +126,12 @@ services:
       dockerfile: deploy/docker/velocity.Dockerfile
     environment:
       CONTROLLER_URL: "http://controller:8080"
+      # Must match the controller's BEDWARS_API_TOKEN or every queue request is refused.
+      BEDWARS_API_TOKEN: "${BEDWARS_API_TOKEN:-}"
+      # TESTING ONLY. true flips the proxy to online-mode=false so clients that never
+      # authenticated with Mojang can connect. Anyone can then join as any name:
+      # never leave it on for a public server.
+      BEDWARS_OFFLINE_MODE: "${BEDWARS_OFFLINE_MODE:-false}"
       # Must match the [servers] entry and `try` in deploy/docker/velocity.toml.
       LOBBY_SERVER: "lobby"
       # Empty in Docker: a container name resolves on the shared network by itself.
@@ -185,6 +195,7 @@ services:
       BEDWARS_SERVER_ID: "game-pod"
       BEDWARS_ARENA_GROUP: "solo"
       BEDWARS_CONTROLLER_URL: "http://controller:8080"
+      BEDWARS_API_TOKEN: "${BEDWARS_API_TOKEN:-}"
       BEDWARS_TEMPLATE_NAME: "Glacier"
       BEDWARS_TEMPLATE_VERSION: "1.0.0"
       BEDWARS_TEMPLATE_SOURCE: "LOCAL"

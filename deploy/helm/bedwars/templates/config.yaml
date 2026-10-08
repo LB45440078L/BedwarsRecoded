@@ -30,3 +30,18 @@ type: Opaque
 stringData:
   password: {{ .Values.mysql.password | quote }}
   root-password: {{ .Values.mysql.rootPassword | quote }}
+{{- if .Values.controller.apiToken }}
+---
+# The controller's shared secret. Created only when a token is configured, so an open
+# controller has no empty Secret lying around. The workloads reference the Secret with
+# optional=true, which is what lets them start when it is absent.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bedwars-controller-token
+  labels:
+    {{- include "bedwars.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  token: {{ .Values.controller.apiToken | quote }}
+{{- end }}

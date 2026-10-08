@@ -76,11 +76,14 @@ public final class BedwarsVelocityPlugin {
     @Subscribe
     public void onProxyInitialize(ProxyInitializeEvent event) {
         String baseUrl = env("CONTROLLER_URL", "http://bedwars-controller:8080");
-        this.controller = new ControllerClient(baseUrl);
+        // The same shared secret the game servers present. Blank = the controller runs
+        // open. Only ever reported as a yes/no: the value never reaches a log.
+        String apiToken = env("BEDWARS_API_TOKEN", "");
+        this.controller = new ControllerClient(baseUrl, apiToken);
         proxy.getChannelRegistrar().register(MinecraftChannelIdentifier.create("bedwars", "queue"));
         proxy.getChannelRegistrar().register(MinecraftChannelIdentifier.create("bedwars", "return"));
-        logger.info("BedwarsRecoded proxy initialised; controller={} lobby={} pod_suffix='{}'",
-                baseUrl, lobbyServer(), podSuffix());
+        logger.info("BedwarsRecoded proxy initialised; controller={} controller_auth={} lobby={} pod_suffix='{}'",
+                baseUrl, apiToken.isBlank() ? "none" : "token", lobbyServer(), podSuffix());
         if (proxy.getServer(lobbyServer()).isEmpty()) {
             logger.warn("Lobby server '{}' is NOT registered with this proxy. Players would have nowhere "
                     + "to land. Check the lobby Deployment/Service and the velocity.toml [servers] block.",

@@ -45,7 +45,7 @@ class DockerProvisionerIntegrationTest {
         String prefix = "bedwars-it-" + UUID.randomUUID().toString().substring(0, 8);
         ProcessCommandRunner runner = new ProcessCommandRunner(120_000);
         DockerProvisioner provisioner = new DockerProvisioner(runner, "docker", prefix, "alpine:latest",
-                "256m", 25, 0, 2, "solo", "http://controller:8080", "",
+                "256m", 25, 0, 2, "solo", "http://controller:8080", "test-token", "",
                 List.of("sleep", "3600"), LoggerFactory.getLogger("integration"));
 
         try {

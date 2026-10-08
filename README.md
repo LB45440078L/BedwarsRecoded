@@ -12,7 +12,7 @@
   <a href="https://kubernetes.io/"><img src="https://img.shields.io/badge/Kubernetes-native-326CE5?logo=kubernetes&amp;logoColor=white" alt="Kubernetes"></a>
   <a href="https://helm.sh/"><img src="https://img.shields.io/badge/Helm-chart-0F1689?logo=helm&amp;logoColor=white" alt="Helm chart"></a>
   <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-images-2496ED?logo=docker&amp;logoColor=white" alt="Docker images"></a>
-  <a href="#-testing"><img src="https://img.shields.io/badge/tests-194%20passing-brightgreen" alt="Tests"></a>
+  <a href="#-testing"><img src="https://img.shields.io/badge/tests-197%20passing-brightgreen" alt="Tests"></a>
   <a href="#-build"><img src="https://img.shields.io/badge/plugin%20JAR-%3C%204%20MB-brightgreen" alt="Plugin JAR under 4 MB"></a>
   <a href="https://github.com/LB45440078L/BedwarsRecoded/issues"><img src="https://img.shields.io/badge/PRs-welcome-blueviolet" alt="PRs welcome"></a>
 </p>
@@ -117,10 +117,13 @@ Honest list of what is modelled but not fully wired, or absent:
 - **gRPC** — controller communication is HTTP only (the brief allowed HTTP webhooks).
 - **K8s annotations for pod state** — state is reported over HTTP webhooks only.
 - **NPC via Citizens** — join NPCs use a named entity, not a Citizens hook.
-- **The controller API token is enforced but never presented** — the controller checks
-  `BEDWARS_API_TOKEN` on every mutating endpoint (constant-time, never logged), but the
-  game-server reporter and the proxy do not send the header, so setting it would stop the fleet
-  registering. Leave it unset until the clients send it; see `docs/MANUAL.md` §21.2.
+- **The API token travels as an environment variable** — the controller enforces
+  `BEDWARS_API_TOKEN` on every mutating endpoint (constant-time, never logged), and every
+  shipped client now presents it: the game server's reporter, the proxy's controller client,
+  and the Docker provisioner, which passes it to each container it starts. Nothing is left
+  unauthenticated except the read-only endpoints, deliberately. The residual risk is
+  distribution, not implementation: a token in a pod spec or `docker inspect` is readable by
+  anyone who can read those. See `docs/MANUAL.md` §21.2 and §21.3.
 - **Structured concurrency (`StructuredTaskScope`)** — still a preview API in JDK 25
   (verified: `javac --release 25` rejects it without `--enable-preview`), so plain
   virtual threads are used. Scoped Values *are* used, since those are final.
@@ -182,7 +185,7 @@ by the server at startup, so they are never shaded.
 ## 🧪 Testing
 
 JUnit 5 + AssertJ. `Core` is deliberately Bukkit-free, so game logic is tested with
-plain JUnit — no server, no mocking framework. The suite is **194 tests**:
+plain JUnit — no server, no mocking framework. The suite is **197 tests**:
 
 - **Core (95)** — game lifecycle, and the win condition in particular
   (`WinConditionTest`): a match must reach a single survivor even when the arena
@@ -192,13 +195,16 @@ plain JUnit — no server, no mocking framework. The suite is **194 tests**:
   consume slots, and finished matches are pruned and unregistered.
   `SuddenDeathDragonTest` covers the dragon plan: one per Dragon Buff level, eliminated
   teams bring none, and the neutral count is honoured.
-- **Spigot (33)** — config (including the `dragon:` block and its clamps), the dragon's
+- **Spigot (35)** — config (including the `dragon:` block and its clamps), the dragon's
   block rules (`DragonRulesTest`: air/indestructible blocks/beds are never broken),
-  reporting, template sources, and `SpigotOnlyApiTest`, which enforces the Spigot-only
-  constraint.
-- **Controller (61)** — queue dispatch over real HTTP (`WebhookServerTest`), token
+  reporting (`HttpPodReporterTest` reads the `X-Bedwars-Token` header off a real HTTP
+  server, and asserts no header is sent when no token is configured), template sources, and
+  `SpigotOnlyApiTest`, which enforces the Spigot-only constraint.
+- **Controller (62)** — queue dispatch over real HTTP (`WebhookServerTest`), token
   authentication (`WebhookServerAuthTest`), the match-slot capacity model
-  (`ServerRegistryTest`), `DockerProvisionerTest` (fake runner), `PrewarmGuardTest`
+  (`ServerRegistryTest`), `DockerProvisionerTest` (fake runner: asserts the provisioned
+  container is handed the token when one is set, and not handed an empty one when it is
+  not), `PrewarmGuardTest`
   (a booting server must not be re-pre-warmed), `ScaleDownPolicyTest`,
   and an opt-in `DockerProvisionerIntegrationTest` that drives a
   **real** Docker daemon: it provisions an actual container, health-checks it, reclaims
@@ -304,7 +310,10 @@ compose file, 119 structural checks), and the 4 MB JAR gate.
 
 `deploy/verify_k8s.sh` additionally lints and renders the Helm chart, renders the
 Kustomize base, and schema-validates both with `kubeconform` (set `HELM`, `KUBECTL`,
-`KUBECONFORM` if they are not on `PATH`). `deploy/tools/test-resolve-server-jar.sh`
+`KUBECONFORM` if they are not on `PATH`). It then runs
+`deploy/tools/check_env_unique.py`, which fails if any rendered container declares the same
+environment variable twice — valid YAML, a valid schema, and silently last-wins in
+Kubernetes. `deploy/tools/test-resolve-server-jar.sh`
 proves the image compiles Spigot only when it has no other option, and
 `deploy/tools/test-install-interactive.py` drives `install.sh` through a pty to prove the
 guided wizard honours, validates and re-asks for its answers (dry-run: no Docker needed).

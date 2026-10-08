@@ -34,6 +34,15 @@ spec:
               value: "S3"
             - name: BEDWARS_CONTROLLER_URL
               value: "http://bedwars-controller:8080"
+            # Shared secret for the controller's mutating endpoints. optional=true: the
+            # Secret is only created when a token is configured, and an absent one
+            # leaves the variable unset, which every service reads as "no token".
+            - name: BEDWARS_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: bedwars-controller-token
+                  key: token
+                  optional: true
             - name: BEDWARS_TEMPLATE_S3_ENDPOINT
               valueFrom:
                 configMapKeyRef:

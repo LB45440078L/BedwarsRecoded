@@ -33,4 +33,9 @@ ENV CONTROLLER_URL=http://bedwars-controller:8080
 # lobby are what make players land in a hub instead of being dropped. See the file.
 COPY deploy/docker/velocity.toml /proxy/velocity.toml
 
-ENTRYPOINT ["java", "-jar", "velocity.jar"]
+# Runtime entrypoint: it honours BEDWARS_OFFLINE_MODE by flipping online-mode, which is
+# how the network is brought up offline for local testing. See the script.
+COPY deploy/docker/velocity-entrypoint.sh /proxy/entrypoint.sh
+RUN chmod +x /proxy/entrypoint.sh
+
+ENTRYPOINT ["/proxy/entrypoint.sh"]

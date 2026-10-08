@@ -52,7 +52,7 @@ public final class ProvisionerFactory {
         var docker = new DockerProvisioner(runner, "docker", p.serverPrefix(), p.dockerImage(),
                 p.containerMemory(), p.gamesPerServer(), p.minServers(), p.maxServers(),
                 config.provisioning().arenaGroup(), config.controllerUrlForGameServers(),
-                p.dockerNetwork(), List.of(), LOG);
+                config.security().apiToken(), p.dockerNetwork(), List.of(), LOG);
         if (!docker.available()) {
             LOG.warn("Docker daemon not reachable; provisioning disabled "
                     + "(start Docker or set BEDWARS_PROVISIONER=NONE)");

@@ -42,6 +42,15 @@ spec:
               value: "50"
             - name: BEDWARS_PREWARM_THRESHOLD
               value: "2"
+            # Shared secret for the controller's mutating endpoints. optional=true: the
+            # Secret is only created when a token is configured, and an absent one
+            # leaves the variable unset, which every service reads as "no token".
+            - name: BEDWARS_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: bedwars-controller-token
+                  key: token
+                  optional: true
           ports:
             - name: http
               containerPort: 8080

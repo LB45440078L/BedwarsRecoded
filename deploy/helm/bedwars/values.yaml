@@ -77,6 +77,10 @@ mcRouter:
 
 velocity:
   replicas: 2
+  # TESTING ONLY. true runs the proxy in offline mode (online-mode=false): clients
+  # are not verified with Mojang and any name may be used. Never for a public server.
+  # The installer exposes this as a question; the default is the safe one.
+  offlineMode: false
   # The registered server a player is placed on when they connect, and where finished
   # matches are sent back to. Must match the [servers] entry and `try` in the proxy
   # image's velocity.toml.
@@ -88,6 +92,12 @@ velocity:
 
 controller:
   replicas: 1
+  # Shared secret for the controller's mutating endpoints (/pods/*, /lobby/queue).
+  # Leave empty and the controller runs OPEN, which is only safe because it is
+  # ClusterIP-only (see the manual). Set it and the chart creates the Secret, hands it
+  # to the controller, and passes it to the proxy and to every game pod: the secret is
+  # what lets a pod register at all. The installer generates one for you.
+  apiToken: ""
 
 # Object storage for world templates.
 s3:

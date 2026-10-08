@@ -53,6 +53,15 @@ spec:
               value: {{ .Values.arena.templateSource | default "S3" | quote }}
             - name: BEDWARS_CONTROLLER_URL
               value: {{ include "bedwars.controllerUrl" . | quote }}
+            # Shared secret for the controller's mutating endpoints. optional=true: when
+            # no token is configured the Secret does not exist and the variable stays
+            # unset, which the controller reads as "run open".
+            - name: BEDWARS_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: bedwars-controller-token
+                  key: token
+                  optional: true
             - name: BEDWARS_TEMPLATE_NAME
               value: {{ .Values.arena.templateName | default "Glacier" | quote }}
             - name: BEDWARS_TEMPLATE_VERSION

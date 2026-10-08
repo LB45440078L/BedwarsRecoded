@@ -153,6 +153,11 @@ controller:
   # Overridable with BEDWARS_CONTROLLER_URL. In a container this must be the
   # controller's name on the shared network (its Kubernetes Service / compose alias).
   base-url: "http://bedwars-controller:8080"
+  # Shared secret the controller requires on its mutating endpoints. Overridable with
+  # BEDWARS_API_TOKEN, which is how the deployment sets it - leaving it empty here means
+  # the value never sits in a file. Must match the controller's own BEDWARS_API_TOKEN.
+  # Leave BOTH blank to run the controller open (it logs a warning when it does).
+  api-token: ""
   heartbeat-seconds: 15
   # Reporting safety net. The FIRST failure to reach the controller is always logged
   # with its reason; further failures are logged at most once every
