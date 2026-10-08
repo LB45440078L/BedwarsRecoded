@@ -34,6 +34,11 @@ spec:
               value: "bedwars"
             - name: BEDWARS_GAMESERVERSET
               value: "bedwars-solo"
+            #  Must equal the game pods' BEDWARS_ARENA_GROUP (10-gameserverset.yaml): a
+            #  request that names no group resolves to this, and a mismatch means nothing
+            #  ever matches. check_env_unique.py pins the pair.
+            - name: BEDWARS_ARENA_GROUP
+              value: "solo"
             - name: BEDWARS_HTTP_PORT
               value: "8080"
             - name: BEDWARS_MIN_REPLICAS

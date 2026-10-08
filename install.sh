@@ -1781,18 +1781,28 @@ wizard_docker() {
     esac
     ui_ok "stack: $CFG_STACK"
 
-    if [ "$CFG_STACK" = "game" ] || [ "$CFG_STACK" = "everything" ]; then
-        phase "$(em '⚙️') Docker: engine for the game servers"
+    #  Any stack whose controller can start a game server needs the game image, including
+    #  "full network": the controller provisions containers from it, so skipping the build
+    #  there leaves a network that can never place a player in a match.
+    if [ "$CFG_STACK" != "infra" ]; then
+        phase "$(em '⚙️') Server engine for the game servers"
+        ui_info "this is the Minecraft server software the match pods run."
         if [ "$OPT_YES" = "1" ]; then
-            ui_info "engine: spigot (supplied jar is used if present)"
+            ui_info "engine: $CFG_ENGINE (from the defaults; pass the wizard to choose)"
         else
-            ui_hint "Spigot has no official download; a jar in server-jars/ is used as-is, and"
-            ui_hint "without one the image compiles Spigot with BuildTools (minutes, first build only)."
-            ui_hint "Paper is never compiled -- it is downloaded."
-            ask_menu choice "Which server engine?" "1" \
-                "1|Spigot 26.3|The brief's default. Exact Spigot, never Paper. Slower first build without a jar." \
-                "2|Paper 26.3|Built from the PaperMC API. Faster to build, and still loads this plugin unchanged."
-            [ "$choice" = "2" ] && CFG_ENGINE="paper" || CFG_ENGINE="spigot" || true
+            ask_menu choice "Which server engine should the game servers run?" "1" \
+                "1|Spigot 26.3|Spigot's own BuildTools compiles it on the first build (several minutes), or uses your jar from server-jars/ as-is. Exactly Spigot, never Paper." \
+                "2|Paper 26.3|Downloaded prebuilt from the PaperMC API: no compile step, so the first build is minutes faster. Runs this plugin unchanged."
+            case "$choice" in
+                2) CFG_ENGINE="paper" ;;
+                *) CFG_ENGINE="spigot" ;;
+            esac
+            if [ "$CFG_ENGINE" = "paper" ]; then
+                ui_hint "Paper: version $CFG_PAPER_VERSION is downloaded at image build time."
+            else
+                ui_hint "Spigot: a matching jar in server-jars/ is used as-is; without one the image"
+                ui_hint "compiles Spigot $CFG_SPIGOT_REV with BuildTools (slow first build, then cached)."
+            fi
         fi
         ui_ok "engine: $CFG_ENGINE"
     fi
@@ -2198,6 +2208,15 @@ write_env_file() {
             printf 'BEDWARS_MC_IMAGE=%s\n' "$CFG_MC_IMAGE"
         fi
         printf '\n'
+        #  Capacity and arena group. These were asked for and then dropped on the Docker
+        #  path, so the controller fell back to its own defaults (maximum 10 servers) while
+        #  the operator believed they had configured two: pre-warming then filled ten.
+        printf '# Capacity: servers x matches-per-server = concurrent matches\n'
+        printf 'BEDWARS_MIN_SERVERS=%s\n' "$CFG_MIN_SERVERS"
+        printf 'BEDWARS_MAX_SERVERS=%s\n' "$CFG_MAX_SERVERS"
+        printf 'BEDWARS_GAMES_PER_SERVER=%s\n' "$CFG_GAMES_PER_SERVER"
+        printf 'BEDWARS_ARENA_GROUP=%s\n' "$CFG_ARENA_GROUP"
+        printf '\n'
         printf 'SERVER_ENGINE=%s\n' "$CFG_ENGINE"
         printf 'SPIGOT_REV=%s\n' "$CFG_SPIGOT_REV"
         printf 'PAPER_VERSION=%s\n' "$CFG_PAPER_VERSION"
@@ -2453,8 +2472,10 @@ docker_build() {
     step_begin "Building the images"
     ui_info "first build is the slow one; later builds reuse every layer"
     local svcs="controller"
+    #  "network" builds the game image too: its controller provisions match containers from
+    #  it, so a network install without it can never start a game server.
     case "$CFG_STACK" in
-        game|everything) svcs="$svcs game-pod" ;;
+        game|everything|network) svcs="$svcs game-pod" ;;
     esac
     case "$CFG_STACK" in
         network|everything) svcs="$svcs lobby velocity" ;;

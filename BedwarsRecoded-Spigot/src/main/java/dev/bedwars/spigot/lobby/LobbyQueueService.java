@@ -51,6 +51,13 @@ public final class LobbyQueueService {
         return true;
     }
 
+    /** Leaves the queue: forgets the request locally and tells the proxy to stop searching. */
+    public void cancel(Player player) {
+        if (pending.remove(player.getUniqueId())) {
+            ProxyChannel.requestLeave(plugin, player);
+        }
+    }
+
     /** Forgets a player's in-flight request (they disconnected, or were moved). */
     public void forget(UUID id) {
         pending.remove(id);

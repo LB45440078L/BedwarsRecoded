@@ -120,4 +120,47 @@ class QueueManagerTest {
         manager.drain();
         assertThat(future.join().podAddress()).isEqualTo("pod-late");
     }
+
+    //  The reported stampede: the client retries on a short backoff, and every retry left
+    //  its entry behind when the HTTP wait timed out. Depth is what pre-warming scales on,
+    //  so the fleet grew one server per retry while the player was never placed.
+    @Test
+    void aQueueEntryCanBeTakenBackOut() {
+        QueueManager manager = new QueueManager(group -> Optional.empty(), 50L, 500L);
+        UUID player = UUID.randomUUID();
+        QueueRequest request = new QueueRequest(player, "steve", 0, Optional.empty(), Optional.empty(), 1L);
+
+        manager.enqueue(request);
+        assertThat(manager.totalDepth()).isEqualTo(1);
+
+        assertThat(manager.dequeue(player)).isEqualTo(1);
+        assertThat(manager.totalDepth()).isZero();
+        assertThat(manager.depthByGroup()).isEmpty();
+    }
+
+    @Test
+    void dequeuingOnePlayerLeavesTheRestQueued() {
+        QueueManager manager = new QueueManager(group -> Optional.empty(), 50L, 500L);
+        UUID waiting = UUID.randomUUID();
+        UUID leaving = UUID.randomUUID();
+        manager.enqueue(new QueueRequest(waiting, "alex", 0, Optional.empty(), Optional.empty(), 1L));
+        manager.enqueue(new QueueRequest(leaving, "steve", 0, Optional.empty(), Optional.empty(), 2L));
+
+        assertThat(manager.dequeue(leaving)).isEqualTo(1);
+        assertThat(manager.totalDepth()).isEqualTo(1);
+        assertThat(manager.dequeue(UUID.randomUUID())).isZero();
+    }
+
+    @Test
+    void aGroupLessRequestIsCountedOnceNotPerRetry() {
+        // Ten retries of one waiting player, each abandoned as it times out: the depth
+        // must return to zero rather than climbing to ten.
+        QueueManager manager = new QueueManager(group -> Optional.empty(), 50L, 500L);
+        UUID player = UUID.randomUUID();
+        for (int i = 0; i < 10; i++) {
+            manager.enqueue(new QueueRequest(player, "steve", 0, Optional.empty(), Optional.empty(), i));
+            manager.dequeue(player);
+        }
+        assertThat(manager.totalDepth()).isZero();
+    }
 }

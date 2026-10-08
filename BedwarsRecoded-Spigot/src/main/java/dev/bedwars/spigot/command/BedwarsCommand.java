@@ -111,6 +111,28 @@ public final class BedwarsCommand implements CommandExecutor, TabCompleter {
                     + "  role=" + ChatColor.YELLOW + "LOBBY");
             sender.sendMessage(ChatColor.YELLOW + "  /bw queue" + ChatColor.GRAY
                     + " - search for a match (or right-click a [bedwars] sign/NPC)");
+            sender.sendMessage(ChatColor.YELLOW + "  /bw leave" + ChatColor.GRAY
+                    + " - stop searching / leave your match");
+            // Live network numbers, so a player can see the queue is real and moving
+            // instead of staring at a blank chat after typing /bw queue.
+            var query = plugin.controllerQuery();
+            if (query != null && query.configured()) {
+                query.arenaStatus().thenAccept(status -> plugin.getServer().getScheduler()
+                        .runTask(plugin, () -> {
+                            if (status.isEmpty()) {
+                                sender.sendMessage(ChatColor.GRAY + "  network: the controller is not answering");
+                                return;
+                            }
+                            for (String group : status.keySet()) {
+                                var state = status.getAsJsonObject(group);
+                                sender.sendMessage(ChatColor.GRAY + "  " + group + ": "
+                                        + ChatColor.YELLOW + state.get("queued").getAsInt() + " queued"
+                                        + ChatColor.GRAY + ", " + ChatColor.YELLOW + state.get("servers").getAsInt()
+                                        + " server(s)" + ChatColor.GRAY + ", " + ChatColor.YELLOW
+                                        + state.get("freeSlots").getAsInt() + " slot(s) free");
+                            }
+                        }));
+            }
             return;
         }
         List<Game> games = plugin.host().games();
@@ -224,6 +246,13 @@ public final class BedwarsCommand implements CommandExecutor, TabCompleter {
     private void leave(CommandSender sender) {
         if (!(sender instanceof Player player)) {
             sender.sendMessage(ChatColor.RED + "Players only.");
+            return;
+        }
+        if (plugin.lobbyQueue().isSearching(player.getUniqueId())) {
+            // Waiting in the lobby: cancelling has to reach the proxy too, or it keeps
+            // searching and moves the player anyway.
+            plugin.lobbyQueue().cancel(player);
+            player.sendMessage(ChatColor.YELLOW + "You left the queue.");
             return;
         }
         if (!plugin.joinService().isPlaying(player)) {

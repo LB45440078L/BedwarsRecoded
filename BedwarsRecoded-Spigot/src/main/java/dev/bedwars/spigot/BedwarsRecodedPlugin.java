@@ -147,6 +147,9 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
 
     private final Map<String, Integer> countdownRemaining = new ConcurrentHashMap<>();
 
+    /** Read-only controller view for in-game operator tooling (see /bwadmin). */
+    private dev.bedwars.spigot.admin.ControllerQuery query;
+
     @Override
     public void onEnable() {
         saveDefaultConfig();
@@ -207,6 +210,7 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         this.joinMenu = new JoinMenu(joinService, host);
         registerListeners();
         getCommand("bedwars").setExecutor(new BedwarsCommand(this));
+        registerAdminCommand();
         getServer().getScheduler().runTaskTimer(this, this::tick, 20L, 20L);
         getServer().getScheduler().runTaskTimer(this, tpsMeter::tick, 0L, 1L);
         getServer().getScheduler().runTaskTimer(this, this::applyTeamEffects, 40L, 40L);
@@ -242,6 +246,7 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         pm.registerEvents(new LobbyQueueListener(lobbyQueue), this);
         pm.registerEvents(new LobbyProtectionListener(config.lobbyWorldName()), this);
         getCommand("bedwars").setExecutor(new BedwarsCommand(this));
+        registerAdminCommand();
         LOG.info("bedwars_setup role=LOBBY lobby_world={} server_id={} return_to_lobby={} "
                         + "controller_reporting=disabled (a lobby must never be routed players as a match host)",
                 config.lobbyWorldName(), config.serverId(), config.returnToLobby());
@@ -779,6 +784,35 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
     }
 
     /** The lobby's matchmaking client; null on a match host. */
+    /**
+     * Registers {@code /bwadmin}, the in-game view of the whole network.
+     *
+     * <p>Both roles register it: an operator debugging matchmaking is as likely to be
+     * standing in the lobby as on a game server, and the command only reads from the
+     * controller either way.
+     */
+    private void registerAdminCommand() {
+        query = new dev.bedwars.spigot.admin.ControllerQuery(config.controllerBaseUrl(),
+                config.controllerApiToken());
+        var command = getCommand("bwadmin");
+        if (command == null) {
+            // Without the declaration in plugin.yml the command does not exist at all;
+            // say so rather than let the subcommands silently do nothing.
+            LOG.warn("Command 'bwadmin' is not declared in plugin.yml; the network admin views are unavailable");
+            return;
+        }
+        var admin = new dev.bedwars.spigot.admin.AdminCommand(this, query);
+        command.setExecutor(admin);
+        command.setTabCompleter(admin);
+        LOG.info("network_admin_command=/bwadmin controller={} controller_auth={}",
+                config.controllerBaseUrl(), query.authenticated() ? "token" : "none");
+    }
+
+    /** The read-only controller view; never null after onEnable, but may be unconfigured. */
+    public dev.bedwars.spigot.admin.ControllerQuery controllerQuery() {
+        return query;
+    }
+
     public LobbyQueueService lobbyQueue() {
         return lobbyQueue;
     }

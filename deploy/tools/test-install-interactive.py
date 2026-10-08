@@ -19,7 +19,10 @@ and writes nothing. Requires a POSIX host with a pty (Linux or macOS).
     $ deploy/tools/test-install-interactive.py
 
 If you reword a prompt in install.sh, update the prompt strings below; the test
-says which step it stalled on rather than passing quietly.
+says which step it stalled on rather than passing quietly. Match on a stable stem
+("Which server engine"), never on the full sentence including its punctuation: a
+trailing "?" that the rewrite dropped turns into "stalled at step N still waiting
+for ...", which reads like an installer hang and is not one.
 """
 import os
 import pty
@@ -38,7 +41,7 @@ INSTALLER = os.path.join(REPO_ROOT, "install.sh")
 SCRIPT = [
     ("Where should the network run?", "1"),          # Docker
     ("Which services?", "4"),                        # Everything
-    ("Which server engine?", "1"),                   # Spigot
+    ("Which server engine", "1"),                    # Spigot
     ("Database name", ""),                           # accept the defaults
     ("Database user", ""),
     ("Published MySQL port", ""),
@@ -56,6 +59,7 @@ SCRIPT = [
     ("Replace the bundled arena", "n"),
     ("a]bort", "e"),                                 # edit, not continue
     ("Which services?", "3"),                        # now Full network
+    ("Which server engine", "1"),                    # now asked for this stack too
     ("Database name", ""),
     ("Database user", ""),
     ("Published MySQL port", ""),
@@ -80,6 +84,11 @@ CHECKS = [
     ("the first pass used the chosen stack", lambda t: "stack: everything" in t),
     ("the re-run used the new stack", lambda t: "stack: network" in t),
     ("the engine choice was honoured", lambda t: "engine: spigot" in t),
+    #  The reported gap: the engine question only appeared for two of the four stack
+    #  choices, so picking the player-facing "Full network" never asked Spigot or Paper.
+    #  Both passes ask it now, and the second pass is the network one.
+    ("the engine question is asked for the Full network stack too",
+     lambda t: t.count("Which server engine") >= 2),
     # Capacity is servers x matches-per-server: 7 x 5 must be reported as 35.
     ("the capacity arithmetic is shown to the user",
      lambda t: "= 35 matches at once" in t),

@@ -12,7 +12,7 @@
   <a href="https://kubernetes.io/"><img src="https://img.shields.io/badge/Kubernetes-native-326CE5?logo=kubernetes&amp;logoColor=white" alt="Kubernetes"></a>
   <a href="https://helm.sh/"><img src="https://img.shields.io/badge/Helm-chart-0F1689?logo=helm&amp;logoColor=white" alt="Helm chart"></a>
   <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-images-2496ED?logo=docker&amp;logoColor=white" alt="Docker images"></a>
-  <a href="#-testing"><img src="https://img.shields.io/badge/tests-197%20passing-brightgreen" alt="Tests"></a>
+  <a href="#-testing"><img src="https://img.shields.io/badge/tests-209%20passing-brightgreen" alt="Tests"></a>
   <a href="#-build"><img src="https://img.shields.io/badge/plugin%20JAR-%3C%204%20MB-brightgreen" alt="Plugin JAR under 4 MB"></a>
   <a href="https://github.com/LB45440078L/BedwarsRecoded/issues"><img src="https://img.shields.io/badge/PRs-welcome-blueviolet" alt="PRs welcome"></a>
 </p>
@@ -100,6 +100,12 @@ Spigot adapter:
   on elimination, sign join, NPC join (named entity `[bedwars]`), quick-buy sync.
 - Join via command (`/bw join`), sign, GUI, or NPC; `/bw status|start|stop|shop|
   quickbuy|upgrades|gui|lang|reload`.
+- **Matchmaking feedback**: while the proxy is searching, a live action bar shows the real
+  queue depth, server count and free match slots (polled from the controller); chat announces
+  queue → match found → gave up, and `/bw leave` cancels the search on the controller too.
+- **Operator views from inside the game** (`/bwadmin status|servers|queue|infra`,
+  `bedwars.admin`): fleet health, per-server free slots, per-group queue depth, and a diagnosis
+  line that says *why* a queue is or is not moving — no host or Docker access needed.
 - Pod reporting to the controller (ready/started/ended/heartbeat/draining). A periodic
   heartbeat carries **TPS, player count, phase and uptime** (`TpsMeter`).
 - Periodic async **leaderboard refresh** (no per-request DB read).
@@ -185,7 +191,7 @@ by the server at startup, so they are never shaded.
 ## 🧪 Testing
 
 JUnit 5 + AssertJ. `Core` is deliberately Bukkit-free, so game logic is tested with
-plain JUnit — no server, no mocking framework. The suite is **197 tests**:
+plain JUnit — no server, no mocking framework. The suite is **209 tests**:
 
 - **Core (95)** — game lifecycle, and the win condition in particular
   (`WinConditionTest`): a match must reach a single survivor even when the arena
@@ -200,11 +206,12 @@ plain JUnit — no server, no mocking framework. The suite is **197 tests**:
   reporting (`HttpPodReporterTest` reads the `X-Bedwars-Token` header off a real HTTP
   server, and asserts no header is sent when no token is configured), template sources, and
   `SpigotOnlyApiTest`, which enforces the Spigot-only constraint.
-- **Controller (62)** — queue dispatch over real HTTP (`WebhookServerTest`), token
+- **Controller (74)** — queue dispatch over real HTTP (`WebhookServerTest`), token
   authentication (`WebhookServerAuthTest`), the match-slot capacity model
-  (`ServerRegistryTest`), `DockerProvisionerTest` (fake runner: asserts the provisioned
-  container is handed the token when one is set, and not handed an empty one when it is
-  not), `PrewarmGuardTest`
+  (`ServerRegistryTest`, including a request that names no group or names `any`, which is what
+  the proxy sends — it must be served by any registered server), `DockerProvisionerTest`
+  (fake runner: asserts the provisioned container is handed the token when one is set, and not
+  handed an empty one when it is not), `PrewarmGuardTest`
   (a booting server must not be re-pre-warmed), `ScaleDownPolicyTest`,
   and an opt-in `DockerProvisionerIntegrationTest` that drives a
   **real** Docker daemon: it provisions an actual container, health-checks it, reclaims

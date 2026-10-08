@@ -1,6 +1,8 @@
 package dev.bedwars.controller.pod;
 
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.List;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Optional;
@@ -52,12 +54,47 @@ public final class ServerRegistry {
     /** Reserves one match slot on the busiest server with room (packing keeps servers full). */
     public synchronized Optional<String> allocate(String group) {
         return servers.entrySet().stream()
-                .filter(entry -> entry.getValue().group.equals(group) && entry.getValue().free.get() > 0)
+                .filter(entry -> matchesGroup(entry.getValue().group, group) && entry.getValue().free.get() > 0)
                 .min(Comparator.comparingInt(entry -> entry.getValue().free.get()))
                 .map(entry -> {
                     entry.getValue().free.decrementAndGet();
                     return entry.getKey();
                 });
+    }
+
+    /**
+     * Does a server hosting {@code serverGroup} satisfy a request for {@code requested}?
+     *
+     * <p>A request that names no group -- null, blank, or the "any" placeholder -- matches
+     * every server: the player wants a match and a server is a match. Requiring the literal
+     * string to be equal is a deadlock in production, not a strictness win: servers register
+     * under the arena group they actually host (solo/doubles/…), so a queue request carrying
+     * "any" matches nothing, forever, and the whole lobby waits while capacity sits idle.
+     */
+    private static boolean matchesGroup(String serverGroup, String requested) {
+        if (requested == null) {
+            return true;
+        }
+        String wanted = requested.trim();
+        if (wanted.isEmpty() || "any".equalsIgnoreCase(wanted)) {
+            return true;
+        }
+        return serverGroup.equalsIgnoreCase(wanted);
+    }
+
+    /** A read-only view of one server, for operator tooling. */
+    public record Snapshot(String serverId, String group, int capacity, int freeSlots, boolean idle) {
+    }
+
+    /** Every registered server, by id. Cheap: this is what an admin command renders. */
+    public synchronized List<Snapshot> snapshot() {
+        List<Snapshot> list = new ArrayList<>();
+        servers.forEach((id, entry) -> {
+            int free = entry.free.get();
+            list.add(new Snapshot(id, entry.group, entry.capacity, free, free >= entry.capacity));
+        });
+        list.sort(Comparator.comparing(Snapshot::serverId));
+        return list;
     }
 
     /** A match ended on the server: give the slot back. */
@@ -85,6 +122,15 @@ public final class ServerRegistry {
         Map<String, Integer> counts = new java.util.LinkedHashMap<>();
         for (Entry entry : servers.values()) {
             counts.merge(entry.group, entry.free.get(), Integer::sum);
+        }
+        return counts;
+    }
+
+    /** How many servers host each group. */
+    public synchronized Map<String, Integer> serverCountByGroup() {
+        Map<String, Integer> counts = new java.util.LinkedHashMap<>();
+        for (Entry entry : servers.values()) {
+            counts.merge(entry.group, 1, Integer::sum);
         }
         return counts;
     }

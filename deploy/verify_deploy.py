@@ -314,11 +314,51 @@ def verify_lobby() -> None:
     compose_text = COMPOSE.read_text(encoding="utf-8")
     check('BEDWARS_ROLE: "LOBBY"' in compose_text,
           "compose: the lobby service must run in LOBBY role")
+    #  The reported failure: the installer asked for a maximum and wrote it into .env, and the
+    #  Compose controller never read that name, so the cap was silently the controller's own
+    #  default. A configured limit that nothing consumes is worse than no limit at all.
+    for env, why in (("BEDWARS_MIN_SERVERS", "the floor of the fleet"),
+                     ("BEDWARS_MAX_SERVERS", "the cap that stops endless pre-warming"),
+                     ("BEDWARS_GAMES_PER_SERVER", "matches per server, half of the capacity"),
+                     ("BEDWARS_ARENA_GROUP", "the group a queueless request resolves to")):
+        check(env in compose_text, f"compose: the controller must be given {env} ({why})")
+    installer_text = (ROOT / "install.sh").read_text(encoding="utf-8")
+    for env in ("BEDWARS_MIN_SERVERS", "BEDWARS_MAX_SERVERS", "BEDWARS_GAMES_PER_SERVER",
+                "BEDWARS_ARENA_GROUP"):
+        check(env in installer_text,
+              f"install.sh: the installer must write {env} into .env (names must match Compose)")
+    #  Every stack whose controller can start a game server needs that image built.
+    check("game-pod" in installer_text and "network" in installer_text,
+          "install.sh: the network stack must build the game image the controller provisions from")
     check("LOBBY_SERVER" in compose_text,
           "compose: velocity must be told which registered server is the lobby")
 
+    #  The controller resolves a request that names no group to its own arena group, while
+    #  the game pods register under theirs. If the two disagree, no registered server can
+    #  ever satisfy a queued player and nobody is ever placed - the Docker path had exactly
+    #  this bug. Pin the two sides together on both deployment paths.
+    def env_of(text: str, name: str):
+        match = re.search(r"-\s*name:\s*" + name + r"\s*\n\s*value:\s*\"?([^\"\n]+)\"?", text)
+        return match.group(1).strip() if match else None
+
+    k8s_dir = ROOT / "deploy" / "k8s"
+    k8s_pods = (k8s_dir / "10-gameserverset.yaml").read_text(encoding="utf-8")
+    k8s_ctl = (k8s_dir / "40-controller.yaml").read_text(encoding="utf-8")
+    pods_group = env_of(k8s_pods, "BEDWARS_ARENA_GROUP")
+    ctl_group = env_of(k8s_ctl, "BEDWARS_ARENA_GROUP")
+    check(pods_group is not None, "k8s: game pods must declare BEDWARS_ARENA_GROUP")
+    check(ctl_group is not None,
+          "k8s: the controller must be told BEDWARS_ARENA_GROUP (a blank request resolves to it)")
+    check(pods_group == ctl_group,
+          f"k8s: controller group ({ctl_group}) must equal the pods' group ({pods_group})")
+
     helm = ROOT / "deploy" / "helm" / "bedwars"
     check((helm / "templates" / "lobby.yaml").exists(), "helm: no lobby template")
+    helm_gs = (helm / "templates" / "gameserverset.yaml").read_text(encoding="utf-8")
+    helm_ctl = (helm / "templates" / "controller.yaml").read_text(encoding="utf-8")
+    check(".Values.arena.group" in helm_gs, "helm: game pods must take BEDWARS_ARENA_GROUP from arena.group")
+    check(".Values.arena.group" in helm_ctl,
+          "helm: the controller must take BEDWARS_ARENA_GROUP from the same value")
     values = helm / "values.yaml"
     if values.exists():
         body = values.read_text(encoding="utf-8")

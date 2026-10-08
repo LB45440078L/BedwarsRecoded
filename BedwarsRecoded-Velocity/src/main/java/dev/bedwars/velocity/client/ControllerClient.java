@@ -13,6 +13,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -65,6 +66,60 @@ public final class ControllerClient {
         return http.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofString())
                 .thenApply(response -> parse(response.body()))
                 .exceptionally(error -> DispatchResult.retry(1_000L));
+    }
+
+    /**
+     * Tells the controller a player has stopped waiting.
+     *
+     * <p>Without this the entry stays counted, and the queue depth is what pre-warming
+     * scales on: a player who gave up or logged out went on starting servers.
+     */
+    public CompletableFuture<Void> dequeue(UUID player) {
+        String body = "{\"player\":\"" + player + "\"}";
+        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(baseUrl + "/lobby/dequeue"))
+                .timeout(Duration.ofSeconds(5))
+                .header("Content-Type", "application/json");
+        if (!apiToken.isBlank()) {
+            builder.header(TOKEN_HEADER, apiToken);
+        }
+        return http.sendAsync(builder.POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8)).build(),
+                        HttpResponse.BodyHandlers.ofString())
+                .thenApply(response -> (Void) null)
+                .exceptionally(error -> null);
+    }
+
+    /** Live per-group state: how many are waiting and how many match slots are free. */
+    public record GroupStatus(int queued, int freeSlots, int servers) {
+    }
+
+    /**
+     * The queue and capacity view the lobby shows while a player waits. Read-only, so it
+     * works even when the controller has no token configured.
+     */
+    public CompletableFuture<Map<String, GroupStatus>> arenaStatus() {
+        HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + "/lobby/arena-status"))
+                .timeout(Duration.ofSeconds(5))
+                .GET()
+                .build();
+        return http.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+                .thenApply(response -> parseStatus(response.body()))
+                .exceptionally(error -> Map.of());
+    }
+
+    private Map<String, GroupStatus> parseStatus(String json) {
+        JsonObject object = gson.fromJson(json, JsonObject.class);
+        if (object == null) {
+            return Map.of();
+        }
+        Map<String, GroupStatus> status = new java.util.LinkedHashMap<>();
+        for (String group : object.keySet()) {
+            JsonObject entry = object.getAsJsonObject(group);
+            status.put(group, new GroupStatus(
+                    entry.has("queued") ? entry.get("queued").getAsInt() : 0,
+                    entry.has("freeSlots") ? entry.get("freeSlots").getAsInt() : 0,
+                    entry.has("servers") ? entry.get("servers").getAsInt() : 0));
+        }
+        return status;
     }
 
     private DispatchResult parse(String json) {

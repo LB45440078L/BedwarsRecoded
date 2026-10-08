@@ -68,20 +68,34 @@ public final class QueueManager {
         return result;
     }
 
-    public void dequeue(UUID player) {
+    /**
+     * Forgets a player's waiting requests.
+     *
+     * <p>Every path that stops waiting has to come through here. An entry left behind
+     * keeps inflating {@link #totalDepth()}, which is what pre-warming scales on -- so a
+     * request that timed out but stays queued keeps starting servers for a player who is
+     * no longer waiting.
+     *
+     * @return how many entries were removed
+     */
+    public int dequeue(UUID player) {
+        int removed = 0;
         lock.lock();
         try {
-            pending.removeIf(entry -> {
-                if (!matches(entry.request(), player)) {
-                    return false;
+            var iterator = pending.iterator();
+            while (iterator.hasNext()) {
+                Entry entry = iterator.next();
+                if (matches(entry.request(), player)) {
+                    iterator.remove();
+                    decrement(entry.request());
+                    entry.result().complete(DispatchResult.retry(0L));
+                    removed++;
                 }
-                entry.result().complete(DispatchResult.retry(0L));
-                decrement(entry.request());
-                return true;
-            });
+            }
         } finally {
             lock.unlock();
         }
+        return removed;
     }
 
     /** Attempts to place as many waiting entries as capacity allows. */
@@ -113,8 +127,14 @@ public final class QueueManager {
                 || request.party().map(party -> party.contains(player)).orElse(false);
     }
 
+    /** The group placeholder for "this player does not care which group they play". */
+    public static final String ANY_GROUP = "any";
+
     private static String groupOf(QueueRequest request) {
-        return request.preferredGroup().orElse("any");
+        return request.preferredGroup()
+                .map(String::trim)
+                .filter(group -> !group.isEmpty())
+                .orElse(ANY_GROUP);
     }
 
     private void decrement(QueueRequest request) {

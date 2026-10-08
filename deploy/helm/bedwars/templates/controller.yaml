@@ -38,6 +38,12 @@ spec:
             # Shared secret for the controller's mutating endpoints. optional=true: when
             # no token is configured the Secret does not exist and the variable stays
             # unset, which the controller reads as "run open".
+            #  Must match the group the game pods register under (.Values.arena.group).
+            #  A request that names no group resolves to this value on the controller; if
+            #  the two disagree, no registered server can ever satisfy a queued player -
+            #  the Docker path had precisely this bug, silently, for the same reason.
+            - name: BEDWARS_ARENA_GROUP
+              value: {{ .Values.arena.group | quote }}
             - name: BEDWARS_API_TOKEN
               valueFrom:
                 secretKeyRef:

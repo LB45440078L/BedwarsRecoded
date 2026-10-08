@@ -108,4 +108,45 @@ class ServerRegistryTest {
         // s2 is now exhausted, so the next allocation goes to the only server with room.
         assertThat(registry.allocate("solo")).contains("s1");
     }
+    //  Reported from a live network: three players queued in solo, servers registered
+    //  as "solo", and NOT ONE of them was ever placed -- while the fleet kept growing.
+    //  The lobby asks for a match without naming a group, the controller passed the
+    //  placeholder "any" straight through, and an exact-match lookup found nothing.
+    @Test
+    void aRequestThatNamesNoGroupIsServedByAnyServer() {
+        ServerRegistry registry = new ServerRegistry();
+        registry.register("server-1", "solo", 3);
+
+        assertThat(registry.allocate("any")).contains("server-1");
+        assertThat(registry.allocate(null)).contains("server-1");
+        assertThat(registry.allocate("")).contains("server-1");
+        assertThat(registry.freeSlots("solo")).isZero();
+    }
+
+    @Test
+    void aNamedGroupIsStillMatchedExactly() {
+        ServerRegistry registry = new ServerRegistry();
+        registry.register("server-1", "solo", 2);
+        registry.register("server-2", "doubles", 2);
+
+        assertThat(registry.allocate("doubles")).contains("server-2");
+        assertThat(registry.freeSlots("solo")).isEqualTo(2);   // untouched
+    }
+
+    @Test
+    void snapshotReportsEveryServerForOperatorViews() {
+        ServerRegistry registry = new ServerRegistry();
+        registry.register("server-2", "solo", 2);
+        registry.register("server-1", "solo", 3);
+        registry.allocate("solo");      // server-1 is now busy
+
+        var snapshot = registry.snapshot();
+        assertThat(snapshot).extracting(ServerRegistry.Snapshot::serverId)
+                .containsExactly("server-1", "server-2");
+        // Allocation packs the fullest server first, so server-2 (the 2-slot one) took it.
+        assertThat(snapshot.get(0).freeSlots()).isEqualTo(3);
+        assertThat(snapshot.get(0).idle()).isTrue();
+        assertThat(snapshot.get(1).freeSlots()).isEqualTo(1);
+        assertThat(snapshot.get(1).idle()).isFalse();
+    }
 }

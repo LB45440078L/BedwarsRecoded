@@ -12,6 +12,7 @@ import com.velocitypowered.api.proxy.ServerConnection;
 import com.velocitypowered.api.proxy.messages.MinecraftChannelIdentifier;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
 import com.velocitypowered.api.proxy.server.ServerInfo;
+import com.velocitypowered.api.scheduler.ScheduledTask;
 import dev.bedwars.api.service.DispatchResult;
 import dev.bedwars.velocity.client.ControllerClient;
 import net.kyori.adventure.text.Component;
@@ -22,6 +23,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -57,6 +59,7 @@ public final class BedwarsVelocityPlugin {
 
     private static final String CHANNEL_QUEUE = "bedwars:queue";
     private static final String CHANNEL_RETURN = "bedwars:return";
+    private static final String CHANNEL_LEAVE = "bedwars:leave";
     private static final int DEFAULT_GAME_PORT = 25565;
 
     private final ProxyServer proxy;
@@ -66,6 +69,17 @@ public final class BedwarsVelocityPlugin {
 
     /** In-flight queue requests, so one player cannot stack up several. */
     private final Set<UUID> queued = ConcurrentHashMap.newKeySet();
+
+    /**
+     * The repeating "you are still in the queue" task per waiting player.
+     *
+     * <p>A player who queues used to be told once and then left staring at nothing, with no
+     * way to tell "searching" from "broken". The status line is the difference.
+     */
+    private final Map<UUID, ScheduledTask> feedback = new ConcurrentHashMap<>();
+
+    /** How often the waiting-status line refreshes. */
+    private static final long FEEDBACK_INTERVAL_MILLIS = 2_000L;
 
     @Inject
     public BedwarsVelocityPlugin(ProxyServer proxy, Logger logger) {
@@ -82,6 +96,7 @@ public final class BedwarsVelocityPlugin {
         this.controller = new ControllerClient(baseUrl, apiToken);
         proxy.getChannelRegistrar().register(MinecraftChannelIdentifier.create("bedwars", "queue"));
         proxy.getChannelRegistrar().register(MinecraftChannelIdentifier.create("bedwars", "return"));
+        proxy.getChannelRegistrar().register(MinecraftChannelIdentifier.create("bedwars", "leave"));
         logger.info("BedwarsRecoded proxy initialised; controller={} controller_auth={} lobby={} pod_suffix='{}'",
                 baseUrl, apiToken.isBlank() ? "none" : "token", lobbyServer(), podSuffix());
         if (proxy.getServer(lobbyServer()).isEmpty()) {
@@ -104,6 +119,12 @@ public final class BedwarsVelocityPlugin {
                         "The lobby is unavailable right now - please try again shortly.", NamedTextColor.RED)));
     }
 
+    /** A player who logs out must not keep a phantom queue entry inflating the depth. */
+    @Subscribe
+    public void onDisconnect(com.velocitypowered.api.event.connection.DisconnectEvent event) {
+        abandonQueue(event.getPlayer());
+    }
+
     @Subscribe
     public void onPluginMessage(PluginMessageEvent event) {
         if (!(event.getSource() instanceof ServerConnection source)) {
@@ -116,6 +137,9 @@ public final class BedwarsVelocityPlugin {
         } else if (CHANNEL_RETURN.equals(channel)) {
             event.setResult(PluginMessageEvent.ForwardResult.handled());
             handleReturn(source, new String(event.getData(), StandardCharsets.UTF_8).trim());
+        } else if (CHANNEL_LEAVE.equals(channel)) {
+            event.setResult(PluginMessageEvent.ForwardResult.handled());
+            handleLeave(new String(event.getData(), StandardCharsets.UTF_8).trim());
         }
     }
 
@@ -138,8 +162,72 @@ public final class BedwarsVelocityPlugin {
         if (!queued.add(id)) {
             return; // already waiting
         }
-        player.sendMessage(Component.text("Searching for a match...", NamedTextColor.YELLOW));
+        player.sendMessage(Component.text("Searching for a solo match...", NamedTextColor.YELLOW)
+                .append(Component.text(" you will be moved automatically when a game frees up.",
+                        NamedTextColor.GRAY)));
+        startFeedback(player);
         requestSlot(player, 0);
+    }
+
+    /**
+     * Keeps a waiting player informed: how many are queueing and what capacity exists.
+     * Purely informational, so a failed status fetch leaves the previous line alone.
+     */
+    private void startFeedback(Player player) {
+        stopFeedback(player.getUniqueId());
+        ScheduledTask task = proxy.getScheduler()
+                .buildTask(this, () -> showQueueStatus(player))
+                .repeat(Duration.ofMillis(FEEDBACK_INTERVAL_MILLIS))
+                .schedule();
+        feedback.put(player.getUniqueId(), task);
+    }
+
+    private void stopFeedback(UUID player) {
+        ScheduledTask task = feedback.remove(player);
+        if (task != null) {
+            task.cancel();
+        }
+    }
+
+    private void showQueueStatus(Player player) {
+        if (!queued.contains(player.getUniqueId()) || !player.isActive()) {
+            stopFeedback(player.getUniqueId());
+            return;
+        }
+        controller.arenaStatus().thenAccept(status -> {
+            if (!queued.contains(player.getUniqueId()) || !player.isActive()) {
+                return;
+            }
+            int waiting = status.values().stream().mapToInt(ControllerClient.GroupStatus::queued).sum();
+            int free = status.values().stream().mapToInt(ControllerClient.GroupStatus::freeSlots).sum();
+            int servers = status.values().stream().mapToInt(ControllerClient.GroupStatus::servers).sum();
+            String capacity = free > 0
+                    ? free + (free == 1 ? " match slot free" : " match slots free")
+                    : "no free slot yet - starting a server";
+            player.sendActionBar(Component.text("Searching for a match", NamedTextColor.YELLOW)
+                    .append(Component.text("  |  " + waiting + " in queue  |  " + servers
+                            + (servers == 1 ? " server  |  " : " servers  |  ") + capacity, NamedTextColor.GRAY)));
+        });
+    }
+
+    /** The player stopped waiting: drop the entry on the controller so the depth stays true. */
+    private void abandonQueue(Player player) {
+        if (queued.remove(player.getUniqueId())) {
+            stopFeedback(player.getUniqueId());
+            controller.dequeue(player.getUniqueId());
+        }
+    }
+
+    /** A backend cancelled one of its players' queue requests. */
+    private void handleLeave(String uuidText) {
+        UUID id;
+        try {
+            id = UUID.fromString(uuidText);
+        } catch (IllegalArgumentException e) {
+            logger.warn("Ignoring a malformed queue cancellation: '{}'", uuidText);
+            return;
+        }
+        proxy.getPlayer(id).ifPresent(this::abandonQueue);
     }
 
     /**
@@ -162,14 +250,19 @@ public final class BedwarsVelocityPlugin {
 
     private void onDispatch(Player player, int attempt, DispatchResult result) {
         if (result.successful()) {
+            stopFeedback(player.getUniqueId());
             queued.remove(player.getUniqueId());
             transferToPod(player, result.podAddress());
             return;
         }
-        int maxAttempts = intEnv("QUEUE_RETRY_ATTEMPTS", 12);
+        // Patient by default: waiting a couple of minutes for a server to boot is normal,
+        // and giving up after a few seconds read as "queueing does nothing".
+        int maxAttempts = intEnv("QUEUE_RETRY_ATTEMPTS", 30);
         if (attempt >= maxAttempts) {
+            stopFeedback(player.getUniqueId());
             queued.remove(player.getUniqueId());
-            player.sendMessage(Component.text("Still no free match after waiting. Try again in a moment.",
+            controller.dequeue(player.getUniqueId());
+            player.sendMessage(Component.text("No match was available after a few minutes - please try again.",
                     NamedTextColor.RED));
             logger.info("Gave up queueing {} after {} attempts", player.getUsername(), attempt);
             return;
@@ -193,6 +286,9 @@ public final class BedwarsVelocityPlugin {
             return;
         }
         RegisteredServer server = serverForPod(podAddress);
+        player.sendMessage(Component.text("Match found", NamedTextColor.GREEN)
+                .append(Component.text(" - sending you to " + server.getServerInfo().getName() + "...",
+                        NamedTextColor.GRAY)));
         player.createConnectionRequest(server).fireAndForget();
         logger.info("Sending {} to game server {}", player.getUsername(), server.getServerInfo().getName());
     }

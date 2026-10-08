@@ -82,6 +82,28 @@ class WebhookServerTest {
         return http.send(request, HttpResponse.BodyHandlers.ofString());
     }
 
+    /** A ready report; the group is what the server actually hosts. */
+    private static String readyBody(String podId, String group, int capacity) {
+        return "{\"podId\":\"" + podId + "\",\"arenaGroup\":\"" + group + "\",\"capacity\":" + capacity + "}";
+    }
+
+    /** A lobby queue request; a null group means "this lobby does not care which group". */
+    private static String queueBody(UUID player, String group) {
+        String groupField = group == null ? "" : "\"preferredGroup\":\"" + group + "\",";
+        return "{\"player\":\"" + player + "\",\"username\":\"steve\"," + groupField
+                + "\"priority\":0,\"requestedAtMillis\":1}";
+    }
+
+    /** Total players waiting, across every arena group. */
+    private int depth() throws Exception {
+        JsonObject json = JsonSupport.gson().fromJson(get("/queue/depth").body(), JsonObject.class);
+        int total = 0;
+        for (String key : json.keySet()) {
+            total += json.get(key).getAsInt();
+        }
+        return total;
+    }
+
     @Test
     void healthzIsOk() throws Exception {
         HttpResponse<String> response = get("/healthz");
@@ -178,4 +200,65 @@ class WebhookServerTest {
         assertThat(response.statusCode()).isEqualTo(400);
         assertThat(response.body()).contains("bad_request");
     }
+
+    //  The live failure this pins: three players queued for solo, the fleet grew, and
+    //  nobody was ever placed. The lobby's request carries no arena group, so it was
+    //  matched against the literal placeholder "any" while the servers had registered
+    //  as "solo" -- no match, ever, and no error either.
+    @Test
+    void aGroupLessLobbyRequestIsDispatchedToTheRealArenaGroup() throws Exception {
+        post("/pods/ready", readyBody("game-1", "solo", 25));
+
+        String body = post("/lobby/queue", queueBody(UUID.randomUUID(), null)).body();
+        assertThat(body).contains("\"podAddress\":\"game-1\"");
+    }
+
+    @Test
+    void anEmptyGroupFieldIsTreatedAsNoPreference() throws Exception {
+        post("/pods/ready", readyBody("game-1", "solo", 25));
+
+        String body = post("/lobby/queue", queueBody(UUID.randomUUID(), "")).body();
+        assertThat(body).contains("\"podAddress\":\"game-1\"");
+    }
+
+    @Test
+    void aNamedGroupIsStillHonoured() throws Exception {
+        post("/pods/ready", readyBody("game-1", "solo", 25));
+
+        String body = post("/lobby/queue", queueBody(UUID.randomUUID(), "doubles")).body();
+        // The key is always present; null is how "not dispatched" is spelled.
+        assertThat(body).contains("\"podAddress\":null");
+    }
+
+    //  Depth is what pre-warming scales on, so a request that has stopped waiting must not
+    //  stay counted: the old path left the entry behind on every retry.
+    @Test
+    void aTimedOutRequestDoesNotLeakIntoTheQueueDepth() throws Exception {
+        UUID player = UUID.randomUUID();
+        String request = queueBody(player, null);
+
+        String first = post("/lobby/queue", request).body();   // nothing ready: it times out
+        assertThat(first).contains("\"podAddress\":null");
+        assertThat(depth()).isZero();
+
+        post("/lobby/queue", request);                         // a retry must not stack up
+        assertThat(depth()).isZero();
+    }
+
+    @Test
+    void dequeueRemovesAWaitingPlayer() throws Exception {
+        UUID player = UUID.randomUUID();
+        String notify = "{\"player\":\"" + player + "\"}";
+        HttpResponse<String> response = post("/lobby/dequeue", notify);
+        assertThat(response.body()).contains("\"removed\":0");
+    }
+
+    @Test
+    void serversEndpointListsWhatTheFleetHas() throws Exception {
+        post("/pods/ready", readyBody("game-1", "solo", 3));
+
+        HttpResponse<String> response = get("/servers");
+        assertThat(response.body()).contains("game-1").contains("\"freeSlots\":3").contains("\"idle\":true");
+    }
+
 }

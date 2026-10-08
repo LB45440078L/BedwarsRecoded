@@ -14,6 +14,13 @@ libraries:
   - "com.zaxxer:HikariCP:6.3.0"
   - "com.mysql:mysql-connector-j:9.3.0"
 commands:
+  bwadmin:
+    description: "Network administration: fleet, capacity and queue, from inside the game."
+    aliases: [ bwa, bwnet ]
+    permission: bedwars.admin
+    # Gated by `permission:` above rather than in code, because this command is only ever
+    # for operators: without declaring it here it does not exist at all, and any typo in
+    # the node would silently deny every admin (Bukkit treats undeclared nodes as FALSE).
   bedwars:
     description: "Bedwars game-pod administration."
     aliases: [ bw ]
@@ -28,7 +35,7 @@ commands:
 # included.
 permissions:
   bedwars.admin:
-    description: "Administrative subcommands (start, stop, create, upgrades, reload)."
+    description: "Administrative subcommands (start, stop, create, upgrades, reload) and /bwadmin."
     default: op
   bedwars.lobby.build:
     description: "Build in the network lobby: place the matchmaking signs and NPCs. The hub

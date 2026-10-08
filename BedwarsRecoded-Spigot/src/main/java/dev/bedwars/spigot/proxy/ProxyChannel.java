@@ -31,6 +31,7 @@ public final class ProxyChannel {
 
     public static final String CHANNEL_QUEUE = "bedwars:queue";
     public static final String CHANNEL_RETURN = "bedwars:return";
+    public static final String CHANNEL_LEAVE = "bedwars:leave";
 
     private ProxyChannel() {
     }
@@ -40,6 +41,7 @@ public final class ProxyChannel {
         var messenger = plugin.getServer().getMessenger();
         messenger.registerOutgoingPluginChannel(plugin, CHANNEL_QUEUE);
         messenger.registerOutgoingPluginChannel(plugin, CHANNEL_RETURN);
+        messenger.registerOutgoingPluginChannel(plugin, CHANNEL_LEAVE);
     }
 
     /**
@@ -59,6 +61,16 @@ public final class ProxyChannel {
      */
     public static boolean requestReturn(Plugin plugin, Player carrier, String payload) {
         return send(plugin, carrier, CHANNEL_RETURN, payload == null ? "" : payload);
+    }
+
+    /**
+     * Tells the proxy to stop looking for a match for {@code player}.
+     *
+     * <p>Without it, "/bw leave" only forgot the request locally: the proxy kept retrying
+     * and would still move the player into a match they had cancelled.
+     */
+    public static boolean requestLeave(Plugin plugin, Player player) {
+        return send(plugin, player, CHANNEL_LEAVE, player.getUniqueId().toString());
     }
 
     private static boolean send(Plugin plugin, Player carrier, String channel, String payload) {

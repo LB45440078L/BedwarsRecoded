@@ -996,6 +996,69 @@ $ curl -s localhost:8080/infra | python3 -c "import json,sys; print(json.load(sy
 If step 3 returns anything but `0` while only the lobby and the proxy are up, the lobby is
 misconfigured as a game server and will be handed players it cannot serve.
 
+#### 9.4.11 What a waiting player sees
+
+A player who queued was told "Searching for a match" once and then nothing at all — indistinguishable
+from a broken network, which is exactly how it was reported. While a request is in flight the proxy
+polls the controller and refreshes an action-bar line above the hotbar:
+
+```
+Searching for a match  |  3 in queue  |  2 servers  |  4 match slots free
+```
+
+Every number comes from the controller (`GET /lobby/arena-status`), so it is the real queue depth and
+the real free capacity, not a guess. It refreshes every two seconds and stops the moment the player is
+placed, gives up, leaves, or disconnects. Transitions are announced in chat:
+
+| Moment | Message |
+|---|---|
+| Queued | `Searching for a solo match - you will be moved automatically when a game frees up.` |
+| Capacity found | `Match found - sending you to bedwars-game-1...` |
+| Fleet busy, a server booting | the action bar keeps counting, and adds `no free slot yet - starting a server` |
+| Gave up (default: ~2 minutes of retries) | `No match was available after a few minutes - please try again.` |
+
+`/bw leave` in the lobby cancels the search **in both places**: the lobby forgets the request and tells
+the proxy, which drops the entry on the controller. Leaving locally only - which is what used to
+happen - could still move a player into a match they had just cancelled.
+
+Patience is `QUEUE_RETRY_ATTEMPTS` on the proxy (default 30, layered on the controller's own backoff).
+It is deliberately generous: waiting a minute for a server to boot is normal.
+
+#### 9.4.12 Operator views without host access (`/bwadmin`)
+
+Diagnosing a stuck queue by reading `docker ps` on the host is not something an admin can do from
+inside the game - and the failure they need to tell apart is "nothing happens", for which every cause
+looks identical. `/bwadmin` (aliases `/bwa`, `/bwnet`; permission `bedwars.admin`) reads the
+controller and answers from inside the world:
+
+| Command | Answers |
+|---|---|
+| `/bwadmin status` | the fleet, its capacity, the queue, **and a diagnosis line** |
+| `/bwadmin servers` | every registered server: arena group, free/capacity slots, idle or hosting |
+| `/bwadmin queue` | who is waiting, per arena group |
+| `/bwadmin infra` | the controller's own description of how it provisions |
+
+```
+[Bedwars] Network status  (auth token)
+  provisioner  DOCKER  docker prefix=bedwars-game image=bedwars-spigot:1.0.0 servers[0..2] gamesPerServer=2
+  servers  provisioned 2 | registered 2 | free slots 2
+  limits  min 0, max 2, 2 matches per server -> 4 slots total
+  queue  3 waiting | solo 3
+  solo  waiting 3, servers 2, free 2
+[Bedwars] 3 waiting with 2 free slot(s): dispatch should be immediate. If it is not, the queue is stuck.
+```
+
+That last line is the point of the command. The same numbers mean different things, so it says which:
+
+- **waiting > 0 with free slots** - dispatch should be immediate; if it is not, the queue is stuck.
+- **waiting > 0, no free slot, provisioned < registered** - a server is on its way out.
+- **waiting > 0, no free slot, fleet at maximum** - raise the maximum or shorten matches.
+- **waiting > 0, no free slot, below maximum** - the controller should be starting another server.
+
+`/bw status` in the lobby shows a one-line version of the same figures to any player, so "is this queue
+real?" no longer needs an operator at all. The endpoints behind both (`/servers`, `/queue/depth`,
+`/lobby/arena-status`, `/infra`) are read-only, and the shared secret is never printed.
+
 ### 9.5 What is deliberately absent
 
 The proxy holds **no game logic and no server list**, and the lobby holds **no matchmaking
@@ -1688,7 +1751,12 @@ its licence situation is better handled by whoever runs the build.
 | Plugin compatibility | The project's target | Runs the same plugin; no Paper-only API is used |
 | When to choose | You need exact Spigot behaviour, or you already have a jar | You want faster builds and Paper's server-side optimisations |
 
-To build a Paper image:
+The guided installer asks this question for **every** stack that needs a game image - controller
++ game servers, full network, and everything (chapter 13.8). It used to ask only for two of the
+four choices, so picking the player-facing "full network" silently gave you Spigot and never
+offered Paper at all.
+
+To build a Paper image by hand:
 
 ```bash
 $ docker build -f deploy/docker/gameserver.Dockerfile \
@@ -2888,6 +2956,10 @@ controller to a network you do not control.**
 | `BEDWARS_S3_BUCKET` | `bedwars-templates` | Bucket for arena templates. |
 | `BEDWARS_MINIO_IMAGE` | `quay.io/minio/minio:latest` | Override to use a mirror. |
 | `BEDWARS_MC_IMAGE` | `quay.io/minio/mc:latest` | The MinIO client used by `minio-init`. |
+| `BEDWARS_MIN_SERVERS` | `0` | Servers kept running with nobody playing. |
+| `BEDWARS_MAX_SERVERS` | `10` | **The cap.** Pre-warming never goes past this. |
+| `BEDWARS_GAMES_PER_SERVER` | `25` | Concurrent matches one server hosts. Capacity = max servers x this. |
+| `BEDWARS_ARENA_GROUP` | `solo` | Arena group the local fleet plays; queue requests without a group resolve to it. |
 | `SERVER_ENGINE` | `spigot` | Engine for the game-pod image build. |
 | `SPIGOT_REV` | `26.3` | BuildTools revision. |
 | `PAPER_VERSION` | *(empty)* | Required when `SERVER_ENGINE=paper`. |
@@ -3175,6 +3247,10 @@ The root command is `/bedwars`, aliased `/bw`.
 | `/bw start` | admin | Force the match to start |
 | `/bw stop` | admin | Stop the match |
 | `/bw reload` | admin | Reload configuration |
+| `/bwadmin status` | admin | Network-wide: fleet, capacity, queue, and a diagnosis (chapter 9.4.12) |
+| `/bwadmin servers` | admin | Every game server, its arena group, its free match slots |
+| `/bwadmin queue` | admin | Who is waiting, per arena group |
+| `/bwadmin infra` | admin | How the controller is provisioning |
 
 The gameplay subcommands are open to all players **on purpose**. A blanket permission on the
 root command blocked `/bw join` for ordinary players (chapter 17.3); only the three
@@ -3348,6 +3424,10 @@ Claims in this manual that rest on a real execution rather than on reading code:
 | The arena is staged at boot | `[entrypoint] arena ready: 12M world` |
 | The whitelist guarantee applies | `whitelist_ok already off` |
 | Pods are not over-provisioned | One dispatch produced one container (it once produced thirteen) |
+| **A queued player is actually placed in a match** | `deploy/tools/test_dispatch_live.py` against a running controller: a forged registration under `solo`, then the proxy's own request body on `/lobby/queue` with no group, returned `podAddress` (it once returned nothing, forever) |
+| **The fleet stops at the configured maximum** | The same run kept asking for capacity while counting containers: peak 2 against a configured `BEDWARS_MAX_SERVERS=2` — and the pre-warm path started real `bedwars-game-N` containers that booted and registered under `solo` before dispatching to them |
+| **A timed-out request does not leak into the queue** | Three capacity-less requests in a row, then `/queue/depth` = 0 (the depth is what pre-warming scales on) |
+| **The controller receives the configured capacity** | `/infra` reporting `maxServers: 2, gamesPerServer: 2` from `.env`, and the startup line `servers[0..2] gamesPerServer=2` |
 | The Kubernetes pod runs the right jar | `sha256sum` inside the pod matched the supplied jar |
 
 ### 19.6 What has *not* been proven live
@@ -3399,6 +3479,25 @@ The controller's advertise URL is wrong. It must be a name both containers can r
 (`http://controller:8080`), because the controller passes it to the new container. `localhost`
 inside the controller is the controller's own loopback, and the new game container will fail to
 report.
+
+**Players queue and are never moved, while containers keep multiplying**
+Two separate causes produced this, and both are fixed. If you are on an older checkout, upgrade.
+
+*Nothing was ever dispatched.* The proxy asked for arena group `any` while servers registered
+under their real group (`solo`), so no registered server ever matched a waiting player even though
+free capacity existed. Run `/bwadmin status`: if it shows waiting players **and** free slots, that
+was the bug. The controller now treats `any` (and an absent or blank group) as "whatever this
+network runs".
+
+*More servers than the maximum.* The installer asked for min/max/games-per-server and wrote them
+into `.env`, but under names the Compose controller never read, so it silently ran on its own
+default of **10** regardless of what you configured. `BEDWARS_MAX_SERVERS`, `BEDWARS_MIN_SERVERS`
+and `BEDWARS_GAMES_PER_SERVER` are now the names on both sides (chapter 17.5). Confirm what the
+controller actually believes with `/bwadmin status`: the `limits` line must show your numbers. A
+fleet that grows past your maximum means that line is showing something else.
+
+Both are visible from in-game: `/bwadmin status`, `/bwadmin servers` (does anything show as idle
+with free slots?), `/bwadmin queue`.
 
 **`docker compose up` fails pulling `quay.io/minio/*` (401 UNAUTHORIZED)**
 Some networks cannot pull these anonymously. Either point `BEDWARS_MINIO_IMAGE` and

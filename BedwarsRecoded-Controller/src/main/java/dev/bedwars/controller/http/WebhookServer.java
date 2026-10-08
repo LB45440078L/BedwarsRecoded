@@ -20,8 +20,10 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -32,8 +34,9 @@ import java.util.concurrent.TimeoutException;
  * <ul>
  *   <li>{@code POST /pods/*} — pods report ready/started/ended/heartbeat/draining</li>
  *   <li>{@code POST /lobby/queue} — lobby requests a slot (capacity-aware dispatch)</li>
+ *   <li>{@code POST /lobby/dequeue} — a player stopped waiting; drop their entry</li>
  *   <li>{@code GET /healthz}, {@code /queue/depth}, {@code /lobby/arena-status},
- *       {@code /infra}, {@code /metrics}</li>
+ *       {@code /servers}, {@code /infra}, {@code /metrics}</li>
  * </ul>
  * Uses the JDK's built-in HTTP server, so no extra runtime dependency.
  *
@@ -80,8 +83,10 @@ public final class WebhookServer {
         server.createContext("/pods/heartbeat", exchange -> handle(exchange, this::logOnly));
         server.createContext("/pods/draining", exchange -> handle(exchange, this::podGone));
         server.createContext("/lobby/queue", exchange -> handle(exchange, this::lobbyQueue));
+        server.createContext("/lobby/dequeue", exchange -> handle(exchange, this::lobbyDequeue));
         server.createContext("/queue/depth", exchange -> respond(exchange, 200, gson.toJson(queueManager.depthByGroup())));
         server.createContext("/lobby/arena-status", exchange -> respond(exchange, 200, gson.toJson(arenaStatus())));
+        server.createContext("/servers", exchange -> respond(exchange, 200, gson.toJson(serverList())));
         server.createContext("/infra", exchange -> respond(exchange, 200, gson.toJson(infraStatus())));
         server.createContext("/metrics", exchange -> respondText(exchange, 200, metrics()));
         server.createContext("/healthz", exchange -> respond(exchange, 200, "ok"));
@@ -165,19 +170,64 @@ public final class WebhookServer {
 
     private String lobbyQueue(JsonObject body) {
         QueueRequest request = gson.fromJson(body, QueueRequest.class);
-        if (request == null) {
+        if (request == null || request.player() == null) {
             return gson.toJson(DispatchResult.retry(config.baseBackoffMillis()));
         }
+        request = withDefaultGroup(request);
         try {
             DispatchResult result = queueManager.enqueue(request).get(DISPATCH_WAIT_MILLIS, TimeUnit.MILLISECONDS);
             return gson.toJson(result);
         } catch (TimeoutException e) {
-            // No capacity within the wait window: tell the client to back off.
+            // No capacity within the wait window: tell the client to back off -- and take
+            // the entry back out. Leaving it queued left the depth (which pre-warming
+            // scales on) growing by one on every retry, so a single waiting player kept
+            // starting servers while never being placed on one.
+            queueManager.dequeue(request.player());
             return gson.toJson(DispatchResult.retry(queueManager.backoffMillis(queueManager.totalDepth())));
         } catch (Exception e) {
+            queueManager.dequeue(request.player());
             Thread.currentThread().interrupt();
             return gson.toJson(DispatchResult.retry(config.baseBackoffMillis()));
         }
+    }
+
+    /** A player stopped waiting: drop their entry so the depth stays honest. */
+    private String lobbyDequeue(JsonObject body) {
+        if (!body.has("player") || body.get("player").isJsonNull()) {
+            throw new IllegalArgumentException("player required");
+        }
+        UUID player;
+        try {
+            player = UUID.fromString(body.get("player").getAsString().trim());
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("player must be a UUID");
+        }
+        int removed = queueManager.dequeue(player);
+        log.info("Dequeued {} ({} entry/entries removed)", player, removed);
+        return "{\"removed\":" + removed + "}";
+    }
+
+    /**
+     * A queue request that names no arena group is asking for "a match, any group", and the
+     * only group this controller can actually provision is the configured one. Resolving it
+     * here -- rather than letting the placeholder "any" travel into the registry -- is what
+     * keeps the requested group and the group servers register under the same string.
+     */
+    private QueueRequest withDefaultGroup(QueueRequest request) {
+        boolean named = request.preferredGroup()
+                .map(String::trim)
+                .filter(group -> !group.isEmpty() && !QueueManager.ANY_GROUP.equalsIgnoreCase(group))
+                .isPresent();
+        if (named) {
+            return request;
+        }
+        return new QueueRequest(request.player(), request.username(), request.priority(),
+                Optional.of(defaultArenaGroup()), request.party(), request.requestedAtMillis());
+    }
+
+    private String defaultArenaGroup() {
+        String group = config.provisioning().arenaGroup();
+        return group == null || group.isBlank() ? "solo" : group.trim();
     }
 
     private interface Handler {
@@ -276,15 +326,34 @@ public final class WebhookServer {
     private Map<String, Map<String, Integer>> arenaStatus() {
         Map<String, Integer> free = registry.freeSlotsByGroup();
         Map<String, Integer> depth = queueManager.depthByGroup();
+        Map<String, Integer> servers = registry.serverCountByGroup();
         Set<String> groups = new TreeSet<>(free.keySet());
         groups.addAll(depth.keySet());
+        groups.addAll(servers.keySet());
         Map<String, Map<String, Integer>> status = new LinkedHashMap<>();
         for (String group : groups) {
-            status.put(group, Map.of(
-                    "freeSlots", free.getOrDefault(group, 0),
-                    "queued", depth.getOrDefault(group, 0)));
+            Map<String, Integer> view = new LinkedHashMap<>();
+            view.put("queued", depth.getOrDefault(group, 0));
+            view.put("freeSlots", free.getOrDefault(group, 0));
+            view.put("servers", servers.getOrDefault(group, 0));
+            status.put(group, view);
         }
         return status;
+    }
+
+    /** Every game server the controller knows about, with its free match slots. */
+    private Map<String, Object> serverList() {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("servers", registry.snapshot());
+        out.put("count", registry.serverCount());
+        out.put("idle", registry.idleServers());
+        out.put("freeSlots", registry.totalFreeSlots());
+        out.put("groups", registry.freeSlotsByGroup());
+        out.put("minServers", provisioner.minimumServers());
+        out.put("maxServers", provisioner.maximumServers());
+        out.put("gamesPerServer", provisioner.gamesPerServer());
+        out.put("provisioned", provisioner.currentServers());
+        return out;
     }
 
     private void respondText(HttpExchange exchange, int status, String body) throws IOException {

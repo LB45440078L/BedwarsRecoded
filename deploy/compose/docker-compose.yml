@@ -15,14 +15,21 @@ x-controller-env: &controller-env
   BEDWARS_NAMESPACE: "local"
   BEDWARS_GAMESERVERSET: "bedwars-solo"
   BEDWARS_HTTP_PORT: "8080"
-  BEDWARS_MIN_REPLICAS: "0"
-  BEDWARS_MAX_REPLICAS: "10"
+  #  Capacity, spelled with the names the controller actually reads first. These used to be
+  #  the Kubernetes *_REPLICAS names, hard-coded to 0/10, and the installer wrote the user's
+  #  answers (server count, matches per server) nowhere the Docker path could see: a network
+  #  configured for 2 servers ran with a maximum of 10, so pre-warming filled ten.
+  BEDWARS_MIN_SERVERS: "${BEDWARS_MIN_SERVERS:-0}"
+  BEDWARS_MAX_SERVERS: "${BEDWARS_MAX_SERVERS:-10}"
+  BEDWARS_GAMES_PER_SERVER: "${BEDWARS_GAMES_PER_SERVER:-25}"
   BEDWARS_PREWARM_THRESHOLD: "2"
   # This stack has no cluster, so the controller must provision with Docker. Left
   # unset it would default to KUBERNETES and report "no capacity" forever.
   BEDWARS_PROVISIONER: "DOCKER"
   BEDWARS_DOCKER_IMAGE: "bedwars-spigot:1.0.0"
-  BEDWARS_ARENA_GROUP: "solo"
+  #  The arena group the whole local fleet plays: every provisioned game container is handed
+  #  this value, so it is the group both the lobby's queue request and the servers report.
+  BEDWARS_ARENA_GROUP: "${BEDWARS_ARENA_GROUP:-solo}"
   # Game containers join this network so they can resolve the controller by name; and
   # the URL they are handed must use that name rather than the host's loopback.
   BEDWARS_DOCKER_NETWORK: "bedwars_bedwars"
@@ -193,7 +200,7 @@ services:
       # the address to send a player to. The compose service name resolves on the
       # shared network.
       BEDWARS_SERVER_ID: "game-pod"
-      BEDWARS_ARENA_GROUP: "solo"
+      BEDWARS_ARENA_GROUP: "${BEDWARS_ARENA_GROUP:-solo}"
       BEDWARS_CONTROLLER_URL: "http://controller:8080"
       BEDWARS_API_TOKEN: "${BEDWARS_API_TOKEN:-}"
       BEDWARS_TEMPLATE_NAME: "Glacier"
