@@ -159,4 +159,17 @@ class GameLifecycleTest {
                     assertThat(d.bedsBroken()).isEqualTo(1);
                 });
     }
+
+    @Test
+    void aCountdownWithTooFewPlayersIsCalledOff() {
+        game.addPlayer(p1, "alice");
+        game.addPlayer(p2, "bob");
+        game.startCountdown();
+        assertThat(game.state()).isEqualTo(GameState.COUNTDOWN);
+
+        // Somebody left before it began: back to waiting, rather than starting a match that
+        // is already missing a team.
+        game.cancelCountdown();
+        assertThat(game.state()).isEqualTo(GameState.WAITING);
+    }
 }

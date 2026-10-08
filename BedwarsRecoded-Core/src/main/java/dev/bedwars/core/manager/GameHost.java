@@ -65,9 +65,14 @@ public final class GameHost {
         if (existing != null) {
             return Optional.of(existing);
         }
+        //  The FULLEST match that still has room, not the emptiest: players who queue
+        //  together must land in the same match, or each match sits below its minimum and
+        //  no countdown ever starts. (Reported live: two players joined, each was placed in
+        //  a different match on the same pod, and neither match ever began.) The original
+        //  plugin's findOptimalGame picks the smallest (capacity - queued), i.e. this.
         Game target = games.values().stream()
                 .filter(GameHost::acceptingPlayers)
-                .min(Comparator.comparingInt(Game::playerCount))
+                .max(Comparator.comparingInt(Game::playerCount))
                 .orElse(null);
         if (target == null) {
             if (games.size() >= maxGames) {

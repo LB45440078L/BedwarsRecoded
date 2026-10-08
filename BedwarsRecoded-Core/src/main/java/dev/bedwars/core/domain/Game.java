@@ -165,6 +165,16 @@ public final class Game {
         transition(GameState.COUNTDOWN);
     }
 
+    /**
+     * Calls off a countdown that no longer has enough players.
+     *
+     * <p>Without this a match that lost a player mid-countdown would start anyway, with a
+     * team already empty -- which the win condition then reads as an immediate elimination.
+     */
+    public void cancelCountdown() {
+        transition(GameState.WAITING);
+    }
+
     public void beginMatch(long nowMillis) {
         transition(GameState.RUNNING);
         this.startedAtMillis = nowMillis;

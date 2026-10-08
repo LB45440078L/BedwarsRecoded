@@ -7,6 +7,15 @@ group:
   team-count: 2
   players-per-team: 2
   countdown-seconds: 15
+  # Where joining players wait until the match starts. This is the original plugin's
+  # `map-lobby-spawn` for Glacier (a platform above the map; the team spawns are at y=81).
+  # It must be a place that exists in the arena -- players used to be dropped at their
+  # island the moment they connected and fell through unloaded ground into the void.
+  lobby-spawn: { x: 0.0, y: 118.05, z: 0.0 }
+  # Players required before the countdown starts. 0 means one per team.
+  min-players: 2
+  # Put a safety floor under the waiting room if nothing solid is there.
+  waiting-room-platform: true
   sudden-death-after-seconds: 300
   void-y-threshold: 0.0
   island-radius: 30.0

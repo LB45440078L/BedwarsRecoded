@@ -2697,6 +2697,9 @@ group:
   island-radius: 30.0
   bed-protection-radius: 3.0
   team-generators: [IRON, GOLD]
+  lobby-spawn: { x: 0.0, y: 118.05, z: 0.0 }   # the waiting room
+  min-players: 2
+  waiting-room-platform: true
 ```
 
 The `group:` block mirrors the `arena:` keys in `config.yml` (see 17.1 for each), plus:
@@ -2704,6 +2707,52 @@ The `group:` block mirrors the `arena:` keys in `config.yml` (see 17.1 for each)
 | Key | Meaning |
 |---|---|
 | `team-generators` | Which resources each team's own generator produces. `[IRON, GOLD]` is the classic BedWars pair |
+| `lobby-spawn` | **The waiting room** — where players are held from the moment they connect until the match starts. Aliases: `waiting-room`, and `map-lobby-spawn` as the original plugin spelled it, so a ported Glacier config keeps working (§17.2.1) |
+| `min-players` | How many players must be present before the countdown starts. `0` (or absent) means one per team |
+| `waiting-room-platform` | Place an invisible barrier floor under the waiting room if nothing solid is there (default `true`) |
+
+#### 17.2.1 The waiting room (and why it exists)
+
+The original plugin teleported a joining player to a per-arena **waiting room** — for Glacier,
+`map-lobby-spawn: { x: 0.0, y: 118.05, z: 0.0 }`, a platform well above the map (its team
+spawns are at y=81) — and left them there until the match began. This recode had dropped that
+and seated players at their **team spawn** the instant they connected, before the arena world
+was staged and its chunks were loaded. Players landed underground, on unloaded ground, or fell
+into the void; some arrived with no team (which the old code answered with a hard-coded
+`0.5, 65, 0.5` — the middle of the map).
+
+The waiting room is not decoration. It is the only place in an arena that is guaranteed to
+exist and to be loaded before a match starts:
+
+| Moment | Where the player is |
+|---|---|
+| Connects and joins a match | The waiting room (`lobby-spawn`) |
+| Waiting for more players | Still the waiting room — action bar: `Waiting for N more player(s)` |
+| Countdown running | Still the waiting room — action bar: a 20-block bar and `Starting in Ns` |
+| The countdown reaches zero | Teleported to their **team spawn**, given their start items, invulnerable lifted |
+| Somebody leaves mid-countdown | Back to waiting; the countdown is called off rather than starting short-handed |
+| Nowhere to hold them (nothing configured) | The **world spawn** — a real, always-loaded place — and one warning line naming the arena, never a guessed coordinate |
+
+While waiting, players take no fall, fire, hunger or mob damage, and if one somehow ends up
+below `void-y-threshold` they are put back in the waiting room rather than killed by the void.
+
+If an arena names no `lobby-spawn`, seating falls back to the world spawn **and says so once**:
+
+```
+WARNING: Arena group 'solo' has no waiting room (group.lobby-spawn). Falling back to the
+world spawn; set the waiting room so players are held at a known place instead of wherever
+the world happens to spawn.
+```
+
+Set it to a platform that exists in your arena. `waiting-room-platform: true` guarantees a
+floor (invisible barriers) if you have not built one.
+
+**An existing pod keeps the `arena.yml` it already has.** The plugin copies its bundled
+`arena.yml` into the data folder on the first start only, so a pod that has run before will not
+pick up a new waiting room by itself: add the `lobby-spawn:` key to the running pod's
+`plugins/BedwarsRecoded/arena.yml` (then `/bw reload`), or delete that file and restart to get
+the shipped one back. A pod whose arena has no waiting room at all still works -- players are
+held at the world spawn -- but it is worth setting.
 
 #### Teams
 
@@ -3252,6 +3301,10 @@ The root command is `/bedwars`, aliased `/bw`.
 | `/bwadmin queue` | admin | Who is waiting, per arena group |
 | `/bwadmin infra` | admin | How the controller is provisioning |
 
+While your match waits for players you are held in the **waiting room** (chapter 17.2.1), not
+at your island: the action bar counts the players still needed and then the seconds to the
+start, and you are moved to your island the moment the match begins.
+
 The gameplay subcommands are open to all players **on purpose**. A blanket permission on the
 root command blocked `/bw join` for ordinary players (chapter 17.3); only the three
 administrative subcommands are gated.
@@ -3473,6 +3526,21 @@ supplied your own environment, check it survived.
 **The controller cannot start game containers (`docker: not found`)**
 The controller image was built without the docker CLI. The Compose stack passes
 `WITH_DOCKER_CLI: "true"`; check that build argument is present.
+
+**Players land underground, on random blocks, or fall into the void**
+The arena's waiting room is missing or wrong, so joining players are seated somewhere that is
+not loaded yet. Set `group.lobby-spawn` in `arena.yml` to a platform inside the arena (Glacier's
+original value is `{ x: 0.0, y: 118.05, z: 0.0 }`); chapter 17.2.1 explains the rule. The plugin
+logs one warning naming the arena when it has to fall back to the world spawn.
+
+**The match never starts even though players are on the server**
+Two causes, both fixed, and both still worth checking if you see it again. (1) Players were
+being spread across matches (or across pods) one or two each, so every match sat below the
+minimum and no countdown ever began — queueing players now pack into the same match. (2) The
+countdown needed one player *per team*, not the arena's `min-players`; it now waits for
+`min-players` (default: one per team) and calls itself off if someone leaves before it finishes.
+`/bwadmin status` shows the split: waiting players with free slots means they are not being
+placed; players on the server with no countdown means a match is below its minimum.
 
 **Game containers start but never register**
 The controller's advertise URL is wrong. It must be a name both containers can resolve

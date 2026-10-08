@@ -75,6 +75,8 @@ import dev.bedwars.spigot.world.GameWorldService;
 import com.infernalsuite.aswm.api.AdvancedSlimePaperAPI;
 import com.infernalsuite.aswm.api.loaders.SlimeLoader;
 import org.bukkit.ChatColor;
+import net.md_5.bungee.api.ChatMessageType;
+import net.md_5.bungee.api.chat.TextComponent;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
@@ -558,7 +560,20 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
             return null;
         }
         try (InputStream in = Files.newInputStream(arenaFile)) {
-            return new ArenaConfigLoader().load(in);
+            ArenaDefinition loaded = new ArenaConfigLoader().load(in);
+            //  Say out loud where waiting players will be held. The reported bug -- players
+            //  teleported underground or into the void the moment they joined -- was a
+            //  configuration fact that nothing on the server ever stated.
+            loaded.group().waitingRoom().ifPresentOrElse(
+                    room -> LOG.info("arena_ready group={} waiting_room=({}, {}, {}) "
+                                    + "min_players={} - players are held here until the countdown ends",
+                            loaded.group().id(), room.x(), room.y(), room.z(),
+                            loaded.group().effectiveMinPlayers()),
+                    () -> LOG.warn("arena_ready group={} has NO waiting room (add group.lobby-spawn to "
+                                    + "arena.yml): joining players will be held at the world spawn, and may "
+                                    + "be teleported to their island before the arena world is ready",
+                            loaded.group().id()));
+            return loaded;
         } catch (Exception e) {
             LOG.error("Failed to load arena.yml; falling back to a config-derived arena", e);
             return null;
@@ -599,8 +614,22 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         }
         long now = System.currentTimeMillis();
         spawnGeneratorItems(game, now);
+        rescueWaitingPlayers(game);
         handleCountdown(game);
         handleSuddenDeath(game, now);
+    }
+
+    /** Nobody waiting for a match should be able to fall out of the world while they wait. */
+    private void rescueWaitingPlayers(Game game) {
+        if (game.state() != GameState.WAITING && game.state() != GameState.COUNTDOWN) {
+            return;
+        }
+        for (UUID uuid : game.sessions().keySet()) {
+            Player player = getServer().getPlayer(uuid);
+            if (player != null) {
+                joinService.rescueIfFallen(player, game);
+            }
+        }
     }
 
     private void spawnGeneratorItems(Game game, long now) {
@@ -618,25 +647,64 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
         }
     }
 
+    /**
+     * The pre-match clock, as the original plugin had it: hold everybody in the waiting room,
+     * count down on a visible timer once the arena has its minimum players, and move them to
+     * their islands only when it reaches zero.
+     *
+     * <p>Two things it must not do, both of which were reported live: start while the arena is
+     * still too empty to be playable, and keep counting when a player leaves mid-countdown.
+     */
     private void handleCountdown(Game game) {
+        int needed = game.group().effectiveMinPlayers();
         if (game.state() == GameState.WAITING) {
-            if (game.playerCount() >= game.group().teamCount()) {
+            if (game.playerCount() >= needed) {
                 game.startCountdown();
                 countdownRemaining.put(game.id(), game.group().countdownSeconds());
-                broadcastTo(game, "&eMatch starting in &c" + game.group().countdownSeconds() + "&e...");
+                broadcastTo(game, "&aEnough players! &eThe match starts in &c"
+                        + game.group().countdownSeconds() + "&e seconds...");
+            } else {
+                actionBarTo(game, "&7Waiting for &e" + (needed - game.playerCount())
+                        + "&7 more player(s) &8| &7the match starts automatically");
             }
             return;
         }
-        if (game.state() == GameState.COUNTDOWN) {
-            int remaining = countdownRemaining.merge(game.id(), -1, Integer::sum);
-            if (remaining <= 0) {
-                game.beginMatch(System.currentTimeMillis());
-                giveStartItems(game);
-                broadcastTo(game, "&a&lThe match has begun!");
-            } else if (remaining <= 5) {
-                broadcastTo(game, "&eStarting in &c" + remaining + "&e...");
-            }
+        if (game.state() != GameState.COUNTDOWN) {
+            return;
         }
+        if (game.playerCount() < needed) {
+            // Somebody left: calling it off is the honest move. Starting anyway would begin the
+            // match with an empty team, which the win condition reads as an instant elimination.
+            game.cancelCountdown();
+            countdownRemaining.remove(game.id());
+            broadcastTo(game, "&cNot enough players any more &7- waiting for more to join.");
+            return;
+        }
+        int total = Math.max(1, game.group().countdownSeconds());
+        int remaining = countdownRemaining.merge(game.id(), -1, Integer::sum);
+        if (remaining <= 0) {
+            countdownRemaining.remove(game.id());
+            game.beginMatch(System.currentTimeMillis());
+            joinService.sendToTeamSpawns(game);
+            giveStartItems(game);
+            actionBarTo(game, "");
+            broadcastTo(game, "&a&lThe match has begun!");
+            return;
+        }
+        actionBarTo(game, progressBar(remaining, total) + " &eStarting in &c" + remaining + "s");
+        if (remaining <= 5 || remaining % 5 == 0) {
+            broadcastTo(game, "&eStarting in &c" + remaining + "&e...");
+        }
+    }
+
+    /** A block bar that fills as the countdown runs, like the original's coloured pipes. */
+    private static String progressBar(int remaining, int total) {
+        int filled = (int) Math.round(20.0 * (total - remaining) / total);
+        StringBuilder bar = new StringBuilder();
+        for (int i = 0; i < 20; i++) {
+            bar.append(i < filled ? "&a|" : "&c|");
+        }
+        return bar.toString();
     }
 
     private void handleSuddenDeath(Game game, long now) {
@@ -732,6 +800,26 @@ public class BedwarsRecodedPlugin extends JavaPlugin {
             Player player = getServer().getPlayer(uuid);
             if (player != null) {
                 player.sendMessage(coloured);
+            }
+        }
+    }
+
+    /**
+     * The same audience, above the hotbar: a countdown that does not scroll away and does not
+     * spam the chat. Uses Spigot's own action-bar message, so no server-side API beyond
+     * Spigot is needed.
+     */
+    private void actionBarTo(Game game, String legacyMessage) {
+        String coloured = ChatColor.translateAlternateColorCodes('&', legacyMessage);
+        for (UUID uuid : game.sessions().keySet()) {
+            Player player = getServer().getPlayer(uuid);
+            if (player != null) {
+                if (coloured.isEmpty()) {
+                    player.spigot().sendMessage(ChatMessageType.ACTION_BAR, new TextComponent(""));
+                } else {
+                    player.spigot().sendMessage(ChatMessageType.ACTION_BAR,
+                            TextComponent.fromLegacyText(coloured));
+                }
             }
         }
     }

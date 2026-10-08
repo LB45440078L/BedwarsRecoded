@@ -248,10 +248,13 @@ public final class BedwarsCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(ChatColor.RED + "Players only.");
             return;
         }
-        if (plugin.lobbyQueue().isSearching(player.getUniqueId())) {
+        // The queue only exists on a lobby server. Calling this on a game pod threw
+        // NullPointerException straight out of /bedwars leave -- reported from a live pod.
+        var queue = plugin.lobbyQueue();
+        if (queue != null && queue.isSearching(player.getUniqueId())) {
             // Waiting in the lobby: cancelling has to reach the proxy too, or it keeps
             // searching and moves the player anyway.
-            plugin.lobbyQueue().cancel(player);
+            queue.cancel(player);
             player.sendMessage(ChatColor.YELLOW + "You left the queue.");
             return;
         }

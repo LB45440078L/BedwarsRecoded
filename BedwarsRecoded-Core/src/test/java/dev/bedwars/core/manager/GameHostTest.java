@@ -65,6 +65,23 @@ class GameHostTest {
         assertThat(host.gameCount()).isEqualTo(2);
     }
 
+    //  Reported live: two players joined, each was put in a different match on the same
+    //  server, and neither match ever started (each was below its minimum). Players who are
+    //  in the same queue must share a match.
+    @Test
+    void playersJoinTheMatchThatIsAlreadyFilling() {
+        GameHost host = host(4);
+        Game busy = host.createGame(NOW);
+        busy.addPlayer(UUID.randomUUID(), "a");
+        busy.addPlayer(UUID.randomUUID(), "b");
+        busy.addPlayer(UUID.randomUUID(), "c");
+        Game quiet = host.createGame(NOW);
+        quiet.addPlayer(UUID.randomUUID(), "d");
+
+        assertThat(host.join(UUID.randomUUID(), "e", NOW)).contains(busy);
+        assertThat(quiet.playerCount()).isEqualTo(1);
+    }
+
     @Test
     void neverExceedsTheConfiguredGamesPerServer() {
         GameHost host = host(1);

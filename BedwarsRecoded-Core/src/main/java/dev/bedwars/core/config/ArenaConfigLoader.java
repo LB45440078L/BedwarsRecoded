@@ -90,6 +90,24 @@ public final class ArenaConfigLoader {
         return byType.isEmpty() ? UpgradeCatalog.defaults() : new UpgradeCatalog(byType);
     }
 
+    /**
+     * The waiting room, under any of the names this project has used for it:
+     * {@code lobby-spawn} / {@code waiting-room} here, and {@code map-lobby-spawn} as the
+     * original Bedwars plugin spelled it -- an operator porting their Glacier config should
+     * not have to rename the key.
+     */
+    private Optional<Vec3> parseWaitingRoom(Map<String, Object> g) {
+        for (String key : List.of("lobby-spawn", "waiting-room", "map-lobby-spawn")) {
+            Object value = g.get(key);
+            if (value instanceof Map<?, ?> coordinates
+                    && coordinates.containsKey("x") && coordinates.containsKey("y")
+                    && coordinates.containsKey("z")) {
+                return Optional.of(vec(value));
+            }
+        }
+        return Optional.empty();
+    }
+
     private ArenaGroup parseGroup(Map<String, Object> g) {
         List<GeneratorType> teamGenerators = new ArrayList<>();
         for (Object t : list(g.getOrDefault("team-generators", List.of("IRON", "GOLD")))) {
@@ -104,7 +122,10 @@ public final class ArenaConfigLoader {
                 doubleVal(g.getOrDefault("void-y-threshold", 0.0)),
                 doubleVal(g.getOrDefault("island-radius", 30.0)),
                 doubleVal(g.getOrDefault("bed-protection-radius", 3.0)),
-                teamGenerators);
+                teamGenerators,
+                parseWaitingRoom(g),
+                intVal(g.getOrDefault("min-players", 0)),
+                boolVal(g.getOrDefault("waiting-room-platform", true)));
     }
 
     private Shop parseShop(Map<String, Object> s) {

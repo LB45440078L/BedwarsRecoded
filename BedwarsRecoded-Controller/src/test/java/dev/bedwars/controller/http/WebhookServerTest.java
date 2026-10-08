@@ -160,16 +160,23 @@ class WebhookServerTest {
     void aMatchEndingReleasesItsSlotWithoutDroppingTheServer() throws Exception {
         post("/pods/ready", "{\"podId\":\"pod-c\",\"arenaGroup\":\"solo\",\"capacity\":4}");
         assertThat(get("/metrics").body()).contains("bedwars_free_slots{group=\"solo\"} 4");
-        // Dispatch two matches: two slots consumed, server still present.
+        // Two players are placed. That is two players in a match, not two matches: a slot is a
+        // match, so the count does not move until the server itself reports one is running.
         for (int i = 0; i < 2; i++) {
             QueueRequest request = new QueueRequest(UUID.randomUUID(), "p" + i, 0,
                     Optional.of("solo"), Optional.empty(), System.currentTimeMillis());
             post("/lobby/queue", JsonSupport.gson().toJson(request));
         }
-        assertThat(get("/metrics").body()).contains("bedwars_free_slots{group=\"solo\"} 2");
+        assertThat(get("/metrics").body()).contains("bedwars_free_slots{group=\"solo\"} 4");
 
-        post("/pods/ended", "{\"podId\":\"pod-c\",\"gameId\":\"g\"}");
+        // The server reports a match under way: three match slots left, and the server is
+        // still registered. (/pods/capacity is the endpoint that carries the slot count.)
+        post("/pods/capacity", "{\"podId\":\"pod-c\",\"freeSlots\":3}");
         assertThat(get("/metrics").body()).contains("bedwars_free_slots{group=\"solo\"} 3");
+
+        // That match ends: the slot comes back.
+        post("/pods/ended", "{\"podId\":\"pod-c\",\"gameId\":\"g\"}");
+        assertThat(get("/metrics").body()).contains("bedwars_free_slots{group=\"solo\"} 4");
     }
 
     @Test

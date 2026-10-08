@@ -100,6 +100,11 @@ Spigot adapter:
   on elimination, sign join, NPC join (named entity `[bedwars]`), quick-buy sync.
 - Join via command (`/bw join`), sign, GUI, or NPC; `/bw status|start|stop|shop|
   quickbuy|upgrades|gui|lang|reload`.
+- **A waiting room before the match**: a joining player is held at the arena's configured
+  `lobby-spawn` (the original plugin's `map-lobby-spawn`; Glacier's is `0, 118.05, 0`) while an
+  action bar counts the players still needed and then the seconds to the start, and is moved to
+  their island only when the countdown ends. No damage or void death while waiting, and a
+  fallback to the world spawn (with a warning) rather than a guessed coordinate.
 - **Matchmaking feedback**: while the proxy is searching, a live action bar shows the real
   queue depth, server count and free match slots (polled from the controller); chat announces
   queue → match found → gave up, and `/bw leave` cancels the search on the controller too.

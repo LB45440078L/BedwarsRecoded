@@ -13,10 +13,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * Tracks every game server and its free <em>match slots</em>.
  *
- * <p>A server hosts up to {@code capacity} concurrent matches; {@link #allocate}
- * reserves one slot atomically and returns the server, so two simultaneous lobby
- * requests can never receive the same slot. Servers report their used/free counts as
- * matches start and end, so capacity stays accurate without the controller guessing.
+ * <p>A server hosts up to {@code capacity} concurrent matches. Servers report their own
+ * free match slots, and that report is the truth: capacity is counted in <em>matches</em>,
+ * so placing a player never consumes one (players pack into the same match). {@link
+ * #allocate} uses the reports to keep packing the fullest server, which is what makes
+ * "everyone who queued together ends up in one match" true.
  *
  * <p>This replaces the old "a pod is one match" registry: capacity is now measured in
  * matches, which is what makes many matches per server work.
@@ -26,7 +27,18 @@ public final class ServerRegistry {
     private static final class Entry {
         private final String group;
         private final int capacity;
+        /** Free <em>match</em> slots, as the server itself last reported them. */
         private final AtomicInteger free;
+        /**
+         * Players placed here since that report.
+         *
+         * <p>Used <em>only</em> to break ties towards the server a burst is already filling.
+         * It must never reduce {@link #free}: a server's capacity is measured in matches, and
+         * one player joining does not consume a match -- sending players away from a server
+         * that still has room splits them across the fleet, one or two per match, and then no
+         * match ever reaches its minimum and no countdown ever starts.
+         */
+        private final AtomicInteger placedSinceReport = new AtomicInteger();
 
         private Entry(String group, int capacity, int free) {
             this.group = group;
@@ -48,18 +60,36 @@ public final class ServerRegistry {
         Entry entry = servers.get(serverId);
         if (entry != null) {
             entry.free.set(Math.max(0, Math.min(entry.capacity, freeSlots)));
+            // The report already accounts for everyone this server accepted, so the packing
+            // hint starts again from what the server says.
+            entry.placedSinceReport.set(0);
         }
     }
 
-    /** Reserves one match slot on the busiest server with room (packing keeps servers full). */
+    /**
+     * Picks the server a player should be sent to: the one packing the fullest, so people who
+     * queue together end up in the same match.
+     *
+     * <p>Eligibility comes from the server's own free match slots; the packing hint only
+     * orders the candidates. If the server turns out to have no room after all, it refuses the
+     * player (who simply retries) -- a wasted retry is a far better failure than a fleet of
+     * half-empty matches that never start.
+     */
     public synchronized Optional<String> allocate(String group) {
         return servers.entrySet().stream()
                 .filter(entry -> matchesGroup(entry.getValue().group, group) && entry.getValue().free.get() > 0)
-                .min(Comparator.comparingInt(entry -> entry.getValue().free.get()))
+                .min(Comparator
+                        .comparingInt((Map.Entry<String, Entry> entry) -> packingOrder(entry.getValue()))
+                        .thenComparing(Map.Entry::getKey))
                 .map(entry -> {
-                    entry.getValue().free.decrementAndGet();
+                    entry.getValue().placedSinceReport.incrementAndGet();
                     return entry.getKey();
                 });
+    }
+
+    /** Lower sorts first: a server with fewer spare slots (and more recent placements) packs tighter. */
+    private static int packingOrder(Entry entry) {
+        return Math.max(0, entry.free.get() - entry.placedSinceReport.get());
     }
 
     /**
@@ -102,6 +132,7 @@ public final class ServerRegistry {
         Entry entry = servers.get(serverId);
         if (entry != null) {
             entry.free.updateAndGet(free -> Math.min(entry.capacity, free + 1));
+            entry.placedSinceReport.updateAndGet(placed -> Math.max(0, placed - 1));
         }
     }
 
