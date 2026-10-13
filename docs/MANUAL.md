@@ -3663,6 +3663,21 @@ namespace exists and only passes `--create-namespace` when it does not. The same
 BedWars release install itself, where step `[2/8]` has always created the namespace first, and the
 printed advice no longer suggests the flag by hand.
 
+**A pod or Deployment never becomes available / the workload wait just counts up (e.g. 17%)**
+That percentage is the installer's wait bar, and it means the thing it is waiting for has not
+happened. Two causes, and the log distinguishes them:
+
+* **The cluster has no Ready node.** A node announces itself seconds after the cluster starts and
+  stays `NotReady` for a while after that; anything scheduled in that window goes nowhere. The
+  installer now waits for a node to be `Ready` before it touches the cluster at all (and says so if
+  it never becomes Ready), but you can check it yourself with
+  `kubectl get nodes` — the STATUS column is the whole answer.
+* **The image is not in the cluster.** The installer's image-load step says
+  `bedwars-<something> is not built locally -- skipping` when the image is not in the local Docker
+  daemon under that exact name, and then the pod sits in `ImagePullBackOff` forever. Build and load
+  it: `docker compose -f deploy/compose/docker-compose.yml build controller && minikube image load
+  bedwars-controller:1.0.0`, then `kubectl -n bedwars rollout restart deploy/controller`.
+
 **`helm upgrade` fails with `Error: UPGRADE FAILED: context deadline exceeded`, seconds in**
 That message is not about the chart, and it is not helm's own timeout (`--timeout` would say "timed
 out waiting for the condition" after the full interval). It is the Kubernetes API server not
@@ -3679,10 +3694,13 @@ cluster that is simply not up. The installer now:
   status and history, and `describe pod` for the first pod that is not Running. The whole block
   goes into `.installer/install.log` as well, so a failure report carries its own explanation.
 
-If you see it, the diagnosis block answers the actual question. The usual cause on a small VM is
-memory: OpenKruise's manager plus a match server is a real footprint, and a node with ~2 GB
-allocatable will fail in every way except the obvious one. `minikube start --cpus=4 --memory=6144`
-is the fix; the installer asks for those numbers and defaults to 3 CPU / 4096 MB.
+If you see it, the diagnosis block answers the actual question. In practice it has been a node that
+had only just appeared and was still `NotReady` (see the entry above) — the diagnosis showed
+`minikube NotReady control-plane 8s` with a failed release, and 22 GB allocatable, so memory was
+never in question. The installer waits for a Ready node now. If the diagnosis instead shows a small
+allocatable memory figure or an `OOMKilled` pod, then it *is* resources: OpenKruise's manager plus a
+match server is a real footprint, and `minikube start --cpus=4 --memory=6144` is the fix (the
+installer asks for those numbers and defaults to 3 CPU / 4096 MB).
 
 **`error: unable to recognize ...: no matches for kind "GameServerSet"`**
 The OpenKruise CRD is not installed. Install OpenKruise and kruise-game first (chapter 8.1).

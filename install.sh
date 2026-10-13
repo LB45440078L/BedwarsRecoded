@@ -3367,6 +3367,13 @@ k8s_establish_cluster() {
     if ! wait_for "the cluster API to answer" 150 kubectl cluster-info; then
         fail "kubectl cannot reach a cluster" "run 'kubectl cluster-info' to see why, then re-run"
     fi
+    #  Answering is not the same as being able to run a pod: the node has to be Ready, or every
+    #  workload step after this fails in a way that looks like everything except this.
+    if ! wait_for "the cluster's node to be Ready" 180 k8s_node_ready; then
+        k8s_diagnose "the cluster's nodes" "$CFG_NAMESPACE"
+        fail "no node in the cluster is Ready" \
+             "a node that is not Ready cannot run a pod: run 'kubectl describe node' for the reason (runtime, CNI, disk or memory pressure)"
+    fi
     CLUSTER_CONTEXT=$(kubectl config current-context 2>/dev/null || echo "$CLUSTER_CONTEXT")
 }
 
@@ -3422,6 +3429,27 @@ k8s_namespace() {
 #  The chart repository OpenKruise actually serves. The URL this used to point at
 #  (https://openkruise.io/charts) answers 404, so the helm route would have failed too.
 OPENKRUISE_CHARTS="https://openkruise.github.io/charts/"
+
+#  An API server that answers is not yet a cluster that can run anything. A node reports itself
+#  seconds after the cluster starts, and stays NotReady for a while after that; an install fired
+#  into that window fails a couple of seconds in with "context deadline exceeded", which explains
+#  nothing. Reported from a VM whose diagnosis showed "minikube NotReady control-plane 8s" with the
+#  helm release already failed -- 22 GB allocatable, so memory was never the issue.
+k8s_node_ready() {
+    #  True when a node is Ready -- and also when this user cannot list nodes at all, because
+    #  "unknown" must never block an install: a restricted kubeconfig is not a broken cluster.
+    #  False only when nodes are visible and none of them is Ready. The STATUS column is split so
+    #  "Ready,SchedulingDisabled" still counts.
+    local out=""
+    out="$(kubectl get nodes --no-headers 2>/dev/null || true)"
+    if [ -z "$out" ]; then
+        case "$(kubectl get nodes 2>&1 | head -n 3 || true)" in
+            *orbidden*|*"cannot list resource"*|*Unauthorized*) return 0 ;;
+        esac
+        return 1
+    fi
+    printf '%s\n' "$out" | awk '{print $2}' | tr ',' '\n' | grep -qx "Ready"
+}
 
 #  `helm upgrade --install --create-namespace` is NOT idempotent. When the namespace already
 #  exists and is not owned by the release, helm refuses:
@@ -3531,7 +3559,7 @@ helm_install_with_retry() {
     case "$said" in
         *"deadline exceeded"*|*"connection refused"*|*"unable to connect"*|*"no route to host"*)
             ui_warn "$label failed while the cluster was unreachable -- that is not the chart"
-            if wait_for "the cluster to answer again" 120 kubectl get nodes; then
+            if wait_for "the cluster's node to be Ready again" 120 k8s_node_ready; then
                 ui_info "retrying once: $label"
                 run_cmd "$label (retry)" helm upgrade --install "$release" "$chart" --namespace "$ns" "$@"
                 return $?
@@ -3573,10 +3601,22 @@ k8s_openkruise() {
         "upstream publishes no kubectl manifest; install helm (https://helm.sh/docs/intro/install/) or follow chapter 8.1"
     #  Ask the cluster whether it is answering at all before burning a helm run on it: an
     #  unreachable API server produces exactly one line of helm output and no clue.
-    if [ "$OPT_DRY_RUN" != "1" ] && ! kubectl get nodes >/dev/null 2>&1; then
-        k8s_diagnose "the cluster connection" kruise-system
-        fail "the Kubernetes cluster is not answering" \
-            "the API server did not respond -- start it (minikube start, or Docker Desktop's Kubernetes) and re-run"
+    if [ "$OPT_DRY_RUN" != "1" ]; then
+        #  Reachability and readiness are asked separately and on purpose: cluster-info needs no
+        #  special permission, while listing nodes may be denied by a restricted kubeconfig -- and
+        #  a denial is not a broken cluster, so k8s_node_ready treats it as "cannot tell".
+        if ! kubectl cluster-info >/dev/null 2>&1; then
+            k8s_diagnose "the cluster connection" kruise-system
+            fail "the Kubernetes cluster is not answering" \
+                "the API server did not respond -- start it (minikube start, or Docker Desktop's Kubernetes) and re-run"
+        fi
+        #  Reachable but not Ready is the case that produced a doomed helm run and one line of
+        #  output. Give a degraded node a minute to come back before spending anything on it.
+        if ! wait_for "a Ready node" 90 k8s_node_ready; then
+            k8s_diagnose "the cluster's nodes" kruise-system
+            fail "no node is Ready" \
+                 "the cluster is answering but cannot schedule: run 'kubectl describe node' and look at the Ready condition"
+        fi
     fi
     run_cmd "adding the OpenKruise chart repo" helm repo add openkruise "$OPENKRUISE_CHARTS" || true
     run_cmd "updating chart repos" helm repo update || true

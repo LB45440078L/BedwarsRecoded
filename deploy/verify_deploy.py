@@ -293,6 +293,16 @@ def verify_installer() -> None:
           "install.sh: every helm install must go through helm_install_with_retry")
     check(text.count("k8s_diagnose") >= 5,
           "install.sh: a failed Kubernetes step must print the cluster diagnosis")
+    #  An API server that answers is not a cluster that can schedule: a node is NotReady for a
+    #  while after it appears, and installing into that window fails with "context deadline
+    #  exceeded" a couple of seconds in. Readiness is waited on, and it is asked in a way a
+    #  restricted kubeconfig cannot block.
+    check("k8s_node_ready" in text,
+          "install.sh: node readiness must be checked, not just API reachability")
+    check('"the cluster\'s node to be Ready"' in text,
+          "install.sh: the cluster step must wait for a Ready node before installing anything")
+    check('"the cluster\'s node to be Ready again"' in text,
+          "install.sh: the helm retry must wait for a Ready node, not merely an answering API")
 
 
 def verify_lobby() -> None:

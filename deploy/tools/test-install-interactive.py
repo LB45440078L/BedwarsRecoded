@@ -109,8 +109,8 @@ CHECKS = [
 #  half -- or that returned early -- then shows up as a missing check instead of as a run
 #  that quietly did less than it claims.
 RUN = []
-EXPECTED_CHECKS = 50         # 41 above + 5 diagnosis + 4 retry
-EXPECTED_WITHOUT_HOST = 37   # the same, minus the interactive thirteen
+EXPECTED_CHECKS = 55         # 50 above + 5 node-readiness checks
+EXPECTED_WITHOUT_HOST = 42   # the same, minus the interactive thirteen
 
 
 #  A stage that cannot run on this host. Recorded with the number of checks it would have
@@ -159,6 +159,7 @@ def stub_stages():
     ok = check_helm_create_namespace_is_conditional() and ok
     ok = check_failure_diagnosis() and ok
     ok = check_helm_retry_is_bounded() and ok
+    ok = check_node_readiness_gate() and ok
     return ok
 
 
@@ -839,6 +840,47 @@ def check_helm_retry_is_bounded():
         out = run_retry_harness(root, "always", waitfor="1")
         ok = note("RESULT=failed" in out and "ATTEMPTS=1" in out and "still is not answering" in out,
                   "and if the cluster never answers again, it says that and stops") and ok
+    return ok
+
+
+def check_node_readiness_gate():
+    """A node that exists is not a node that is Ready.
+
+    Reported: the diagnosis showed `minikube NotReady control-plane 8s` with the helm release
+    already failed -- the cluster had just started, cluster-info answered, and the install was
+    fired into the window where nothing can be scheduled.
+    """
+    import tempfile
+
+    fn = extract_function("k8s_node_ready")
+    cases = (
+        ("minikube   Ready    control-plane   5m\n", "READY",
+         "a Ready node passes the gate"),
+        ("minikube   NotReady   control-plane   8s\n", "NOTREADY",
+         "a NotReady node -- the reported state -- does not"),
+        ("minikube   Ready,SchedulingDisabled   control-plane   5m\n", "READY",
+         "a cordoned-but-Ready node still passes"),
+        ("", "NOTREADY", "a cluster that says nothing is not ready"),
+        ("Error from server (Forbidden): nodes is forbidden\n", "READY",
+         "a restricted kubeconfig that cannot list nodes is never blocked"),
+    )
+    ok = True
+    with tempfile.TemporaryDirectory(prefix="bedwars-ready-") as root:
+        for i, (body, expected, label) in enumerate(cases):
+            d = os.path.join(root, "case-%d" % i)
+            os.makedirs(d)
+            stub = "#!/bin/sh\n" + (("printf '%s' \"%s\"\n" % ("%s", body.rstrip("\n"))) if body else "exit 1\n")
+            if body.startswith("Error"):
+                stub = "#!/bin/sh\nprintf '%s\\n' \"%s\" >&2\nexit 1\n" % ("%s", body.rstrip("\n"))
+            with open(os.path.join(d, "kubectl"), "w", encoding="utf-8") as fh:
+                fh.write(stub)
+            os.chmod(os.path.join(d, "kubectl"), 0o755)
+            script = os.path.join(d, "probe.sh")
+            with open(script, "w", encoding="utf-8") as fh:
+                fh.write(fn + "\nif k8s_node_ready; then echo READY; else echo NOTREADY; fi\n")
+            proc = subprocess.run(["/bin/bash", script], capture_output=True, text=True,
+                                  env={"PATH": d + ":/usr/bin:/bin", "HOME": d}, timeout=60)
+            ok = note(proc.stdout.strip() == expected, label) and ok
     return ok
 
 
