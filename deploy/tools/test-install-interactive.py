@@ -109,8 +109,8 @@ CHECKS = [
 #  half -- or that returned early -- then shows up as a missing check instead of as a run
 #  that quietly did less than it claims.
 RUN = []
-EXPECTED_CHECKS = 19         # 13 interactive + 3 daemon states + 3 stub flows
-EXPECTED_WITHOUT_HOST = 6    # the same, minus the interactive thirteen
+EXPECTED_CHECKS = 23         # 13 interactive + 3 daemon states + 4 kubernetes + 3 flows
+EXPECTED_WITHOUT_HOST = 10   # the same, minus the interactive thirteen
 
 
 def note(passed, label, detail=""):
@@ -136,6 +136,7 @@ def stub_stages():
     ok = check_missing_dependency_flow() and ok
     ok = check_broken_tools_do_not_abort() and ok
     ok = check_docker_daemon_states() and ok
+    ok = check_kubernetes_cluster_resolution() and ok
     return ok
 
 
@@ -229,6 +230,153 @@ def main():
     # output: a dry run has to be safe to paste into a bug report.
     ok = stub_stages() and ok
     return summary(ok, EXPECTED_CHECKS)
+
+
+#  The Kubernetes cluster resolution. Reported: the wizard dead-ended with "no Kubernetes
+#  cluster is reachable, point kubectl at one and re-run, or install minikube/kind first",
+#  leaving the user to work it out by hand. Each stage below is a machine shape that used
+#  to end exactly that way, and none of them needs a container runtime to exercise.
+DOCKER_OK_STUB = (
+    "#!/bin/sh\n"
+    "case \"$1\" in\n"
+    "  info) if [ \"$2\" = \"--format\" ]; then echo 29.8.2; else echo 'Server: ok'; fi; exit 0 ;;\n"
+    "  compose) echo 'Docker Compose version v2.30.0'; exit 0 ;;\n"
+    "  version) echo 'Docker version 29.8.2'; exit 0 ;;\n"
+    "esac\n"
+    "exit 0\n"
+)
+
+#  One context is configured and dead; another answers.
+KUBECTL_SECOND_CONTEXT_OK = (
+    "#!/bin/sh\n"
+    "case \"$1\" in\n"
+    "  --context=*)\n"
+    "    case \"$2\" in\n"
+    "      cluster-info) [ \"$1\" = \"--context=alive-ctx\" ] && exit 0 || exit 1 ;;\n"
+    "      *) exit 0 ;;\n"
+    "    esac ;;\n"
+    "  config)\n"
+    "    case \"$2\" in\n"
+    "      current-context) echo dead-ctx; exit 0 ;;\n"
+    "      get-contexts) [ \"$3\" = \"-o\" ] && { echo dead-ctx; echo alive-ctx; }; exit 0 ;;\n"
+    "      use-context) exit 0 ;;\n"
+    "    esac ;;\n"
+    "  cluster-info) exit 1 ;;\n"
+    "  *) exit 0 ;;\n"
+    "esac\n"
+    "exit 0\n"
+)
+
+#  One context, and nothing answers through it.
+KUBECTL_ALL_DEAD = (
+    "#!/bin/sh\n"
+    "case \"$1\" in\n"
+    "  --context=*) exit 1 ;;\n"
+    "  config)\n"
+    "    case \"$2\" in\n"
+    "      current-context) echo only-ctx; exit 0 ;;\n"
+    "      get-contexts) [ \"$3\" = \"-o\" ] && echo only-ctx; exit 0 ;;\n"
+    "      use-context) exit 0 ;;\n"
+    "    esac ;;\n"
+    "  cluster-info) exit 1 ;;\n"
+    "  *) exit 0 ;;\n"
+    "esac\n"
+    "exit 0\n"
+)
+
+#  A local cluster that exists but is not running: one `minikube start` from working.
+MINIKUBE_STOPPED_PROFILE = (
+    "#!/bin/sh\n"
+    "case \"$1\" in\n"
+    "  profile) [ \"$2\" = list ] && echo "
+    "'{\"valid\":[{\"Name\":\"minikube\",\"Status\":\"Stopped\"}],\"invalid\":[]}'; exit 0 ;;\n"
+    "  status) echo '{\"Host\":\"Stopped\",\"Kubelet\":\"Stopped\"}'; exit 0 ;;\n"
+    "  start) echo 'minikube start would run here'; exit 0 ;;\n"
+    "  version) echo v1.34.0; exit 0 ;;\n"
+    "esac\n"
+    "exit 0\n"
+)
+
+
+#  The stage starts at the wizard, so nothing may be "missing" before it: the fake PATH has
+#  to carry the build tools too, or the run stops at the dependency check instead.
+PRESENT_NOOP_STUB = "#!/bin/sh\nexit 0\n"
+
+
+def kube_stubs(**extra):
+    stubs = {"docker": DOCKER_OK_STUB, "java": PRESENT_NOOP_STUB, "mvn": PRESENT_NOOP_STUB}
+    stubs.update(extra)
+    return stubs
+
+
+def run_kubernetes_wizard(tmpdir):
+    """A dry, unattended Kubernetes install against a prepared PATH."""
+    env = dict(os.environ)
+    env["PATH"] = tmpdir
+    env["NO_COLOR"] = "1"
+    env["TERM"] = "dumb"
+    proc = subprocess.run([INSTALLER, "--dry-run", "--yes", "--mode", "kubernetes"],
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          cwd=REPO_ROOT, env=env, timeout=240)
+    return ANSI.sub("", proc.stdout.decode("utf-8", "replace"))
+
+
+def check_kubernetes_cluster_resolution():
+    """Every shape that used to dead-end has to lead somewhere the user can act on."""
+    import tempfile
+
+    dead_end = ("no Kubernetes cluster is reachable",
+                "point kubectl at one (kubectl config use-context ...) and re-run")
+
+    cases = (
+        (
+            kube_stubs(kubectl=KUBECTL_SECOND_CONTEXT_OK),
+            ("kind", "minikube", "kubectl", "java", "mvn"),
+            "a context that answers is found and used, not left to the user",
+            ("using the cluster in context: alive-ctx",),
+            dead_end,
+        ),
+        (
+            kube_stubs(kubectl=KUBECTL_ALL_DEAD, minikube=MINIKUBE_STOPPED_PROFILE),
+            ("kind", "minikube", "kubectl", "java", "mvn"),
+            "a stopped local cluster is offered, and starting it is the default",
+            ("Start the minikube cluster", "minikube start -p minikube"),
+            dead_end,
+        ),
+        (
+            kube_stubs(kubectl=KUBECTL_ALL_DEAD),
+            ("kind", "minikube", "kubectl", "java", "mvn"),
+            "with no cluster tool, installing one is offered (and refused unattended)",
+            ("Install minikube, then create a cluster", "not installing anything unattended"),
+            dead_end,
+        ),
+        (
+            kube_stubs(),
+            ("kind", "minikube", "kubectl", "java", "mvn"),
+            "without kubectl the path says how to get it",
+            ("kubectl", "install it yourself"),
+            ("no Kubernetes cluster is reachable",),
+        ),
+    )
+
+    ok = True
+    for stubs, hide, label, must, must_not in cases:
+        with tempfile.TemporaryDirectory(prefix="bedwars-fakekube-") as tmpdir:
+            build_fake_path(tmpdir, hide=hide, stubs=stubs)
+            text = run_kubernetes_wizard(tmpdir)
+        missing = [m for m in must if m not in text]
+        unwanted = [m for m in must_not if m in text]
+        passed = not missing and not unwanted
+        ok = ok and passed
+        detail = ""
+        if missing:
+            detail += "  missing %r" % (missing,)
+        if unwanted:
+            detail += "  unwanted %r" % (unwanted,)
+        note(passed, label, detail)
+    return ok
+
+
 
 
 def summary(ok, expected):
@@ -523,4 +671,13 @@ def check_unattended_redaction():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    #  The count is checked HERE as well as inside main(), because the way this suite has
+    #  twice gone wrong is main() being cut short by an insertion: the trailing summary was
+    #  then unreachable, the process exited 0, and stages quietly did not run. A guard that
+    #  lives only inside the function cannot notice the function ending early.
+    code = main()
+    if code == 0 and len(RUN) < EXPECTED_CHECKS:
+        print("FAIL  only %d of %d checks ran -- a stage stopped early or never ran"
+              % (len(RUN), EXPECTED_CHECKS))
+        code = 1
+    sys.exit(code)

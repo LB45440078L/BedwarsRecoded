@@ -247,7 +247,10 @@ where no distribution ships one — rather than closing with a list of names to 
 it prints the exact commands for your machine and stops cleanly. Docker is judged by *asking the
 daemon* (`docker info`), not by looking for a binary: a daemon that is running while your shell is
 refused its socket is reported as exactly that, with the `usermod -aG docker` / `newgrp docker`
-fix, and never as "the daemon is not answering". The images carry their own JDK,
+fix, and never as "the daemon is not answering". The Kubernetes path does the same for a
+cluster: it checks every kubectl context, offers to start a local cluster that is merely
+stopped, offers to create one (minikube or kind), and offers to install the tool that creates
+it — it never ends with "point kubectl at one and re-run". The images carry their own JDK,
 so a missing `java`/`maven` is a note (they are only needed to build the plugin here), never a
 blocker. `--yes` accepts every
 default for an unattended run; `--mode kubernetes` skips the mode question. Walkthrough:

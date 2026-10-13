@@ -90,6 +90,7 @@ CFG_NAMESPACE="bedwars"
 CFG_RELEASE="bedwars"
 CFG_K8S_INSTALL_MODE="helm"
 CFG_K8S_PROVISION_CLUSTER="no"
+CFG_K8S_CLUSTER_TOOL=""     # minikube | kind: which local cluster tool to create with
 CFG_MINIKUBE_CPUS="3"
 CFG_MINIKUBE_MEMORY="4096"
 CFG_MINIKUBE_DRIVER="docker"
@@ -834,6 +835,7 @@ HAVE_KUBECTL="0"
 HAVE_HELM="0"
 HAVE_CLUSTER="0"
 HAVE_MINIKUBE="0"
+HAVE_KIND="0"
 HAVE_CURL="0"
 HAVE_SM_CRD="0"
 HAVE_KEDA_CRD="0"
@@ -951,6 +953,10 @@ probe_tools() {
     if command -v minikube >/dev/null 2>&1; then
         HAVE_MINIKUBE="1"
         record_env info "minikube" "$(minikube version --short 2>/dev/null || echo present) -- a local cluster can be started for you"
+    fi
+    if command -v kind >/dev/null 2>&1; then
+        HAVE_KIND="1"
+        record_env info "kind" "$(kind version 2>/dev/null | head -1 || echo present) -- a local cluster can be created for you"
     fi
     if command -v helm >/dev/null 2>&1; then
         HAVE_HELM="1"
@@ -1268,6 +1274,14 @@ pkg_candidates() {
                 *)     printf '' ;;
             esac
             ;;
+        kind)
+            #  No distribution packages kind; it is a single static binary, so Linux
+            #  takes the release download and macOS takes the formula.
+            case "$OS_FAMILY" in
+                macos) printf 'kind\n' ;;
+                *)     printf '' ;;
+            esac
+            ;;
         java)
             case "$OS_FAMILY" in
                 # 25 first, then whatever the distribution has. A 21 install is still
@@ -1387,6 +1401,11 @@ install_binary_tool() {
             url="https://storage.googleapis.com/minikube/releases/latest/minikube-linux-$arch"
             install_binary_file "downloading minikube" "$url" minikube || { FAILED_INSTALL="$FAILED_INSTALL $tool"; return 1; }
             ;;
+        kind)
+            #  kind publishes one static binary per platform; no package manager needed.
+            url="https://kind.sigs.k8s.io/dl/latest/kind-linux-$arch"
+            install_binary_file "downloading kind" "$url" kind || { FAILED_INSTALL="$FAILED_INSTALL $tool"; return 1; }
+            ;;
         compose)
             # The plugin binary, exactly as the upstream docs install it.
             url="https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$arch"
@@ -1448,7 +1467,7 @@ install_one_tool() {
             install_binary_tool "$tool"
             return $?
             ;;
-        kubectl|helm|minikube)
+        kubectl|helm|minikube|kind)
             if install_with_pkg_mgr "$tool"; then
                 return 0
             fi
@@ -1492,6 +1511,7 @@ manual_command() {
         kubectl) printf 'curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/%s/kubectl" && chmod +x kubectl && sudo mv kubectl /usr/local/bin/' "$arch" ;;
         helm)    printf 'curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash' ;;
         minikube) printf 'curl -Lo minikube "https://storage.googleapis.com/minikube/releases/latest/minikube-linux-%s" && chmod +x minikube && sudo mv minikube /usr/local/bin/' "$arch" ;;
+        kind)    printf 'curl -Lo kind "https://kind.sigs.k8s.io/dl/latest/kind-linux-%s" && chmod +x kind && sudo mv kind /usr/local/bin/' "$arch" ;;
         compose) printf 'install the compose v2 plugin: https://docs.docker.com/compose/install/linux/' ;;
         *)       printf '' ;;
     esac
@@ -2076,38 +2096,346 @@ wizard_docker() {
 # ---------------------------------------------------------------------------
 #  Wizard: Kubernetes
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+#  Reaching a cluster without sending the user away to do homework
+# ---------------------------------------------------------------------------
+#  "no cluster is reachable, point kubectl at one and re-run" made the user leave the
+#  installer, work it out by hand and come back -- which is the opposite of a guided
+#  install, and it cannot see the two most common cases: a context that is listed but
+#  dead, and a local cluster that exists but is not running.
+
+kube_current_context() { kubectl config current-context 2>/dev/null || true; }
+
+kube_contexts() { kubectl config get-contexts -o name 2>/dev/null || true; }
+
+#  Does the API server behind this context answer? A context can be listed and dead; that
+#  is a different thing from "no cluster exists", and it is the common one.
+kube_context_alive() {
+    [ -n "$1" ] || return 1
+    kubectl --context="$1" cluster-info --request-timeout=3s >/dev/null 2>&1
+}
+
+#  minikube has no porcelain list, so the names come out of its JSON without needing jq.
+minikube_profiles() {
+    command -v minikube >/dev/null 2>&1 || return 0
+    minikube profile list -o json 2>/dev/null | tr ',' '\n' | grep -o '"Name":"[^"]*"' \
+        | cut -d'"' -f4 || true
+}
+
+minikube_profile_running() {
+    [ -n "$1" ] || return 1
+    local host=""
+    host=$(minikube status -p "$1" -o json 2>/dev/null | grep -o '"Host":"[A-Za-z]*"' \
+        | cut -d'"' -f4 || true)
+    [ "$host" = "Running" ]
+}
+
+kind_clusters() {
+    command -v kind >/dev/null 2>&1 || return 0
+    kind get clusters 2>/dev/null || true
+}
+
+#  A name the user types is worth validating against the real list, because the cost of a
+#  typo is a confusing "context not found" further down.
+kube_is_known_context() {
+    local c=""
+    for c in $(kube_contexts); do [ "$c" = "$1" ] && return 0; done
+    return 1
+}
+
+#  Switch kubectl to a context and confirm the cluster behind it really answers before
+#  letting the install depend on it.
+kube_use_context() {
+    local ctx="$1"
+    run_cmd "pointing kubectl at '$ctx'" kubectl config use-context "$ctx" || return 1
+    if [ "$OPT_DRY_RUN" = "1" ]; then
+        HAVE_CLUSTER="1"; CLUSTER_CONTEXT="$ctx"
+        ui_info "[dry-run] a real run would now verify that '$ctx' answers"
+        return 0
+    fi
+    if wait_for "the cluster in '$ctx' to answer" 30 kube_context_alive "$ctx"; then
+        HAVE_CLUSTER="1"; CLUSTER_CONTEXT="$ctx"
+        ui_ok "cluster reachable through context '$ctx'"
+        return 0
+    fi
+    ui_warn "'$ctx' is selected, but nothing answers there yet"
+    return 1
+}
+
+#  Start a local cluster that already exists. minikube keeps profiles around when they are
+#  stopped, and a stopped kind cluster is a stopped container -- both are one command from
+#  working again, and neither is worth making the user look up.
+kube_start_minikube() {
+    local profile="$1"
+    if [ "$OPT_DRY_RUN" = "1" ]; then
+        ui_info "[dry-run] would run: minikube start -p $profile"
+        HAVE_CLUSTER="1"; CLUSTER_CONTEXT="$profile"
+        return 0
+    fi
+    #  Start it now rather than at provisioning time: everything the wizard asks next
+    #  (namespaces, existing CRDs, where images have to be loaded) is better answered
+    #  against a cluster that is actually up.
+    run_streaming "starting the minikube cluster '$profile'" minikube start -p "$profile" || {
+        ui_warn "minikube would not start the profile '$profile'"
+        ui_hint "run 'minikube start -p $profile' by hand to see the full error"
+        return 1
+    }
+    #  A just-started cluster is not instantly answerable: poll the API, not the process.
+    if wait_for "the cluster API to answer" 180 kubectl cluster-info; then
+        HAVE_CLUSTER="1"; CLUSTER_CONTEXT=$(kube_current_context)
+        [ -n "$CLUSTER_CONTEXT" ] || CLUSTER_CONTEXT="$profile"
+        ui_ok "minikube cluster '$profile' is up"
+        return 0
+    fi
+    ui_warn "minikube started, but the API did not answer in time"
+    return 1
+}
+
+kube_start_kind() {
+    local name="$1"
+    if [ "$OPT_DRY_RUN" = "1" ]; then
+        ui_info "[dry-run] would run: docker start $name-control-plane"
+        HAVE_CLUSTER="1"; CLUSTER_CONTEXT="kind-$name"
+        return 0
+    fi
+    run_cmd "starting the kind node '$name-control-plane'" docker start "$name-control-plane" || return 1
+    if wait_for "the cluster API to answer" 180 kubectl cluster-info; then
+        HAVE_CLUSTER="1"; CLUSTER_CONTEXT="kind-$name"
+        ui_ok "kind cluster '$name' is up"
+        return 0
+    fi
+    ui_warn "the kind node started, but the API did not answer in time"
+    return 1
+}
+
+#  Ask the cluster what it is, act on the answer, and keep offering until the user has
+#  either a cluster or an explicit decision to stop. Every option here is something the
+#  installer can do itself.
+#
+#  Note the appends: `arr[${#arr[@]}]=value`, never `arr=( "${arr[@]}" value )`. Expanding
+#  an empty array is an unbound-variable error under `set -u` in bash 3.2 -- which is
+#  /bin/bash on macOS, and which is exactly how this loop first died.
+kube_resolve_cluster() {
+    local round=0 t="" pick="" action="" current="" scanned=0
+    local ask_menu_out="" named=""
+    local -a menu=()
+    local -a values=()
+    local -a alive=()
+
+    while :; do
+        round=$(( round + 1 ))
+        HAVE_CLUSTER="0"; CLUSTER_CONTEXT=""
+        #  Insurance: every branch above returns or exits, but a loop that cannot end is the
+        #  worst possible failure mode in an installer, so it is bounded explicitly.
+        if [ "$round" -gt 10 ]; then
+            fail "could not settle on a Kubernetes cluster" \
+                 "run 'kubectl config get-contexts' and 'minikube status' by hand, then re-run"
+        fi
+
+        #  The current context first: it is what the next command would use anyway.
+        current=$(kube_current_context)
+        alive=()
+        if kube_context_alive "$current"; then
+            alive[${#alive[@]}]="$current"
+        fi
+        #  Then the others, capped: a machine with fifty contexts must not spend a minute
+        #  in connection timeouts. "Point at one by name" covers whatever is left.
+        for t in $(kube_contexts); do
+            [ "$t" = "$current" ] && continue
+            [ "$scanned" -ge 10 ] && break
+            scanned=$(( scanned + 1 ))
+            if kube_context_alive "$t"; then alive[${#alive[@]}]="$t"; fi
+        done
+
+        if [ "${#alive[@]}" -ge 1 ]; then
+            if [ "${#alive[@]}" = "1" ]; then
+                if [ "${alive[0]}" = "$current" ]; then
+                    #  Already there: switching would be a no-op command on screen.
+                    HAVE_CLUSTER="1"; CLUSTER_CONTEXT="$current"
+                    ui_ok "the current context already answers: $current"
+                    return 0
+                fi
+                if kube_use_context "${alive[0]}"; then return 0; fi
+            else
+                #  Several answer: let the user choose rather than silently taking one.
+                menu=(); values=()
+                for t in "${alive[@]}"; do
+                    menu[${#menu[@]}]="$(( ${#menu[@]} + 1 ))|${t}|reachable"
+                    values[${#values[@]}]="use:$t"
+                done
+                ui_blank
+                ui_info "more than one cluster answers; the current context is '${current:-none}'"
+                ask_menu pick "Which cluster should this install use?" "1" "${menu[@]}"
+                local chosen="${values[$(( pick - 1 ))]}"
+                if kube_use_context "${chosen#use:}"; then return 0; fi
+                continue
+            fi
+        fi
+
+        #  Nothing answers. Offer the ways out, in the order that costs the user least.
+        menu=(); values=()
+        local mkp="" kc=""
+        for mkp in $(minikube_profiles); do
+            if minikube_profile_running "$mkp"; then continue; fi
+            menu[${#menu[@]}]="$(( ${#menu[@]} + 1 ))|Start the minikube cluster '$mkp'|minikube is installed and '$mkp' exists, but is not running."
+            values[${#values[@]}]="minikube-start:$mkp"
+        done
+        for kc in $(kind_clusters); do
+            menu[${#menu[@]}]="$(( ${#menu[@]} + 1 ))|Start the kind cluster '$kc'|Its node container exists but is stopped."
+            values[${#values[@]}]="kind-start:$kc"
+        done
+        if command -v minikube >/dev/null 2>&1; then
+            menu[${#menu[@]}]="$(( ${#menu[@]} + 1 ))|Create a new minikube cluster|minikube makes one here; you pick CPUs, memory and a driver next."
+            values[${#values[@]}]="minikube-create:"
+        elif command -v kind >/dev/null 2>&1; then
+            menu[${#menu[@]}]="$(( ${#menu[@]} + 1 ))|Create a new kind cluster|kind makes one here, in Docker."
+            values[${#values[@]}]="kind-create:"
+        fi
+        if ! command -v minikube >/dev/null 2>&1 && ! command -v kind >/dev/null 2>&1; then
+            menu[${#menu[@]}]="$(( ${#menu[@]} + 1 ))|Install minikube, then create a cluster|The local cluster this installer sets up end to end, drivers and sizes included."
+            values[${#values[@]}]="install:minikube"
+            menu[${#menu[@]}]="$(( ${#menu[@]} + 1 ))|Install kind, then create a cluster|Lighter: its clusters are Docker containers. Assumes Docker is working."
+            values[${#values[@]}]="install:kind"
+        fi
+        if [ -n "$(kube_contexts)" ]; then
+            menu[${#menu[@]}]="$(( ${#menu[@]} + 1 ))|Point at a context by name|For a cluster somewhere else: name the kubectl context to use."
+            values[${#values[@]}]="use-named:"
+        fi
+        menu[${#menu[@]}]="$(( ${#menu[@]} + 1 ))|Stop here|Prints what is missing. You can also re-run with --mode docker."
+        values[${#values[@]}]="stop:"
+
+        ui_blank
+        ui_warn "no Kubernetes cluster answers right now (current context: '${current:-none}')"
+        ui_hint "Docker Desktop's own Kubernetes also has to be switched on there first"
+        ask_menu pick "How should I get you a cluster?" "1" "${menu[@]}"
+        action="${values[$(( pick - 1 ))]}"
+        case "$action" in
+            use:*)
+                kube_use_context "${action#use:}" && return 0
+                ;;
+            use-named:*)
+                ask named "kubectl context name" "$current" v_notempty
+                if kube_is_known_context "$named" || [ "$OPT_DRY_RUN" = "1" ]; then
+                    kube_use_context "$named" && return 0
+                else
+                    ui_err "'$named' is not one of kubectl's contexts"
+                    ui_hint "kubectl config get-contexts   # lists them"
+                fi
+                ;;
+            minikube-start:*)
+                kube_start_minikube "${action#minikube-start:}" && return 0
+                ;;
+            kind-start:*)
+                kube_start_kind "${action#kind-start:}" && return 0
+                ;;
+            minikube-create:*)
+                CFG_K8S_PROVISION_CLUSTER="y"; CFG_K8S_CLUSTER_TOOL="minikube"
+                ui_ok "a minikube cluster will be created later in this run"
+                return 0
+                ;;
+            kind-create:*)
+                CFG_K8S_PROVISION_CLUSTER="y"; CFG_K8S_CLUSTER_TOOL="kind"
+                ui_ok "a kind cluster will be created later in this run"
+                return 0
+                ;;
+            install:*)
+                if [ "$OPT_YES" = "1" ] || [ "$OPT_INSTALL_DEPS" = "no" ]; then
+                    #  Never install a package unattended: an unattended run must not
+                    #  decide to put software on the machine.
+                    ui_warn "not installing anything unattended"
+                    ui_hint "install it yourself, then re-run:"
+                    ui_hint "  $(manual_command "minikube")"
+                    fail "no cluster, and nothing installed to create one" \
+                         "install minikube (or kind) and re-run this installer"
+                fi
+                local want="y" tool="${action#install:}"
+                ask_yesno want "Install $tool now?" "y"
+                if [ "$want" != "y" ]; then
+                    ui_hint "install it yourself, then re-run:"
+                    ui_hint "  $(manual_command "$tool")"
+                    fail "no cluster, and nothing installed to create one" \
+                         "install $tool and re-run this installer"
+                fi
+                if install_one_tool "$tool"; then
+                    probe_tools >/dev/null 2>&1 || true
+                    CFG_K8S_PROVISION_CLUSTER="y"; CFG_K8S_CLUSTER_TOOL="$tool"
+                    ui_ok "$tool installed; a cluster will be created later in this run"
+                    return 0
+                fi
+                fail "$tool could not be installed" \
+                     "install it yourself, then re-run this installer"
+                ;;
+            stop:*)
+                ui_blank
+                ui_hint "the ways out, in the order they usually apply:"
+                ui_hint "  1. point kubectl at a cluster:  kubectl config use-context <name>"
+                ui_hint "  2. start a local one:           minikube start   /  kind create cluster"
+                ui_hint "  3. install one:                 $(manual_command "minikube")"
+                ui_hint "  4. use Docker instead:          re-run with --mode docker"
+                fail "no Kubernetes cluster was chosen" \
+                     "do one of the above, then run this installer again"
+                ;;
+        esac
+    done
+}
 wizard_kubernetes() {
     phase "$(em '☸️') Kubernetes: cluster"
-    if [ "$HAVE_CLUSTER" = "1" ]; then
-        ui_ok "using the current context: $CLUSTER_CONTEXT"
-        local prov="n"
-        ask_yesno prov "Start a fresh local cluster anyway (minikube)?" "n"
-        if [ "$prov" = "y" ]; then
-            CFG_K8S_PROVISION_CLUSTER="yes"
+
+    #  kubectl first: without it nothing about a cluster can be judged, and it is one
+    #  install away on every platform this installer supports.
+    if [ "$HAVE_KUBECTL" != "1" ]; then
+        ui_warn "kubectl is not installed, and it is how this path reaches a cluster"
+        local getk="y"
+        ask_yesno getk "Install kubectl now?" "y"
+        if [ "$getk" = "y" ] && [ "$OPT_YES" != "1" ] && [ "$OPT_INSTALL_DEPS" != "no" ]; then
+            install_one_tool kubectl && probe_tools >/dev/null 2>&1 || true
+        elif [ "$getk" = "y" ]; then
+            ui_warn "not installing anything unattended"
+            ui_hint "install it yourself, then re-run:"
+            ui_hint "  $(manual_command "kubectl")"
         fi
-    else
-        if [ "$HAVE_MINIKUBE" = "1" ]; then
-            ui_info "no cluster is reachable, but minikube can create one"
-            CFG_K8S_PROVISION_CLUSTER="y"
-        elif [ "$HAVE_KUBECTL" = "1" ]; then
-            fail "no Kubernetes cluster is reachable" \
-                 "point kubectl at one (kubectl config use-context ...) and re-run, or install minikube/kind first"
-        else
-            fail "the Kubernetes path needs kubectl" "install kubectl, or choose the Docker path"
+        if [ "$HAVE_KUBECTL" != "1" ]; then
+            fail "the Kubernetes path needs kubectl" \
+                 "install kubectl (see the command above), or re-run with --mode docker"
         fi
     fi
+
+    #  This is where the old installer gave up with "point kubectl at one and re-run".
+    #  It now looks for a context that answers, offers to start a local cluster that
+    #  already exists but is stopped, offers to create one, and offers to install the
+    #  tool that creates it -- and only stops if the user chooses to stop.
+    kube_resolve_cluster
+    if [ "$HAVE_CLUSTER" = "1" ]; then
+        ui_ok "using the cluster in context: $CLUSTER_CONTEXT"
+        local prov="n"
+        ask_yesno prov "Create a fresh local cluster as well?" "n"
+        if [ "$prov" = "y" ]; then
+            CFG_K8S_PROVISION_CLUSTER="y"
+        fi
+    fi
+
     if [ "$CFG_K8S_PROVISION_CLUSTER" = "y" ]; then
-        ask CFG_MINIKUBE_CPUS "minikube CPUs" "3" v_int
-        ask CFG_MINIKUBE_MEMORY "minikube memory (MB)" "4096" v_int
-        ask_menu CFG_MINIKUBE_DRIVER "minikube driver" "1" \
-            "1|docker|Runs the cluster in containers. Needs nothing extra." \
-            "2|podman|Same idea, a different runtime." \
-            "3|hyperkit / hypervisor|A VM. Best isolation, slowest to start."
-        case "$CFG_MINIKUBE_DRIVER" in
-            1) CFG_MINIKUBE_DRIVER="docker" ;;
-            2) CFG_MINIKUBE_DRIVER="podman" ;;
-            3) CFG_MINIKUBE_DRIVER="$( [ "$(uname -s)" = "Darwin" ] && echo hyperkit || echo kvm2 )" ;;
-        esac
+        if [ -z "$CFG_K8S_CLUSTER_TOOL" ]; then
+            #  Whichever is installed decides; minikube is the better-supported one here.
+            if command -v minikube >/dev/null 2>&1; then CFG_K8S_CLUSTER_TOOL="minikube"
+            elif command -v kind >/dev/null 2>&1; then CFG_K8S_CLUSTER_TOOL="kind"
+            else CFG_K8S_CLUSTER_TOOL="minikube"; fi
+        fi
+        if [ "$CFG_K8S_CLUSTER_TOOL" = "kind" ]; then
+            ui_info "kind sizes its cluster from Docker's own resources, so there is nothing to pick here"
+        else
+            ask CFG_MINIKUBE_CPUS "minikube CPUs" "3" v_int
+            ask CFG_MINIKUBE_MEMORY "minikube memory (MB)" "4096" v_int
+            ask_menu CFG_MINIKUBE_DRIVER "minikube driver" "1" \
+                "1|docker|Runs the cluster in containers. Needs nothing extra." \
+                "2|podman|Same idea, a different runtime." \
+                "3|hyperkit / hypervisor|A VM. Best isolation, slowest to start."
+            case "$CFG_MINIKUBE_DRIVER" in
+                1) CFG_MINIKUBE_DRIVER="docker" ;;
+                2) CFG_MINIKUBE_DRIVER="podman" ;;
+                3) CFG_MINIKUBE_DRIVER="$( [ "$(uname -s)" = "Darwin" ] && echo hyperkit || echo kvm2 )" ;;
+            esac
+        fi
     fi
 
     phase "$(em '📦') Kubernetes: what to install"
@@ -2132,7 +2460,7 @@ wizard_kubernetes() {
         KRUISE_PRESENT="1"
         ui_ok "OpenKruise is already installed here (the GameServerSet CRD is present)"
     fi
-    if [ "$HAVE_MINIKUBE" = "1" ] || [ "$CFG_K8S_PROVISION_CLUSTER" = "y" ]; then
+    if [ "$HAVE_MINIKUBE" = "1" ] || [ "$HAVE_KIND" = "1" ] || [ "$CFG_K8S_PROVISION_CLUSTER" = "y" ]; then
         local loadimg="y"
         ask_yesno loadimg "Load the built images directly into the cluster?" "y"
         if [ "$loadimg" = "y" ]; then CFG_K8S_LOAD_IMAGES="yes"; else CFG_K8S_LOAD_IMAGES="no"; fi
@@ -2825,31 +3153,66 @@ KUBECTL_NS=""
 k8s_establish_cluster() {
     if [ "$CFG_K8S_PROVISION_CLUSTER" = "y" ]; then
         step_begin "Starting a local cluster"
-        if ! command -v minikube >/dev/null 2>&1; then
-            fail "minikube is not installed" "install minikube, or point kubectl at an existing cluster"
+        local tool="$CFG_K8S_CLUSTER_TOOL"
+        if [ -z "$tool" ]; then
+            if command -v minikube >/dev/null 2>&1; then tool="minikube"
+            elif command -v kind >/dev/null 2>&1; then tool="kind"
+            else tool="minikube"; fi
         fi
-        local state
-        state=$(minikube status -o json 2>/dev/null | grep -o '"Host":"[A-Za-z]*"' | cut -d'"' -f4 || true)
-        if [ "$state" = "Running" ]; then
-            ui_ok "minikube is already running"
-        else
-            if ! run_streaming "starting minikube" minikube start --driver="$CFG_MINIKUBE_DRIVER" \
-                    --cpus="$CFG_MINIKUBE_CPUS" --memory="$CFG_MINIKUBE_MEMORY"; then
-                ui_warn "the first start failed -- a half-initialised cluster is common"
-                ui_hint "retrying once from a clean slate"
-                run_cmd "deleting the bad cluster" minikube delete || true
-                run_streaming "starting minikube (retry)" minikube start --driver="$CFG_MINIKUBE_DRIVER" \
-                    --cpus="$CFG_MINIKUBE_CPUS" --memory="$CFG_MINIKUBE_MEMORY" || \
-                    fail "minikube would not start" "run 'minikube start' by hand to see the full error"
+        if [ "$tool" = "kind" ]; then
+            if ! command -v kind >/dev/null 2>&1; then
+                fail "kind is not installed" "install kind, or point kubectl at an existing cluster"
+            fi
+            local kname="bedwars"
+            if kind get clusters 2>/dev/null | grep -qx "$kname"; then
+                #  A cluster that exists but is stopped is a stopped container: starting it
+                #  is far cheaper than deleting and recreating.
+                ui_info "the kind cluster '$kname' exists; making sure its node is running"
+                run_cmd "starting the kind node" docker start "$kname-control-plane" || true
+            else
+                run_streaming "creating the kind cluster '$kname'" \
+                    kind create cluster --name "$kname" --wait 180s || {
+                    ui_warn "the first attempt failed -- a half-created cluster is common"
+                    run_cmd "deleting the partial cluster" kind delete cluster --name "$kname" || true
+                    run_streaming "creating the kind cluster (retry)" \
+                        kind create cluster --name "$kname" --wait 180s || \
+                        fail "kind would not create a cluster" "run 'kind create cluster' by hand to see the full error"
+                }
             fi
             if [ "$OPT_DRY_RUN" = "1" ]; then
-                ui_hint "[dry-run] would start minikube now"
+                ui_hint "[dry-run] would create or start the kind cluster now"
             else
-                ui_ok "minikube started"
+                ui_ok "kind cluster ready"
             fi
+            HAVE_CLUSTER="1"
+            CLUSTER_CONTEXT=$(kubectl config current-context 2>/dev/null || echo "kind-$kname")
+        else
+            if ! command -v minikube >/dev/null 2>&1; then
+                fail "minikube is not installed" "install minikube, or point kubectl at an existing cluster"
+            fi
+            local state
+            state=$(minikube status -o json 2>/dev/null | grep -o '"Host":"[A-Za-z]*"' | cut -d'"' -f4 || true)
+            if [ "$state" = "Running" ]; then
+                ui_ok "minikube is already running"
+            else
+                if ! run_streaming "starting minikube" minikube start --driver="$CFG_MINIKUBE_DRIVER" \
+                        --cpus="$CFG_MINIKUBE_CPUS" --memory="$CFG_MINIKUBE_MEMORY"; then
+                    ui_warn "the first start failed -- a half-initialised cluster is common"
+                    ui_hint "retrying once from a clean slate"
+                    run_cmd "deleting the bad cluster" minikube delete || true
+                    run_streaming "starting minikube (retry)" minikube start --driver="$CFG_MINIKUBE_DRIVER" \
+                        --cpus="$CFG_MINIKUBE_CPUS" --memory="$CFG_MINIKUBE_MEMORY" || \
+                        fail "minikube would not start" "run 'minikube start' by hand to see the full error"
+                fi
+                if [ "$OPT_DRY_RUN" = "1" ]; then
+                    ui_hint "[dry-run] would start minikube now"
+                else
+                    ui_ok "minikube started"
+                fi
+            fi
+            HAVE_CLUSTER="1"
+            CLUSTER_CONTEXT=$(kubectl config current-context 2>/dev/null || echo minikube)
         fi
-        HAVE_CLUSTER="1"
-        CLUSTER_CONTEXT=$(kubectl config current-context 2>/dev/null || echo minikube)
     fi
     if [ "$OPT_DRY_RUN" = "1" ]; then
         ui_hint "[dry-run] skipping the cluster reachability check"

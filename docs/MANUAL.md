@@ -1599,6 +1599,23 @@ Three things it knows that are easy to get wrong by hand:
   what a binary which is *not* docker prints while still exiting 0.
 - **On WSL** it says so and points at the Docker Desktop WSL integration, which is far less
   painful than running a daemon inside the distribution.
+- **The Kubernetes step never sends you away to work out a cluster.** It asks each context
+  kubectl knows whether it actually answers, and then:
+
+  | what it finds | what it does |
+  |---|---|
+  | one context answers | uses it (switching only when it is not already current) |
+  | several answer | lists them and lets you pick |
+  | a local cluster exists but is stopped | offers to start it — minikube profiles and kind node containers both |
+  | nothing answers, and minikube/kind is installed | offers to create a cluster (minikube asks for CPUs, memory and a driver; kind sizes itself from Docker) |
+  | nothing is installed | offers to install minikube or kind, then create the cluster |
+  | a cluster lives elsewhere | `Point at a context by name` takes the context name and verifies it |
+
+  A reachable cluster is *verified per context* (`kubectl --context=X cluster-info`), because a
+  context that is configured but dead is the common state, and it is not the same as "there is
+  no cluster". Nothing is installed without being asked — an unattended `--yes` run will not
+  put software on the machine — and the last option ("Stop here") prints the four ways out,
+  including `--mode docker`.
 
 Two of the questions deserve their own explanation, because both change who can join:
 
@@ -3595,6 +3612,19 @@ name; under `LOCAL`, confirm `/templates/<name>/level.dat` exists in the image. 
 starts, on a generated world — the log says so explicitly.
 
 ### 20.3 Kubernetes
+
+**The installer says "no Kubernetes cluster is reachable" and stops**
+That message is gone. Current versions never stop there: they check every context, offer to
+start a local cluster that is merely stopped, offer to create one, and offer to install
+minikube or kind if nothing can create one (13.8 has the table). If you are seeing that
+sentence, you are running an older `install.sh`. On the current one, the only way to stop is to
+choose "Stop here" — and even then it prints the four ways out.
+
+**You have a cluster, but the installer does not see it**
+Most often the current context is not the one that answers. The installer checks all of them and
+lists the ones that respond, so pick yours from the menu; if it is outside the first ten it
+scans, use "Point at a context by name". If the cluster is Docker Desktop's, its Kubernetes has
+to be switched on there first — the menu says so.
 
 **`error: unable to recognize ...: no matches for kind "GameServerSet"`**
 The OpenKruise CRD is not installed. Install OpenKruise and kruise-game first (chapter 8.1).
