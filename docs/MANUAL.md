@@ -3690,6 +3690,24 @@ You are running an older copy of `install.sh`. In current versions that sentence
 reached from a running daemon; the state is determined by asking the daemon, and each outcome has
 its own message.
 
+**An install hangs for about five minutes and then says `FAILED (1): sudo mv ... /usr/local/bin/...`**
+That five minutes is sudo's own password timeout, and the cause is that the prompt went somewhere you
+could not see it: the installer's command runners send a command's output to the log file, so
+`[sudo] password for ...:` was written there, the screen showed only `RUN: sudo mv ...`, and sudo
+waited for an answer that never came. The installer now settles credentials *before* any command that
+needs root, with a one-time prompt on the terminal, and then runs those commands non-interactively —
+so a credential it cannot get fails immediately instead of five minutes later. If sudo is not
+available or not obtainable (declined, no terminal, an unattended run), the tool is installed
+somewhere you can write instead, and the installer prints the line to add that directory to your
+`PATH`. You never have to answer a prompt you cannot see, and a missing password never costs five
+minutes.
+
+**Where does a tool the installer downloads end up?**
+`/usr/local/bin` when you can write it — directly, or through sudo with credentials you have given
+once. Otherwise `~/.local/bin`, created if necessary, and the installer prints the line to put it on
+your `PATH` (and uses it for the rest of that run). An install that only failed because the user could
+not or would not authenticate `sudo` used to stop there; it now finishes.
+
 ### 20.5 Gameplay and the plugin
 
 **Players are rejected with "You are not whitelisted on this server!"**

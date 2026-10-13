@@ -109,8 +109,24 @@ CHECKS = [
 #  half -- or that returned early -- then shows up as a missing check instead of as a run
 #  that quietly did less than it claims.
 RUN = []
-EXPECTED_CHECKS = 23         # 13 interactive + 3 daemon states + 4 kubernetes + 3 flows
-EXPECTED_WITHOUT_HOST = 10   # the same, minus the interactive thirteen
+EXPECTED_CHECKS = 28         # 23 above + 5 sudo-hang checks
+EXPECTED_WITHOUT_HOST = 15   # the same, minus the interactive thirteen
+
+
+#  A stage that cannot run on this host. Recorded with the number of checks it would have
+#  contributed, so the count guard stays exact: a skip is neither a pass nor an under-run.
+SKIPPED = []
+
+
+def skip(label, note_count):
+    """Record a stage this host cannot exercise, and what it would have checked."""
+    SKIPPED.append((label, int(note_count)))
+    print("SKIP  " + label)
+
+
+def expected_here(expected):
+    """How many checks can run on this host, given what has been skipped."""
+    return expected - sum(n for _, n in SKIPPED)
 
 
 def note(passed, label, detail=""):
@@ -137,6 +153,7 @@ def stub_stages():
     ok = check_broken_tools_do_not_abort() and ok
     ok = check_docker_daemon_states() and ok
     ok = check_kubernetes_cluster_resolution() and ok
+    ok = check_sudo_is_never_hidden() and ok
     return ok
 
 
@@ -150,7 +167,7 @@ def main():
     # -- at the dependency check, before the first services prompt, so this stage is skipped
     # loudly rather than reported as a failure of the installer.
     if not docker_daemon_answers():
-        print("SKIP  the interactive walk-through (no docker daemon answering on this host)")
+        skip("the interactive walk-through (no docker daemon answering on this host)", 13)
         print("      the stub-driven stages below need no host and still run")
         ok = stub_stages()
         return summary(ok, EXPECTED_WITHOUT_HOST)
@@ -379,13 +396,107 @@ def check_kubernetes_cluster_resolution():
 
 
 
+#  A sudo that works only when it is told not to ask. Anything else would PROMPT: the marker
+#  file records that, and the sleep turns the hang into a visible timeout. This is the exact
+#  shape of the reported failure -- run_cmd redirects output, so the prompt went to a log,
+#  and sudo waited out its five-minute password timeout before reporting "FAILED (1)".
+def sudo_stub(marker, cached):
+    first = "exit 0" if cached else "exit 1"
+    return (
+        "#!/bin/sh\n"
+        "if [ \"$1\" = \"-n\" ]; then\n"
+        "  case \"$2\" in true) %s ;; *) echo \"SUDO_N: $*\" >> \"%s\"; exit 0 ;; esac\n"
+        "fi\n"
+        "echo \"PROMPTED: sudo $*\" >> \"%s\"\n"
+        "sleep 300\n" % (first, marker, marker)
+    )
+
+
+#  The reported machine: Ubuntu (apt), an ordinary user, one dead kubectl context, no minikube.
+KUBECTL_ONE_DEAD = (
+    "#!/bin/sh\n"
+    "case \"$*\" in\n"
+    "  *\"config get-contexts\"*)\n"
+    "    case \"$*\" in *\"-o name\"*) echo minikube ;; *) printf 'CURRENT   NAME\\n*         minikube\\n' ;; esac\n"
+    "    exit 0 ;;\n"
+    "  *\"config current-context\"*) echo minikube; exit 0 ;;\n"
+    "  *) echo \"The connection to the server localhost:8080 was refused\" >&2; exit 1 ;;\n"
+    "esac\n"
+)
+UBUNTU_UNAME_STUB = (
+    "#!/bin/sh\n"
+    "case \"$1\" in -s) echo Linux ;; -m) echo x86_64 ;; *) echo Linux ;; esac\n"
+)
+
+
+def run_kubernetes_install(tmpdir, home):
+    """The Kubernetes path where a tool has to be installed mid-run (no --yes: that refuses)."""
+    env = dict(os.environ)
+    env["PATH"] = tmpdir
+    env["HOME"] = home
+    env["NO_COLOR"] = "1"
+    env["TERM"] = "dumb"
+    proc = subprocess.run([INSTALLER, "--dry-run", "--install-deps", "--mode", "kubernetes"],
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          cwd=REPO_ROOT, env=env, timeout=240)
+    return ANSI.sub("", proc.stdout.decode("utf-8", "replace")), proc.returncode
+
+
+def check_sudo_is_never_hidden():
+    """The reported Ubuntu failure: sudo's prompt went into a log and sudo sat for five minutes."""
+    import tempfile
+
+    ok = True
+    with tempfile.TemporaryDirectory(prefix="bedwars-sudo-") as root:
+        home = os.path.join(root, "home")
+        os.makedirs(home)
+
+        #  1. No cached credentials: the install must land somewhere writable, without asking.
+        tmpdir = os.path.join(root, "path-a")
+        os.makedirs(tmpdir)
+        marker = os.path.join(root, "prompted-a.txt")
+        build_fake_path(tmpdir, hide=("sudo", "apt-get", "uname", "kubectl", "minikube", "kind",
+                                      "java", "mvn"),
+                        stubs=kube_stubs(sudo=sudo_stub(marker, cached=False),
+                                         uname=UBUNTU_UNAME_STUB, **{"apt-get": PRESENT_NOOP_STUB},
+                                         kubectl=KUBECTL_ONE_DEAD))
+        text, rc = run_kubernetes_install(tmpdir, home)
+
+        ok = note("is installed to" in text and ".local/bin" in text,
+                  "minikube without sudo still installs, into a directory the user owns") and ok
+        ok = note(rc == 0 and "FAILED" not in text.replace("SOFT-FAILED", ""),
+                  "the run finished instead of waiting out a password prompt") and ok
+        ok = note(not os.path.exists(marker),
+                  "sudo was never invoked in a way that can prompt") and ok
+
+        #  2. Credentials already cached: nothing to ask, and it belongs in /usr/local/bin.
+        tmpdir = os.path.join(root, "path-b")
+        os.makedirs(tmpdir)
+        marker = os.path.join(root, "prompted-b.txt")
+        build_fake_path(tmpdir, hide=("sudo", "apt-get", "uname", "kubectl", "minikube", "kind",
+                                      "java", "mvn"),
+                        stubs=kube_stubs(sudo=sudo_stub(marker, cached=True),
+                                         uname=UBUNTU_UNAME_STUB, **{"apt-get": PRESENT_NOOP_STUB},
+                                         kubectl=KUBECTL_ONE_DEAD))
+        text, rc = run_kubernetes_install(tmpdir, home)
+
+        ok = note("sudo -n mv" in text and "is installed to" not in text and rc == 0,
+                  "with usable credentials the binary goes to /usr/local/bin as before") and ok
+        ok = note(not os.path.exists(marker),
+                  "and that path does not ask for a password either") and ok
+    return ok
+
+
 def summary(ok, expected):
     """Report the total, and refuse to call an under-run a pass."""
     failed = [label for passed, label in RUN if not passed]
-    if len(RUN) < expected:
+    here = expected_here(expected)
+    if len(RUN) < here:
         print("FAIL  only %d of %d checks ran -- a stage stopped early or never ran"
-              % (len(RUN), expected))
+              % (len(RUN), here))
         ok = False
+    for label, n in SKIPPED:
+        print("      %d check(s) not run here: %s" % (n, label))
     print("checks: %d run, %d failed%s"
           % (len(RUN), len(failed), (" (" + "; ".join(failed[:3]) + ")") if failed else ""))
     return 0 if ok else 1
@@ -654,7 +765,7 @@ def check_unattended_redaction():
 
     if "would write" not in out:
         # The run stopped before the config step (typically no Docker daemon here).
-        print("SKIP  the unattended dry run did not reach the config step on this host")
+        skip("the unattended dry run did not reach the config step on this host", 1)
         return True
 
     if UNREDACTED.search(out):
@@ -676,8 +787,9 @@ if __name__ == "__main__":
     #  then unreachable, the process exited 0, and stages quietly did not run. A guard that
     #  lives only inside the function cannot notice the function ending early.
     code = main()
-    if code == 0 and len(RUN) < EXPECTED_CHECKS:
+    here = expected_here(EXPECTED_CHECKS)
+    if code == 0 and len(RUN) < here:
         print("FAIL  only %d of %d checks ran -- a stage stopped early or never ran"
-              % (len(RUN), EXPECTED_CHECKS))
+              % (len(RUN), here))
         code = 1
     sys.exit(code)

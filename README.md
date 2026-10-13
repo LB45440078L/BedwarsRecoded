@@ -250,9 +250,14 @@ refused its socket is reported as exactly that, with the `usermod -aG docker` / 
 fix, and never as "the daemon is not answering". The Kubernetes path does the same for a
 cluster: it checks every kubectl context, offers to start a local cluster that is merely
 stopped, offers to create one (minikube or kind), and offers to install the tool that creates
-it — it never ends with "point kubectl at one and re-run". The images carry their own JDK,
-so a missing `java`/`maven` is a note (they are only needed to build the plugin here), never a
-blocker. `--yes` accepts every
+it — it never ends with "point kubectl at one and re-run". Anything that needs root asks for
+your password **once, visibly, on the terminal**, and then runs those commands
+non-interactively — so a step can never sit waiting for a prompt that went into a log file
+(that used to end in `FAILED (1): sudo mv ...` after sudo's five-minute timeout). If you
+decline, or there is no terminal to prompt on, the tool is installed into `~/.local/bin`
+instead and the installer prints the line to put it on your `PATH`. The images carry their own
+JDK, so a missing `java`/`maven` is a note (they are only needed to build the plugin here),
+never a blocker. `--yes` accepts every
 default for an unattended run; `--mode kubernetes` skips the mode question. Walkthrough:
 [`docs/MANUAL.md`](docs/MANUAL.md) §13.8.
 

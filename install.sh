@@ -862,6 +862,7 @@ DOCKER_STATE=""          # absent | shim | ok | permission | not_running | unkno
 DOCKER_ERR=""            # the first line docker itself said, when the answer was not usable
 PKG_MGR=""               # apt-get | dnf | pacman | zypper | brew | (empty)
 SUDO=""                  # "sudo" unless already root
+SUDO_N=""                # "sudo -n": for use inside helpers that redirect output
 IS_ROOT="0"
 IS_WSL="0"
 BIN_DIR="/usr/local/bin" # where a downloaded binary (kubectl, helm, minikube) goes
@@ -1083,13 +1084,20 @@ detect_platform() {
         IS_ROOT="0"
         if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; else SUDO=""; fi
     fi
+    #  Anything run through run_cmd/run_streaming has its output redirected to a log, so a
+    #  sudo prompt issued from there is invisible and sudo then waits out its five-minute
+    #  password timeout. Those call sites use the -n form; credentials are settled up front
+    #  instead (sudo_ready), which puts the prompt on the terminal where it belongs.
+    if [ -n "$SUDO" ]; then SUDO_N="$SUDO -n"; else SUDO_N=""; fi
 
     # A downloaded binary needs a home. Prefer /usr/local/bin, but never require
     # root: fall back to ~/.local/bin, which is where a user can write.
     if [ "$IS_ROOT" = "1" ]; then
         BIN_DIR="/usr/local/bin"; BIN_SUDO=""
     elif [ -n "$SUDO" ]; then
-        BIN_DIR="/usr/local/bin"; BIN_SUDO="$SUDO"
+        #  /usr/local/bin is the preferred home; whether sudo can actually get us there is
+        #  settled at install time, with a working prompt or a user-writable fallback.
+        BIN_DIR="/usr/local/bin"; BIN_SUDO="$SUDO_N"
     else
         BIN_DIR="$HOME/.local/bin"; BIN_SUDO=""
     fi
@@ -1307,16 +1315,26 @@ install_packages() {
     # install_packages <label> <package...>
     local label="$1"; shift
     case "$PKG_MGR" in
+        #  All four need root, and a prompt cannot be answered from inside run_streaming:
+        #  settle the credentials first and visibly, then run non-interactively so a missing
+        #  credential fails immediately instead of after a five-minute silence.
+        apt-get|dnf|pacman|zypper)
+            if [ "$IS_ROOT" != "1" ]; then
+                sudo_ready || return 1
+            fi
+            ;;
+    esac
+    case "$PKG_MGR" in
         apt-get)
             if [ "$PKG_LISTS_UPDATED" != "1" ]; then
-                run_streaming "updating the package lists" $SUDO apt-get update || return 1
+                run_streaming "updating the package lists" $SUDO_N apt-get update || return 1
                 PKG_LISTS_UPDATED="1"
             fi
-            run_streaming "$label" $SUDO apt-get install -y "$@"
+            run_streaming "$label" $SUDO_N apt-get install -y "$@"
             ;;
-        dnf)    run_streaming "$label" $SUDO dnf install -y "$@" ;;
-        pacman) run_streaming "$label" $SUDO pacman -S --noconfirm --needed "$@" ;;
-        zypper) run_streaming "$label" $SUDO zypper --non-interactive install "$@" ;;
+        dnf)    run_streaming "$label" $SUDO_N dnf install -y "$@" ;;
+        pacman) run_streaming "$label" $SUDO_N pacman -S --noconfirm --needed "$@" ;;
+        zypper) run_streaming "$label" $SUDO_N zypper --non-interactive install "$@" ;;
         brew)   run_streaming "$label" brew install "$@" ;;
         *)      return 1 ;;
     esac
@@ -1342,18 +1360,71 @@ EOF
 }
 
 #  Where a binary goes when no package manager ships the tool.
+#  Make sure a sudo command can run WITHOUT asking anything -- and when it does need to ask,
+#  ask the user properly: on the terminal, visibly, once.
+#
+#  This exists because of a specific failure. run_cmd and run_streaming send a command's
+#  output to a log file, so sudo's "[sudo] password for ...:" went into a log nobody reads,
+#  the screen showed only "RUN: sudo mv ...", and sudo sat there for its full five-minute
+#  password timeout before failing with "FAILED (1)". A user on Ubuntu watched exactly that:
+#  the download and the chmod succeeded, then five minutes of silence, then a failure.
+sudo_ready() {
+    [ -n "$SUDO" ] || return 1
+    #  Credentials already cached: nothing to ask, nothing to hide.
+    $SUDO -n true >/dev/null 2>&1 && return 0
+    #  A dry run, an unattended run and a run with no terminal cannot answer a prompt, so
+    #  none of them may pretend to hold a credential: they take the path a real unattended
+    #  run takes, instead of waiting five minutes for an answer.
+    if [ "$OPT_DRY_RUN" = "1" ] || [ "$OPT_YES" = "1" ] || [ "$UI_INTERACTIVE" != "1" ]; then
+        return 1
+    fi
+    [ -r /dev/tty ] && [ -w /dev/tty ] || return 1
+    ui_info "this step needs root; you will be asked for your password once"
+    #  Deliberately NOT through run_cmd: the prompt has to reach the user, not a log file.
+    if $SUDO -v </dev/tty >/dev/tty 2>&1; then
+        $SUDO -n true >/dev/null 2>&1 && return 0
+    fi
+    ui_warn "sudo did not authenticate, so this goes somewhere you can write instead"
+    return 1
+}
+
+#  Put a downloaded binary where it will be found. /usr/local/bin first, but a machine where
+#  the user cannot or will not authenticate sudo still ends up with the tool installed.
+install_downloaded_binary() {
+    local name="$1" tmp="$2" fallback="$HOME/.local/bin" on_path="0"
+    if [ -z "$BIN_SUDO" ] || [ -w "$BIN_DIR" ]; then
+        run_cmd "installing $name" mv "$tmp" "$BIN_DIR/$name" && return 0
+    fi
+    if sudo_ready; then
+        run_cmd "installing $name" $BIN_SUDO mv "$tmp" "$BIN_DIR/$name" && return 0
+    fi
+    ui_info "$BIN_DIR needs root, so $name is installed to $fallback instead"
+    if [ "$OPT_DRY_RUN" = "1" ]; then
+        ui_info "[dry-run] would install it to $fallback"
+        return 0
+    fi
+    mkdir -p "$fallback" 2>/dev/null || true
+    [ -w "$fallback" ] || return 1
+    run_cmd "installing $name" mv "$tmp" "$fallback/$name" || return 1
+    BIN_DIR="$fallback"; BIN_SUDO=""
+    case ":$PATH:" in *":$fallback:"*) on_path="1" ;; esac
+    #  Usable in THIS run as well, not only in some future shell.
+    PATH="$fallback:$PATH"; export PATH
+    ui_ok "$name installed to $fallback"
+    if [ "$on_path" = "0" ]; then
+        ui_hint "add it to your PATH so later shells find it:"
+        ui_hint "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.profile"
+    fi
+    return 0
+}
+
 install_binary_file() {
     # install_binary_file <label> <source-url> <destination-basename>
     local label="$1" url="$2" name="$3" tmp
     tmp="$STATE_DIR/$name"
     run_streaming "$label" curl -fsSL -o "$tmp" "$url" || return 1
     run_cmd "installing $name" chmod +x "$tmp" || return 1
-    if [ -d /usr/local/bin ] && [ -n "$BIN_SUDO" ]; then
-        run_cmd "installing $name" $BIN_SUDO mv "$tmp" "$BIN_DIR/$name" || return 1
-    else
-        mkdir -p "$BIN_DIR" 2>/dev/null || true
-        run_cmd "installing $name" mv "$tmp" "$BIN_DIR/$name" || return 1
-    fi
+    install_downloaded_binary "$name" "$tmp" || return 1
     return 0
 }
 
@@ -1413,8 +1484,12 @@ install_binary_tool() {
             run_streaming "downloading the compose plugin" curl -fsSL -o "$tmp_plugin" "$url" || { FAILED_INSTALL="$FAILED_INSTALL $tool"; return 1; }
             run_cmd "installing the compose plugin" chmod +x "$tmp_plugin" || { FAILED_INSTALL="$FAILED_INSTALL $tool"; return 1; }
             plugin_dir="/usr/local/lib/docker/cli-plugins"
-            if [ "$IS_ROOT" != "1" ] && [ -z "$SUDO" ]; then
+            #  A plugin in the user's own directory works just as well and needs no root,
+            #  so that is the fallback rather than a failure.
+            if [ "$IS_ROOT" != "1" ] && ! sudo_ready; then
                 plugin_dir="$HOME/.docker/cli-plugins"
+            fi
+            if [ "$plugin_dir" = "$HOME/.docker/cli-plugins" ]; then
                 mkdir -p "$plugin_dir" 2>/dev/null || true
                 run_cmd "installing the compose plugin" mv "$tmp_plugin" "$plugin_dir/docker-compose" || { FAILED_INSTALL="$FAILED_INSTALL $tool"; return 1; }
             else
@@ -1594,10 +1669,15 @@ docker_permission_stop() {
         else
             ask_yesno addgrp "Add $USER to the docker group now?" "y"
             if [ "$addgrp" = "y" ]; then
-                # Soft on purpose: it may need a password.
-                run_cmd_soft "adding $USER to the docker group" \
-                    sh -c "$SUDO usermod -aG docker \$USER" || true
-                ui_ok "added to the docker group"
+                #  Needs root: sudo_ready asks on the terminal, once, and says so honestly
+                #  when it cannot -- nothing here may report a change that did not happen.
+                if sudo_ready && run_cmd_soft "adding $USER to the docker group" \
+                        sh -c "$SUDO_N usermod -aG docker \$USER"; then
+                    ui_ok "added to the docker group"
+                else
+                    ui_hint "could not change your group membership; do it yourself:"
+                    ui_hint "  $SUDO usermod -aG docker \${USER}"
+                fi
             else
                 ui_hint "add yourself to the docker group:"
                 ui_hint "  $SUDO usermod -aG docker \${USER}"
@@ -1631,9 +1711,17 @@ offer_start_docker() {
         ui_hint "starting Docker Desktop ..."
         run_cmd_soft "starting Docker Desktop" open -a Docker || true
     elif command -v systemctl >/dev/null 2>&1; then
-        start="$SUDO systemctl start docker"
+        #  Needs root, so settle the credentials here -- visibly -- and then run it with -n.
+        #  Through run_cmd_soft the output is redirected, and a prompt there is invisible.
+        if [ -n "$SUDO" ] && ! sudo_ready; then
+            ui_warn "starting the daemon needs root, and sudo was not authenticated"
+        fi
+        start="$SUDO_N systemctl start docker"
     elif command -v service >/dev/null 2>&1; then
-        start="$SUDO service docker start"
+        if [ -n "$SUDO" ] && ! sudo_ready; then
+            ui_warn "starting the daemon needs root, and sudo was not authenticated"
+        fi
+        start="$SUDO_N service docker start"
     fi
     if [ -n "$start" ]; then
         ui_hint "running: $start"
@@ -3150,17 +3238,29 @@ docker_verify() {
 # ---------------------------------------------------------------------------
 KUBECTL_NS=""
 
+#  Is this tool usable now? A fresh probe, plus the one case a dry run cannot express: a tool
+#  that THIS run reported installing is not actually on disk in a dry run, and a dry run that
+#  then failed with "is not installed" would describe a state it had just said it fixed.
+tool_available_now() {
+    local t="$1"
+    command -v "$t" >/dev/null 2>&1 && return 0
+    if [ "$OPT_DRY_RUN" = "1" ]; then
+        case " $INSTALLED_NOW " in *" $t "*) return 0 ;; esac
+    fi
+    return 1
+}
+
 k8s_establish_cluster() {
     if [ "$CFG_K8S_PROVISION_CLUSTER" = "y" ]; then
         step_begin "Starting a local cluster"
         local tool="$CFG_K8S_CLUSTER_TOOL"
         if [ -z "$tool" ]; then
-            if command -v minikube >/dev/null 2>&1; then tool="minikube"
-            elif command -v kind >/dev/null 2>&1; then tool="kind"
+            if tool_available_now minikube; then tool="minikube"
+            elif tool_available_now kind; then tool="kind"
             else tool="minikube"; fi
         fi
         if [ "$tool" = "kind" ]; then
-            if ! command -v kind >/dev/null 2>&1; then
+            if ! tool_available_now kind; then
                 fail "kind is not installed" "install kind, or point kubectl at an existing cluster"
             fi
             local kname="bedwars"
@@ -3187,7 +3287,7 @@ k8s_establish_cluster() {
             HAVE_CLUSTER="1"
             CLUSTER_CONTEXT=$(kubectl config current-context 2>/dev/null || echo "kind-$kname")
         else
-            if ! command -v minikube >/dev/null 2>&1; then
+            if ! tool_available_now minikube; then
                 fail "minikube is not installed" "install minikube, or point kubectl at an existing cluster"
             fi
             local state
