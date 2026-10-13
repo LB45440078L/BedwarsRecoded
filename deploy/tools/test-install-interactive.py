@@ -109,8 +109,8 @@ CHECKS = [
 #  half -- or that returned early -- then shows up as a missing check instead of as a run
 #  that quietly did less than it claims.
 RUN = []
-EXPECTED_CHECKS = 34         # 23 above + 5 sudo-hang + 6 OpenKruise checks
-EXPECTED_WITHOUT_HOST = 21   # the same, minus the interactive thirteen
+EXPECTED_CHECKS = 38         # 23 above + 5 sudo-hang + 6 OpenKruise + 4 helm checks
+EXPECTED_WITHOUT_HOST = 25   # the same, minus the interactive thirteen
 
 
 #  A stage that cannot run on this host. Recorded with the number of checks it would have
@@ -155,6 +155,7 @@ def stub_stages():
     ok = check_kubernetes_cluster_resolution() and ok
     ok = check_sudo_is_never_hidden() and ok
     ok = check_openkruise_installs_helm() and ok
+    ok = check_helm_install_judged_by_disk() and ok
     return ok
 
 
@@ -560,6 +561,114 @@ def check_sudo_is_never_hidden():
                   "with usable credentials the binary goes to /usr/local/bin as before") and ok
         ok = note(not os.path.exists(marker),
                   "and that path does not ask for a password either") and ok
+    return ok
+
+
+#  The helm installer script installs the binary and THEN exits 1 because its install directory
+#  is not on $PATH. Reported verbatim from a VM:
+#      helm installed into /home/ambercode/.local/bin/helm
+#      helm not found. Is /home/ambercode/.local/bin on your $PATH?
+#      Failed to install helm
+#  The install had worked. The installer must judge that by the disk, not by the exit code.
+HELM_SCRIPT_INSTALLS_THEN_COMPLAINS = (
+    "#!/bin/bash\n"
+    "mkdir -p \"$HELM_INSTALL_DIR\"\n"
+    "printf '#!/bin/sh\\necho v3.22.0\\n' > \"$HELM_INSTALL_DIR/helm\"\n"
+    "chmod +x \"$HELM_INSTALL_DIR/helm\"\n"
+    "echo \"helm installed into $HELM_INSTALL_DIR/helm\"\n"
+    "echo \"helm not found. Is $HELM_INSTALL_DIR on your $PATH?\"\n"
+    "echo \"Failed to install helm\"\n"
+    "exit 1\n"
+)
+HELM_SCRIPT_INSTALLS_NOTHING = (
+    "#!/bin/bash\n"
+    "echo \"the download was corrupt\"\n"
+    "exit 1\n"
+)
+
+HELM_HARNESS = """set -u
+OPT_DRY_RUN=0
+OS_FAMILY="debian"
+IS_ROOT="0"
+BIN_DIR="$HARNESS_BIN_DIR"
+BIN_SUDO=""
+FAILED_INSTALL=""
+INSTALLED_NOW=""
+STATE_DIR="$HARNESS_STATE"
+ui_info() { printf 'INFO %s\\n' "$*"; }
+ui_ok()   { printf 'OK %s\\n' "$*"; }
+ui_warn() { printf 'WARN %s\\n' "$*"; }
+ui_hint() { printf 'HINT %s\\n' "$*"; }
+arch_suffix() { printf 'amd64\\n'; }
+run_streaming() { shift; "$@"; }
+run_cmd() { shift; "$@"; }
+__FUNCTION__
+if install_binary_tool helm; then printf 'RESULT=ok\\n'; else printf 'RESULT=failed\\n'; fi
+"""
+
+
+def run_helm_install_harness(root, fixture_body, bin_dir, home):
+    """Run the real install_binary_tool helm branch against a script that misbehaves."""
+    bindir = os.path.join(root, "stubbin")
+    os.makedirs(bindir, exist_ok=True)
+    fixture = os.path.join(root, "fake-get-helm-3")
+    with open(fixture, "w", encoding="utf-8") as fh:
+        fh.write(fixture_body)
+    os.chmod(fixture, 0o755)
+    #  A curl that writes the fixture wherever -o points: no network, and the script that runs is
+    #  the one this test chose.
+    with open(os.path.join(bindir, "curl"), "w", encoding="utf-8") as fh:
+        fh.write("#!/bin/sh\nwhile [ $# -gt 0 ]; do case \"$1\" in -o) shift; cp %s \"$1\" ;; esac; shift; done\n"
+                 % fixture)
+    os.chmod(os.path.join(bindir, "curl"), 0o755)
+
+    state = os.path.join(root, "state")
+    os.makedirs(state, exist_ok=True)
+    script = os.path.join(root, "harness.sh")
+    body = HELM_HARNESS.replace("__FUNCTION__", extract_function("install_binary_tool"))
+    with open(script, "w", encoding="utf-8") as fh:
+        fh.write(body)
+    env = {"PATH": bindir + ":/usr/bin:/bin", "HOME": home, "HARNESS_BIN_DIR": bin_dir,
+           "HARNESS_STATE": state, "NO_COLOR": "1"}
+    proc = subprocess.run(["/bin/bash", script], capture_output=True, text=True, env=env, timeout=120)
+    return ANSI.sub("", proc.stdout + proc.stderr)
+
+
+def check_helm_install_judged_by_disk():
+    """A helm that is on disk is installed, whatever the script's exit code says."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="bedwars-helminst-") as root:
+        home = os.path.join(root, "home")
+        os.makedirs(home)
+        writable = os.path.join(root, "writable-bin")
+        os.makedirs(writable)
+
+        #  1. Target directory writable: helm lands there, the script still exits 1.
+        out = run_helm_install_harness(root, HELM_SCRIPT_INSTALLS_THEN_COMPLAINS, writable, home)
+        installed = os.path.join(writable, "helm")
+        ok = note("RESULT=ok" in out and os.path.exists(installed),
+                  "a helm on disk counts as installed, even when the script exits non-zero")
+
+        #  2. Target directory needs root, so ~/.local/bin is used -- the reported case.
+        root_only = os.path.join(root, "root-only-bin")
+        os.makedirs(root_only)
+        os.chmod(root_only, 0o500)
+        out = run_helm_install_harness(root, HELM_SCRIPT_INSTALLS_THEN_COMPLAINS, root_only, home)
+        ok = note("RESULT=ok" in out and os.path.exists(os.path.join(home, ".local", "bin", "helm")),
+                  "and the /usr/local/bin-is-not-writable case installs into ~/.local/bin") and ok
+        ok = note("not on your PATH yet" in out,
+                  "and it tells the user how to put that directory on PATH") and ok
+
+        #  3. The check is not vacuous: a script that installs nothing is still a failure. A
+        #  fresh directory, or the helm left by run 1 would satisfy the disk check and make this
+        #  pass for the wrong reason.
+        empty_bin = os.path.join(root, "empty-bin")
+        os.makedirs(empty_bin)
+        out = run_helm_install_harness(root, HELM_SCRIPT_INSTALLS_NOTHING, empty_bin, home)
+        ok = note("RESULT=failed" in out,
+                  "but a helm installer that installs nothing is still reported as a failure") and ok
+        os.chmod(root_only, 0o700)
     return ok
 
 

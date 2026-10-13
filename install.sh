@@ -1482,13 +1482,33 @@ install_binary_tool() {
             #  written for -- bash is present, the installer itself is bash.
             local helmsh="bash"
             command -v bash >/dev/null 2>&1 || helmsh="sh"
-            run_streaming "installing helm" env HELM_INSTALL_DIR="$helmdir" USE_SUDO=false "$helmsh" "$tmp_script" || { FAILED_INSTALL="$FAILED_INSTALL $tool"; return 1; }
-            if ! command -v helm >/dev/null 2>&1; then
-                #  The installer script can exit 0 having put helm somewhere we do not look.
-                ui_warn "the helm installer finished but no helm is on PATH"
+            #  Put the target directory on PATH BEFORE the script runs. Its last act is to check
+            #  that helm is reachable and exit 1 when it is not -- a complaint about $PATH, not a
+            #  failed install. Reported from a VM: "helm installed into
+            #  /home/.../.local/bin/helm" immediately followed by "helm not found. Is
+            #  /home/.../.local/bin on your $PATH?", non-zero exit, and a perfectly good helm on
+            #  disk. Prefixing PATH satisfies that check, and helm is then usable for the rest of
+            #  this run as well.
+            local helm_rc=0 on_path="0"
+            case ":$PATH:" in
+                *":$helmdir:"*) on_path="1" ;;
+                *) PATH="$helmdir:$PATH"; export PATH ;;
+            esac
+            run_streaming "installing helm" env HELM_INSTALL_DIR="$helmdir" USE_SUDO=false "$helmsh" "$tmp_script" || helm_rc=$?
+            #  Judge the outcome by what is on disk, not by the exit code: it conflates "installed
+            #  but not on PATH" with "could not install", and only the disk knows which happened.
+            if ! command -v helm >/dev/null 2>&1 && [ ! -x "$helmdir/helm" ]; then
+                ui_warn "helm could not be installed (the installer script exited $helm_rc)"
                 FAILED_INSTALL="$FAILED_INSTALL $tool"; return 1
             fi
-            case ":$PATH:" in *":$helmdir:"*) ;; *) PATH="$helmdir:$PATH"; export PATH ;; esac
+            if [ "$helm_rc" -ne 0 ]; then
+                ui_info "the helm installer script exited $helm_rc, but helm is on disk"
+            fi
+            ui_ok "helm installed: $(command -v helm 2>/dev/null || printf '%s' "$helmdir/helm")"
+            if [ "$on_path" = "0" ]; then
+                ui_hint "$helmdir is not on your PATH yet, so later shells would not find helm:"
+                ui_hint "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.profile"
+            fi
             ;;
         minikube)
             url="https://storage.googleapis.com/minikube/releases/latest/minikube-linux-$arch"

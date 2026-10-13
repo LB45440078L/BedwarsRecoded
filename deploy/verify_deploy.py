@@ -257,6 +257,10 @@ def verify_installer() -> None:
           "install.sh: the helm installer script must be run by bash")
     check(not re.search(r'USE_SUDO=false sh "\$tmp_script"', text),
           "install.sh: running the helm installer script with sh fails on dash")
+    #  The script installs helm and then exits 1 because its install directory is not on $PATH,
+    #  so its exit code cannot be believed in either direction. The disk decides.
+    check('-x "$helmdir/helm"' in text,
+          "install.sh: a helm install must be judged by what is on disk, not by the exit code")
 
 
 def verify_lobby() -> None:

@@ -3645,8 +3645,15 @@ which is also a 404 (an older version of this manual printed that one; it has be
 The helm installer script is written in **bash**, and it was being run with `sh`. On Debian and
 Ubuntu `sh` is dash, so the script dies at its first `[[` and then reports `Either curl or wget is
 required` — a consequence, not the cause, which is why the message sends you looking at curl. It is
-run with `bash` now, and the installer checks afterwards that `helm` is actually on `PATH` rather
-than trusting the script's exit code. If you are seeing this, you are running an older `install.sh`.
+run with `bash` now. If you are seeing this, you are running an older `install.sh`.
+
+**`helm installed into /home/you/.local/bin/helm` then `helm not found. Is ... on your $PATH?`**
+A false failure, and an infuriating one: the install worked. The script's last act is to check that
+helm is reachable and exit 1 when it is not, which is a complaint about `$PATH` rather than about
+the install. The installer now puts its target directory on `$PATH` *before* running the script —
+so the check passes — and judges the outcome by what is on disk rather than by that exit code,
+which cannot be trusted in either direction. It also prints the line to add the directory to
+`~/.profile` for future shells. If you are seeing this, you are running an older `install.sh`.
 
 **`error: unable to recognize ...: no matches for kind "GameServerSet"`**
 The OpenKruise CRD is not installed. Install OpenKruise and kruise-game first (chapter 8.1).
