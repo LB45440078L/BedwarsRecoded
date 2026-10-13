@@ -963,7 +963,7 @@ probe_tools() {
         HAVE_HELM="1"
         record_env ok "helm" "$(helm version --short 2>/dev/null || echo present)"
     else
-        record_env info "helm" "absent -- Kubernetes can still use the plain manifests"
+        record_env info "helm" "absent -- the BedWars manifests do not need it, OpenKruise does"
     fi
 
     # --- tooling the repository uses to build and test itself ----------------
@@ -1223,6 +1223,9 @@ tool_label() {
         docker)  printf 'docker' ;;
         compose) printf 'docker compose (the v2 plugin)' ;;
         kubectl) printf 'kubectl' ;;
+        helm)    printf 'helm' ;;
+        minikube) printf 'minikube' ;;
+        kind)    printf 'kind' ;;
         java)    printf 'java' ;;
         maven)   printf 'maven' ;;
         *)       printf '%s' "$1" ;;
@@ -1232,6 +1235,7 @@ tool_label() {
 tool_role() {
     case "$1" in
         java|maven) printf 'only needed to build the plugin on this machine' ;;
+        helm)       printf 'needed to install OpenKruise (upstream publishes no kubectl manifest)' ;;
         *)          printf 'required for this path' ;;
     esac
 }
@@ -1466,7 +1470,14 @@ install_binary_tool() {
             url="https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3"
             tmp_script="$STATE_DIR/get-helm-3"
             run_streaming "downloading the helm installer" curl -fsSL -o "$tmp_script" "$url" || { FAILED_INSTALL="$FAILED_INSTALL $tool"; return 1; }
-            run_streaming "installing helm" sh "$tmp_script" || { FAILED_INSTALL="$FAILED_INSTALL $tool"; return 1; }
+            #  The script installs into HELM_INSTALL_DIR, and reaches for sudo otherwise --
+            #  a prompt issued from inside run_streaming goes to the log and hangs. Point it
+            #  at a directory this user can write, and forbid sudo outright.
+            local helmdir
+            if [ "$IS_ROOT" = "1" ] || [ -w "$BIN_DIR" ]; then helmdir="$BIN_DIR"; else helmdir="$HOME/.local/bin"; fi
+            mkdir -p "$helmdir" 2>/dev/null || true
+            run_streaming "installing helm" env HELM_INSTALL_DIR="$helmdir" USE_SUDO=false sh "$tmp_script" || { FAILED_INSTALL="$FAILED_INSTALL $tool"; return 1; }
+            case ":$PATH:" in *":$helmdir:"*) ;; *) PATH="$helmdir:$PATH"; export PATH ;; esac
             ;;
         minikube)
             url="https://storage.googleapis.com/minikube/releases/latest/minikube-linux-$arch"
@@ -3375,6 +3386,32 @@ k8s_namespace() {
     fi
 }
 
+#  The chart repository OpenKruise actually serves. The URL this used to point at
+#  (https://openkruise.io/charts) answers 404, so the helm route would have failed too.
+OPENKRUISE_CHARTS="https://openkruise.github.io/charts/"
+
+#  Helm, installing it if this machine has none. OpenKruise publishes no kubectl-only manifest,
+#  so this is a real dependency of the Kubernetes path rather than a convenience -- and the
+#  installer's job is to resolve it, not to write it down.
+ensure_helm() {
+    if command -v helm >/dev/null 2>&1; then return 0; fi
+    if [ "$OPT_DRY_RUN" = "1" ]; then
+        ui_info "[dry-run] helm would be installed here"
+        return 0
+    fi
+    if [ "$OPT_YES" = "1" ] || [ "$OPT_INSTALL_DEPS" = "no" ]; then
+        ui_warn "helm is missing, and this step cannot proceed without it"
+        ui_hint "install it, then re-run:"
+        ui_hint "  curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash"
+        return 1
+    fi
+    ui_warn "helm is missing, and OpenKruise is only published as a chart"
+    ask_yesno wanthelm "Install helm now?" "y"
+    [ "$wanthelm" = "y" ] || return 1
+    install_one_tool helm || return 1
+    command -v helm >/dev/null 2>&1
+}
+
 k8s_openkruise() {
     local have_crd="no"
     if kubectl get crd gameserversets.game.kruise.io >/dev/null 2>&1; then
@@ -3391,21 +3428,26 @@ k8s_openkruise() {
     fi
     step_begin "Installing OpenKruise and kruise-game"
     ui_info "the GameServerSet CRD comes from kruise-game; without it, no game pod can exist"
-    if command -v helm >/dev/null 2>&1; then
-        run_cmd "adding the OpenKruise chart repo" helm repo add openkruise https://openkruise.io/charts || true
-        run_cmd "updating chart repos" helm repo update || true
-        if ! run_cmd "installing kruise" helm upgrade --install kruise openkruise/kruise \
-                --namespace kruise-system --create-namespace --wait --timeout 5m; then
-            fail "could not install OpenKruise" "see chapter 8.1 of docs/MANUAL.md for the manual steps"
-        fi
-        if ! run_cmd "installing kruise-game" helm upgrade --install kruise-game openkruise/kruise-game \
-                --namespace kruise-system --wait --timeout 5m; then
-            fail "could not install kruise-game" "the GameServerSet CRD will be missing without it"
-        fi
-    else
-        run_cmd "installing kruise (manifests)" kubectl apply -f \
-            "https://github.com/openkruise/kruise/releases/latest/download/kruise-all-in-one.yaml" || \
-            fail "could not install OpenKruise" "install helm, or follow chapter 8.1 manually"
+    #  OpenKruise is published as a chart and its releases carry NO assets: there is no
+    #  kubectl-only manifest. The kubectl-all-in-one route this used to take downloaded
+    #  ".../releases/latest/download/kruise-all-in-one.yaml", which answers 404 for this and
+    #  every other version -- so helm is not a preference here, it is the only route, and the
+    #  installer now installs it instead of fetching something that does not exist.
+    ensure_helm || fail "helm is required to install OpenKruise" \
+        "upstream publishes no kubectl manifest; install helm (https://helm.sh/docs/intro/install/) or follow chapter 8.1"
+    run_cmd "adding the OpenKruise chart repo" helm repo add openkruise "$OPENKRUISE_CHARTS" || true
+    run_cmd "updating chart repos" helm repo update || true
+    if ! run_cmd "installing kruise" helm upgrade --install kruise openkruise/kruise \
+            --namespace kruise-system --create-namespace --wait --timeout 5m; then
+        fail "could not install OpenKruise" "see chapter 8.1 of docs/MANUAL.md for the manual steps"
+    fi
+    if ! run_cmd "installing kruise-game" helm upgrade --install kruise-game openkruise/kruise-game \
+            --namespace kruise-system --wait --timeout 5m; then
+        fail "could not install kruise-game" "the GameServerSet CRD will be missing without it"
+    fi
+    if [ "$OPT_DRY_RUN" = "1" ]; then
+        ui_hint "[dry-run] would wait for the GameServerSet CRD to be published"
+        return 0
     fi
     # The publish of the CRD is asynchronous; wait for the name we actually use.
     if wait_for "the GameServerSet CRD to appear" 180 kubectl get crd gameserversets.game.kruise.io; then

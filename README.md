@@ -250,7 +250,10 @@ refused its socket is reported as exactly that, with the `usermod -aG docker` / 
 fix, and never as "the daemon is not answering". The Kubernetes path does the same for a
 cluster: it checks every kubectl context, offers to start a local cluster that is merely
 stopped, offers to create one (minikube or kind), and offers to install the tool that creates
-it — it never ends with "point kubectl at one and re-run". Anything that needs root asks for
+it — it never ends with "point kubectl at one and re-run". OpenKruise is installed from its chart
+with `helm`, and the installer installs `helm` itself when the machine has none — upstream
+attaches no assets to its releases, so the `kubectl apply .../kruise-all-in-one.yaml` route that
+older copies used answers 404 and could never have worked. Anything that needs root asks for
 your password **once, visibly, on the terminal**, and then runs those commands
 non-interactively — so a step can never sit waiting for a prompt that went into a log file
 (that used to end in `FAILED (1): sudo mv ...` after sudo's five-minute timeout). If you

@@ -109,8 +109,8 @@ CHECKS = [
 #  half -- or that returned early -- then shows up as a missing check instead of as a run
 #  that quietly did less than it claims.
 RUN = []
-EXPECTED_CHECKS = 28         # 23 above + 5 sudo-hang checks
-EXPECTED_WITHOUT_HOST = 15   # the same, minus the interactive thirteen
+EXPECTED_CHECKS = 32         # 23 above + 5 sudo-hang + 4 OpenKruise checks
+EXPECTED_WITHOUT_HOST = 19   # the same, minus the interactive thirteen
 
 
 #  A stage that cannot run on this host. Recorded with the number of checks it would have
@@ -154,6 +154,7 @@ def stub_stages():
     ok = check_docker_daemon_states() and ok
     ok = check_kubernetes_cluster_resolution() and ok
     ok = check_sudo_is_never_hidden() and ok
+    ok = check_openkruise_installs_helm() and ok
     return ok
 
 
@@ -410,6 +411,73 @@ def sudo_stub(marker, cached):
         "echo \"PROMPTED: sudo $*\" >> \"%s\"\n"
         "sleep 300\n" % (first, marker, marker)
     )
+
+
+#  A cluster that answers, with no OpenKruise on it: exactly the state step [2/7] meets.
+#  The GameServerSet CRD lookup is the one thing that must fail, or the step is skipped.
+KUBECTL_LIVE_NO_KRUISE = (
+    "#!/bin/sh\n"
+    "case \"$*\" in\n"
+    "  *\"get crd gameserversets.game.kruise.io\"*)\n"
+    "    echo 'Error from server (NotFound): customresourcedefinitions.apiextensions.k8s.io \"gameserversets.game.kruise.io\" not found' >&2\n"
+    "    exit 1 ;;\n"
+    "  *\"config current-context\"*) echo minikube; exit 0 ;;\n"
+    "  *) exit 0 ;;\n"
+    "esac\n"
+)
+
+
+def extract_function(name):
+    """Pull one bash function out of install.sh, so a single branch can be tested alone."""
+    text = open(INSTALLER, encoding="utf-8").read()
+    m = re.search(r"^%s\(\) \{\n(.*?)^\}" % re.escape(name), text, re.S | re.M)
+    assert m, "no function %s in install.sh" % name
+    return "%s() {\n%s}\n" % (name, m.group(1))
+
+
+def check_openkruise_installs_helm():
+    """The reported failure: step [2/7] fetched a URL that 404s, and the install stopped."""
+    import tempfile
+
+    #  1. The step itself, on a cluster that answers and has no OpenKruise.
+    with tempfile.TemporaryDirectory(prefix="bedwars-kruise-") as root:
+        tmpdir = os.path.join(root, "bin")
+        os.makedirs(tmpdir)
+        build_fake_path(tmpdir, hide=("helm", "minikube", "kind", "kubectl", "java", "mvn"),
+                        stubs=kube_stubs(kubectl=KUBECTL_LIVE_NO_KRUISE))
+        text, rc = run_kubernetes_install(tmpdir, os.path.join(root, "home"))
+
+        ok = note("kruise-all-in-one" not in text and "404" not in text,
+                  "OpenKruise is not fetched from the release URL that answers 404")
+        ok = note("helm repo add openkruise https://openkruise.github.io/charts/" in text,
+                  "and the chart repository it does use is the one that answers") and ok
+
+    #  2. Unattended with no helm: refuse with the command, rather than trying anything.
+    with tempfile.TemporaryDirectory(prefix="bedwars-helm-") as root:
+        pathdir = os.path.join(root, "bin")
+        os.makedirs(pathdir)
+        build_fake_path(pathdir, hide=("helm", "docker", "kubectl"))
+        script = os.path.join(root, "probe.sh")
+        with open(script, "w", encoding="utf-8") as fh:
+            fh.write("set -u\n"
+                     "OPT_DRY_RUN=0\nOPT_YES=1\nOPT_INSTALL_DEPS=\nINSTALLED_NOW=\n"
+                     "ui_info() { echo \"INFO $*\"; }\n"
+                     "ui_warn() { echo \"WARN $*\"; }\n"
+                     "ui_hint() { echo \"HINT $*\"; }\n"
+                     "ask_yesno() { eval \"$1=n\"; }\n"
+                     "install_one_tool() { return 1; }\n"
+                     + extract_function("ensure_helm") +
+                     "if ensure_helm; then echo RESULT=ok; else echo RESULT=refused; fi\n")
+        env = {"PATH": pathdir, "HOME": root, "NO_COLOR": "1"}
+        proc = subprocess.run(["/bin/bash", script], capture_output=True, text=True,
+                              env=env, timeout=60)
+        out = proc.stdout + proc.stderr
+
+        ok = note("RESULT=refused" in out and "get-helm-3" in out,
+                  "unattended, a missing helm is refused with the install command") and ok
+        ok = note("kruise-all-in-one" not in out,
+                  "and nothing is fetched from a URL that 404s") and ok
+    return ok
 
 
 #  The reported machine: Ubuntu (apt), an ordinary user, one dead kubectl context, no minikube.

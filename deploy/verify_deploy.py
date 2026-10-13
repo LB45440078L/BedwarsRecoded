@@ -235,6 +235,22 @@ def verify_installer() -> None:
     for family in ["debian", "fedora", "arch", "suse", "macos"]:
         check(f"{family})" in text, f"install.sh has no package-manager mapping for {family}")
 
+    #  The reported failure: the Kubernetes path downloaded
+    #  ".../releases/latest/download/kruise-all-in-one.yaml", which answers 404 for every
+    #  version, because OpenKruise attaches no release assets. The chart URL was wrong too
+    #  (openkruise.io/charts is a 404; the repository is served from GitHub Pages). Both are
+    #  pinned here so neither can quietly return.
+    check("https://openkruise.github.io/charts/" in text,
+          "install.sh: the OpenKruise chart repository URL must be the one that answers")
+    check(not re.search(r"kubectl apply[^\n]*kruise", text),
+          "install.sh: OpenKruise has no kubectl manifest to apply -- it must use the chart")
+    check("openkruise/kruise-game" in text,
+          "install.sh: the GameServerSet CRD comes from kruise-game, so that chart is required")
+    check("ensure_helm" in text,
+          "install.sh: helm must be installed by the installer when OpenKruise needs it")
+    check("USE_SUDO=false" in text,
+          "install.sh: the helm installer script must not be allowed to reach for sudo")
+
 
 def verify_lobby() -> None:
     """The lobby is a first-class server ROLE, not a coincidence of configuration.

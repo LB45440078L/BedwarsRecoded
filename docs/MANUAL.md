@@ -643,11 +643,17 @@ allocated state is what protects the pod.
 Install (the CRD comes from OpenKruise, and it is not part of Kubernetes itself):
 
 ```bash
-$ helm repo add openkruise https://openkruise.io/charts
+$ helm repo add openkruise https://openkruise.github.io/charts/
 $ helm repo update
 $ helm install kruise openkruise/kruise --namespace kruise-system --create-namespace
 $ helm install kruise-game openkruise/kruise-game --namespace kruise-system
 ```
+
+This is the *only* route: OpenKruise attaches no assets to its GitHub releases, so the
+`kubectl apply -f .../releases/latest/download/kruise-all-in-one.yaml` that circulates in older
+notes answers **404** for every version. If `helm` is not on the machine, the installer installs
+it (into `~/.local/bin` when it cannot write `/usr/local/bin`) rather than looking for a manifest
+that does not exist. Both charts matter: the `GameServerSet` CRD comes from `kruise-game`.
 
 Verify the CRD exists — note the API group, which trips people up:
 
@@ -2242,7 +2248,7 @@ documented symptom, not a guess: it happened during this project's own verificat
 **2. OpenKruise and kruise-game** (for game servers):
 
 ```bash
-$ helm repo add openkruise https://openkruise.io/charts
+$ helm repo add openkruise https://openkruise.github.io/charts/
 $ helm repo update
 $ helm install kruise openkruise/kruise --namespace kruise-system --create-namespace
 $ helm install kruise-game openkruise/kruise-game --namespace kruise-system
@@ -3625,6 +3631,15 @@ Most often the current context is not the one that answers. The installer checks
 lists the ones that respond, so pick yours from the menu; if it is outside the first ten it
 scans, use "Point at a context by name". If the cluster is Docker Desktop's, its Kubernetes has
 to be switched on there first — the menu says so.
+
+**The installer stops at `[2/7] Installing OpenKruise and kruise-game` with a 404**
+It was downloading `.../releases/latest/download/kruise-all-in-one.yaml`, a URL that answers 404 —
+OpenKruise attaches no assets to its releases, and no kubectl-only manifest exists at any version,
+so that route could never work. Current versions use the chart, and install `helm` themselves when
+the machine has none (into `~/.local/bin` if `/usr/local/bin` needs root), because a chart is the
+only way OpenKruise is published. If you are seeing the 404 you are running an older `install.sh`.
+The chart repository is `https://openkruise.github.io/charts/` — not `https://openkruise.io/charts`,
+which is also a 404 (an older version of this manual printed that one; it has been corrected).
 
 **`error: unable to recognize ...: no matches for kind "GameServerSet"`**
 The OpenKruise CRD is not installed. Install OpenKruise and kruise-game first (chapter 8.1).
