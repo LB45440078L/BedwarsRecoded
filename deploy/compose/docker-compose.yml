@@ -97,6 +97,11 @@ services:
     networks: [bedwars]
 
   controller:
+    #  The name the Kubernetes manifests and the installer's image-load step expect. Without an
+    #  explicit image: this service is tagged with the compose project's default name
+    #  (deploy-controller), so `minikube image load bedwars-controller:1.0.0` found nothing to
+    #  load and the controller Deployment sat in ImagePullBackOff forever.
+    image: bedwars-controller:1.0.0
     build:
       context: ../..
       dockerfile: deploy/docker/controller.Dockerfile

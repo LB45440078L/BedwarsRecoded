@@ -125,6 +125,23 @@ def verify_compose() -> None:
         dockerfile = ROOT / build.get("dockerfile", "")
         check(dockerfile.exists(), f"compose: {name} dockerfile {build.get('dockerfile')} not found")
 
+    #  A service that builds without an explicit `image:` is tagged with the compose project's
+    #  default name (deploy-controller), while the Kubernetes manifests and the installer's
+    #  image-load step refer to it as bedwars-controller:1.0.0. Nothing finds it, and the
+    #  Deployment sits in ImagePullBackOff until the installer's workload wait times out -- which
+    #  is precisely what happened to the controller. Every built service names its image, and
+    #  every name the installer loads is one a service actually produces.
+    for name, svc in services.items():
+        if "build" in svc:
+            check("image" in svc,
+                  f"compose: '{name}' builds but declares no image name; the k8s manifests and the "
+                  f"installer refer to it by name")
+    installer_text = (ROOT / "install.sh").read_text(encoding="utf-8")
+    built_images = {svc.get("image") for svc in services.values() if "build" in svc}
+    for image in sorted(set(re.findall(r"bedwars-[a-z]+:1\.0\.0", installer_text))):
+        check(image in built_images,
+              f"compose: the installer loads {image}, which no service builds under that name")
+
 
 def verify_dockerfiles() -> None:
     for name in ("gameserver", "velocity", "controller"):
