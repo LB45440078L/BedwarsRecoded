@@ -261,6 +261,14 @@ def verify_installer() -> None:
     #  so its exit code cannot be believed in either direction. The disk decides.
     check('-x "$helmdir/helm"' in text,
           "install.sh: a helm install must be judged by what is on disk, not by the exit code")
+    #  helm's --create-namespace is not idempotent: it fails on a namespace that already exists
+    #  and that helm does not own ("namespaces \"kruise-system\" already exists"), which is how
+    #  the OpenKruise step stopped on a VM. It has to be conditional on the namespace being
+    #  absent, and the printed advice must not hand the user the same trap.
+    check("k8s_ns_args" in text,
+          "install.sh: --create-namespace must be decided by whether the namespace exists")
+    check(not re.search(r"--namespace [^\\\n]*--create-namespace", text),
+          "install.sh: no helm invocation may pass --create-namespace unconditionally")
 
 
 def verify_lobby() -> None:

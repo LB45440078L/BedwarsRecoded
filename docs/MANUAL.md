@@ -3655,6 +3655,14 @@ so the check passes — and judges the outcome by what is on disk rather than by
 which cannot be trusted in either direction. It also prints the line to add the directory to
 `~/.profile` for future shells. If you are seeing this, you are running an older `install.sh`.
 
+**`helm upgrade ... --create-namespace` fails with `namespaces "kruise-system" already exists`**
+helm's `--create-namespace` is not idempotent: given a namespace that already exists and that helm
+does not own, it refuses instead of using it. Any earlier attempt — or the installer's own namespace
+step — leaves one behind, so the second run hit this. The installer now asks kubectl whether the
+namespace exists and only passes `--create-namespace` when it does not. The same guard is on the
+BedWars release install itself, where step `[2/8]` has always created the namespace first, and the
+printed advice no longer suggests the flag by hand.
+
 **`error: unable to recognize ...: no matches for kind "GameServerSet"`**
 The OpenKruise CRD is not installed. Install OpenKruise and kruise-game first (chapter 8.1).
 Note that `kubectl apply -k` does not fail loudly for this — it reports the unknown kind and

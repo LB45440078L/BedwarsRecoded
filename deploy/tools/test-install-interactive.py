@@ -109,8 +109,8 @@ CHECKS = [
 #  half -- or that returned early -- then shows up as a missing check instead of as a run
 #  that quietly did less than it claims.
 RUN = []
-EXPECTED_CHECKS = 38         # 23 above + 5 sudo-hang + 6 OpenKruise + 4 helm checks
-EXPECTED_WITHOUT_HOST = 25   # the same, minus the interactive thirteen
+EXPECTED_CHECKS = 41         # 23 above + 5 sudo-hang + 7 OpenKruise + 4 helm + 2 namespace
+EXPECTED_WITHOUT_HOST = 28   # the same, minus the interactive thirteen
 
 
 #  A stage that cannot run on this host. Recorded with the number of checks it would have
@@ -156,6 +156,7 @@ def stub_stages():
     ok = check_sudo_is_never_hidden() and ok
     ok = check_openkruise_installs_helm() and ok
     ok = check_helm_install_judged_by_disk() and ok
+    ok = check_helm_create_namespace_is_conditional() and ok
     return ok
 
 
@@ -456,6 +457,9 @@ def check_openkruise_installs_helm():
                   "and the chart repository it does use is the one that answers") and ok
         #  Reported next: the helm installer script was run with `sh`, which is dash on Ubuntu, so
         #  it died at its first `[[` and blamed curl. Its own shell is bash.
+        ok = note("--namespace kruise-system --wait" in text
+                  and "kruise-system --create-namespace" not in text,
+                  "an existing namespace is used as-is: no --create-namespace") and ok
         ok = note("USE_SUDO=false bash" in text,
                   "the helm installer script is run by bash, the shell it is written in") and ok
         ok = note("USE_SUDO=false sh " not in text,
@@ -632,6 +636,36 @@ def run_helm_install_harness(root, fixture_body, bin_dir, home):
            "HARNESS_STATE": state, "NO_COLOR": "1"}
     proc = subprocess.run(["/bin/bash", script], capture_output=True, text=True, env=env, timeout=120)
     return ANSI.sub("", proc.stdout + proc.stderr)
+
+
+def check_helm_create_namespace_is_conditional():
+    """helm refuses --create-namespace when the namespace is already there. Reported verbatim:
+    Error: 1 error occurred: * namespaces "kruise-system" already exists."""
+    import tempfile
+
+    ok = True
+    with tempfile.TemporaryDirectory(prefix="bedwars-nsargs-") as root:
+        for exists, label in ((True, "exists"), (False, "missing")):
+            pathdir = os.path.join(root, "bin-" + label)
+            os.makedirs(pathdir)
+            rc = "0" if exists else "1"
+            build_fake_path(pathdir, hide=("kubectl",),
+                            stubs={"kubectl": "#!/bin/sh\ncase \"$*\" in *\"get namespace\"*) exit %s ;; "
+                                                "*) exit 0 ;; esac\n" % rc})
+            script = os.path.join(pathdir, "probe.sh")
+            with open(script, "w", encoding="utf-8") as fh:
+                fh.write("set -u\n" + extract_function("k8s_ns_args")
+                         + "printf 'ARGS=[%s]\\n' \"$(k8s_ns_args kruise-system)\"\n")
+            proc = subprocess.run(["/bin/bash", script], capture_output=True, text=True,
+                                  env={"PATH": pathdir, "HOME": root}, timeout=60)
+            out = proc.stdout
+            if exists:
+                ok = note("ARGS=[]" in out,
+                          "an existing namespace is left alone: no --create-namespace") and ok
+            else:
+                ok = note("ARGS=[--create-namespace]" in out,
+                          "a missing namespace still gets --create-namespace") and ok
+    return ok
 
 
 def check_helm_install_judged_by_disk():
