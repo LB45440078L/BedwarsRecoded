@@ -300,9 +300,10 @@ minikube -p bedwars image load bedwars-controller:1.0.0 bedwars-velocity:1.0.0 b
 ### B.3 Install the stack
 
 ```bash
+kubectl create namespace bedwars --dry-run=client -o yaml | kubectl apply -f -
 helm install bedwars deploy/helm/bedwars \
   -f deploy/helm/values-minikube.yaml \
-  -n bedwars --create-namespace
+  -n bedwars
 ```
 
 **What this does:** creates the namespace and installs every object — the controller, the

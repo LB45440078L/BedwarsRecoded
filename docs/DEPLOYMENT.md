@@ -136,9 +136,11 @@ Verified end-to-end with Docker Desktop + minikube (Kubernetes v1.37, containerd
 ```bash
 minikube start --profile bedwars --driver=docker --cpus=2 --memory=4096
 helm repo add openkruise https://openkruise.github.io/charts/
-helm install kruise      openkruise/kruise      -n kruise-system --create-namespace --wait
+kubectl create namespace kruise-system --dry-run=client -o yaml | kubectl apply -f -
+helm install kruise      openkruise/kruise      -n kruise-system --set installation.createNamespace=false --wait
 # GameServerSet lives in OpenKruise-Game, a separate chart:
-helm install kruise-game openkruise/kruise-game -n openkruise-game-system --create-namespace --wait
+kubectl create namespace kruise-game-system --dry-run=client -o yaml | kubectl apply -f -
+helm install kruise-game openkruise/kruise-game -n kruise-game-system --set installation.createNamespace=false --wait
 ```
 
 2. Build and load the images into the node:
@@ -152,7 +154,8 @@ minikube -p bedwars image load bedwars-controller:1.0.0 bedwars-velocity:1.0.0
 3. Install:
 
 ```bash
-helm install bedwars deploy/helm/bedwars -n bedwars --create-namespace -f deploy/helm/values-minikube.yaml
+kubectl create namespace bedwars --dry-run=client -o yaml | kubectl apply -f -
+helm install bedwars deploy/helm/bedwars -n bedwars -f deploy/helm/values-minikube.yaml
 ```
 
 Observed result: `bedwars-controller`, `velocity`, `mc-router` and `mysql` all `1/1

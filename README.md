@@ -289,7 +289,8 @@ cd deploy/compose && docker compose up -d
 docker compose --profile game up -d --build game-pod
 
 # B. Kubernetes
-helm install bedwars deploy/helm/bedwars -f deploy/helm/values-minikube.yaml -n bedwars --create-namespace
+kubectl create namespace bedwars
+helm install bedwars deploy/helm/bedwars -f deploy/helm/values-minikube.yaml -n bedwars
 kubectl -n bedwars scale gameserversets bedwars-solo --replicas=1
 deploy/tools/join-server.sh          # then connect to localhost:25565
 ```

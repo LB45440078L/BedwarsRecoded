@@ -109,8 +109,8 @@ CHECKS = [
 #  half -- or that returned early -- then shows up as a missing check instead of as a run
 #  that quietly did less than it claims.
 RUN = []
-EXPECTED_CHECKS = 62         # 55 above + 7 progress-reporting checks
-EXPECTED_WITHOUT_HOST = 49   # the same, minus the interactive thirteen
+EXPECTED_CHECKS = 65         # 62 above + 2 net new namespace checks + 4 helper checks
+EXPECTED_WITHOUT_HOST = 52   # the same, minus the interactive thirteen
 
 
 #  A stage that cannot run on this host. Recorded with the number of checks it would have
@@ -156,11 +156,11 @@ def stub_stages():
     ok = check_sudo_is_never_hidden() and ok
     ok = check_openkruise_installs_helm() and ok
     ok = check_helm_install_judged_by_disk() and ok
-    ok = check_helm_create_namespace_is_conditional() and ok
     ok = check_failure_diagnosis() and ok
     ok = check_helm_retry_is_bounded() and ok
     ok = check_node_readiness_gate() and ok
     ok = check_progress_reporting() and ok
+    ok = check_namespace_creation() and ok
     return ok
 
 
@@ -461,9 +461,16 @@ def check_openkruise_installs_helm():
                   "and the chart repository it does use is the one that answers") and ok
         #  Reported next: the helm installer script was run with `sh`, which is dash on Ubuntu, so
         #  it died at its first `[[` and blamed curl. Its own shell is bash.
-        ok = note("--namespace kruise-system --wait" in text
-                  and "kruise-system --create-namespace" not in text,
-                  "an existing namespace is used as-is: no --create-namespace") and ok
+        #  Reported: `Error: 1 error occurred: * namespaces "kruise-system" already exists` on a
+        #  fresh cluster, because helm's --create-namespace made the namespace and the chart's own
+        #  Namespace object then tried to make it again. The installer must not use that flag on any
+        #  path, and both charts must be told not to manage the namespace it creates itself.
+        ok = note("--namespace kruise-system" in text and "--create-namespace" not in text,
+                  "helm is never handed the create-namespace flag, on any path") and ok
+        ok = note(text.count("--set installation.createNamespace=false") >= 2,
+                  "both charts are told not to manage the namespace, since each ships its own") and ok
+        ok = note("kruise-game-system" in text and "openkruise/kruise-game kruise-system" not in text,
+                  "kruise-game goes into the namespace its own chart renders into") and ok
         ok = note("USE_SUDO=false bash" in text,
                   "the helm installer script is run by bash, the shell it is written in") and ok
         ok = note("USE_SUDO=false sh " not in text,
@@ -645,35 +652,6 @@ def run_helm_install_harness(root, fixture_body, bin_dir, home):
     proc = subprocess.run(["/bin/bash", script], capture_output=True, text=True, env=env, timeout=120)
     return ANSI.sub("", proc.stdout + proc.stderr)
 
-
-def check_helm_create_namespace_is_conditional():
-    """helm refuses --create-namespace when the namespace is already there. Reported verbatim:
-    Error: 1 error occurred: * namespaces "kruise-system" already exists."""
-    import tempfile
-
-    ok = True
-    with tempfile.TemporaryDirectory(prefix="bedwars-nsargs-") as root:
-        for exists, label in ((True, "exists"), (False, "missing")):
-            pathdir = os.path.join(root, "bin-" + label)
-            os.makedirs(pathdir)
-            rc = "0" if exists else "1"
-            build_fake_path(pathdir, hide=("kubectl",),
-                            stubs={"kubectl": "#!/bin/sh\ncase \"$*\" in *\"get namespace\"*) exit %s ;; "
-                                                "*) exit 0 ;; esac\n" % rc})
-            script = os.path.join(pathdir, "probe.sh")
-            with open(script, "w", encoding="utf-8") as fh:
-                fh.write("set -u\n" + extract_function("k8s_ns_args")
-                         + "printf 'ARGS=[%s]\\n' \"$(k8s_ns_args kruise-system)\"\n")
-            proc = subprocess.run(["/bin/bash", script], capture_output=True, text=True,
-                                  env={"PATH": pathdir, "HOME": root}, timeout=60)
-            out = proc.stdout
-            if exists:
-                ok = note("ARGS=[]" in out,
-                          "an existing namespace is left alone: no --create-namespace") and ok
-            else:
-                ok = note("ARGS=[--create-namespace]" in out,
-                          "a missing namespace still gets --create-namespace") and ok
-    return ok
 
 
 def check_helm_install_judged_by_disk():
@@ -965,6 +943,66 @@ def check_progress_reporting():
                 and open(os.path.join(d, "dest.bin"), "rb").read() == b"x" * 65536)
         ok = note(same and "rc=0" in proc.stdout and "downloading minikube" in proc.stdout,
                   "a download reports progress and still delivers the bytes") and ok
+
+    return ok
+
+
+def check_namespace_creation():
+    """The cluster's namespace is created by the installer, never by helm.
+
+    Reported from a fresh cluster: helm's --create-namespace created `kruise-system` and the chart's
+    own Namespace object then failed to create it, taking the release with it and leaving a webhook
+    behind that refused every pod creation. The namespace is made here, idempotently, so the second
+    and third runs behave as well as the first.
+    """
+    import tempfile
+
+    fn = extract_function("k8s_ensure_namespace")
+    ok = True
+
+    def run(namespace_present, create_ok="y"):
+        with tempfile.TemporaryDirectory(prefix="bedwars-ns-") as d:
+            bindir = os.path.join(d, "bin")
+            os.makedirs(bindir)
+            calls = os.path.join(d, "calls.log")
+            #  A kubectl that records what it was asked and answers by the case under test.
+            with open(os.path.join(bindir, "kubectl"), "w", encoding="utf-8") as fh:
+                #  %%s (not %s): the shell's own printf placeholder must survive Python's formatting.
+                fh.write("#!/bin/sh\n"
+                         "printf 'kubectl %%s\\n' \"$*\" >> %s\n"
+                         "case \"$*\" in\n" % (calls,) +
+                         ("  *'get namespace'*) exit 0 ;;\n" if namespace_present else
+                          "  *'get namespace'*) echo 'Error from server (NotFound)' >&2; exit 1 ;;\n") +
+                         ("  *'apply -f -'*) cat >/dev/null; exit 0 ;;\n" if create_ok == "y" else
+                          "  *'apply -f -'*) cat >/dev/null; echo 'Error from server (Forbidden)' >&2; exit 1 ;;\n") +
+                         "  *) exit 0 ;;\nesac\n")
+            os.chmod(os.path.join(bindir, "kubectl"), 0o755)
+            script = os.path.join(d, "probe.sh")
+            with open(script, "w", encoding="utf-8") as fh:
+                fh.write("set +e\nOPT_DRY_RUN=0\n"
+                         "ui_info() { printf 'INFO %s\\n' \"$*\"; }\n"
+                         "ui_hint() { printf 'HINT %s\\n' \"$*\"; }\n"
+                         "log_line() { :; }\n" + fn + "\n"
+                         "if k8s_ensure_namespace kruise-system; then echo RESULT=ok; else echo RESULT=failed; fi\n")
+            proc = subprocess.run(["/bin/bash", script], capture_output=True, text=True,
+                                  env={"PATH": bindir + ":/usr/bin:/bin", "HOME": d}, timeout=60)
+            recorded = open(calls).read() if os.path.exists(calls) else ""
+            return proc.stdout, recorded
+
+    out, calls = run(namespace_present=True)
+    ok = note("RESULT=ok" in out and "apply" not in calls,
+              "an existing namespace is left alone -- no create, no apply") and ok
+
+    out, calls = run(namespace_present=False)
+    ok = note("RESULT=ok" in out and "create namespace kruise-system" in calls
+              and "apply -f -" in calls,
+              "a missing namespace is created here, idempotently, before any chart is installed") and ok
+    ok = note("--create-namespace" not in out,
+              "and nothing in that path asks helm to create it") and ok
+
+    out, _ = run(namespace_present=False, create_ok="n")
+    ok = note("RESULT=failed" in out,
+              "a namespace that cannot be created fails the step, rather than a doomed helm run") and ok
 
     return ok
 

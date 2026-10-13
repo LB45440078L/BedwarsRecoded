@@ -644,10 +644,14 @@ allocated state is what protects the pod.
 Install (the CRD comes from OpenKruise, and it is not part of Kubernetes itself):
 
 ```bash
+$ kubectl create namespace kruise-system --dry-run=client -o yaml | kubectl apply -f -
+$ kubectl create namespace kruise-game-system --dry-run=client -o yaml | kubectl apply -f -
 $ helm repo add openkruise https://openkruise.github.io/charts/
 $ helm repo update
-$ helm install kruise openkruise/kruise --namespace kruise-system --create-namespace
-$ helm install kruise-game openkruise/kruise-game --namespace kruise-system
+$ helm install kruise openkruise/kruise --namespace kruise-system \
+    --set installation.createNamespace=false --wait
+$ helm install kruise-game openkruise/kruise-game --namespace kruise-game-system \
+    --set installation.createNamespace=false --wait
 ```
 
 This is the *only* route: OpenKruise attaches no assets to its GitHub releases, so the
@@ -2243,7 +2247,7 @@ matters.
 | | Plain manifests | Helm chart |
 |---|---|---|
 | Location | `deploy/k8s/` | `deploy/helm/bedwars/` |
-| Install | `kubectl apply -k deploy/k8s/` | `helm install bedwars deploy/helm/bedwars -n bedwars --create-namespace` |
+| Install | `kubectl apply -k deploy/k8s/` | `kubectl create namespace bedwars` then `helm install bedwars deploy/helm/bedwars -n bedwars` |
 | Configure | Edit the YAML | `-f` values files or `--set` |
 | Upgrades | Re-apply | `helm upgrade` |
 | Best for | Reading exactly what is deployed; a small fixed setup | Real deployments, multiple environments, templating |
@@ -2280,15 +2284,23 @@ documented symptom, not a guess: it happened during this project's own verificat
 **2. OpenKruise and kruise-game** (for game servers):
 
 ```bash
+$ kubectl create namespace kruise-system --dry-run=client -o yaml | kubectl apply -f -
+$ kubectl create namespace kruise-game-system --dry-run=client -o yaml | kubectl apply -f -
 $ helm repo add openkruise https://openkruise.github.io/charts/
 $ helm repo update
-$ helm install kruise openkruise/kruise --namespace kruise-system --create-namespace
-$ helm install kruise-game openkruise/kruise-game --namespace kruise-system
+$ helm install kruise openkruise/kruise --namespace kruise-system \
+    --set installation.createNamespace=false --wait
+$ helm install kruise-game openkruise/kruise-game --namespace kruise-game-system \
+    --set installation.createNamespace=false --wait
 $ kubectl get crd gameserversets.game.kruise.io
 ```
 
-`--create-namespace` does exactly what it says: creates the namespace if it does not exist.
-Without it, `helm install` into a missing namespace fails.
+The namespaces are created by hand, first, and **not** with helm's `--create-namespace`. Two
+reasons, and both have bitten: that flag fails on a namespace that already exists and that helm does
+not own (`namespaces "kruise-system" already exists`), and the OpenKruise charts ship their *own*
+`Namespace` object (`installation.createNamespace`, true by default) which then collides with the one
+helm just made and takes the whole release down with it. Creating the namespace yourself and passing
+`--set installation.createNamespace=false` works on the first run and on every run after it.
 
 The OpenKruise controllers take a minute or two to become ready. Do not apply the
 `GameServerSet` before the CRD registers, or Kubernetes will report the kind as unknown.
@@ -2298,7 +2310,8 @@ The OpenKruise controllers take a minute or two to become ready. Do not apply th
 ```bash
 $ helm repo add kedacore https://kedacore.github.io/charts
 $ helm repo update
-$ helm install keda kedacore/keda --namespace keda --create-namespace
+$ kubectl create namespace keda
+$ helm install keda kedacore/keda --namespace keda
 ```
 
 Plus a Prometheus the controller's metrics are scraped into — the kube-prometheus-stack chart
@@ -2336,8 +2349,9 @@ Also make sure the **tag matches the manifest**. An image tagged `:latest` on th
 **1. Create the namespace and install:**
 
 ```bash
+$ kubectl create namespace bedwars --dry-run=client -o yaml | kubectl apply -f -
 $ helm install bedwars deploy/helm/bedwars \
-    --namespace bedwars --create-namespace \
+    --namespace bedwars \
     -f deploy/helm/values-minikube.yaml          # omit for a real cluster
 ```
 
@@ -3687,13 +3701,30 @@ so the check passes — and judges the outcome by what is on disk rather than by
 which cannot be trusted in either direction. It also prints the line to add the directory to
 `~/.profile` for future shells. If you are seeing this, you are running an older `install.sh`.
 
-**`helm upgrade ... --create-namespace` fails with `namespaces "kruise-system" already exists`**
-helm's `--create-namespace` is not idempotent: given a namespace that already exists and that helm
-does not own, it refuses instead of using it. Any earlier attempt — or the installer's own namespace
-step — leaves one behind, so the second run hit this. The installer now asks kubectl whether the
-namespace exists and only passes `--create-namespace` when it does not. The same guard is on the
-BedWars release install itself, where step `[2/8]` has always created the namespace first, and the
-printed advice no longer suggests the flag by hand.
+**`Error: 1 error occurred: * namespaces "kruise-system" already exists`**
+The namespace is not the problem; helm's `--create-namespace` is. It is not idempotent — it refuses a
+namespace that exists and that helm does not own, so any earlier attempt leaves one behind and the
+*second* run fails where the first succeeded. Worse, the OpenKruise charts ship their **own**
+`Namespace` object, gated on `installation.createNamespace`, which defaults to **true**: helm creates
+the namespace and the chart's manifest then fails to create it, taking the whole release down.
+Observed on a fresh cluster, on the one run where the namespace genuinely was missing.
+
+Create the namespace yourself and keep helm out of it:
+
+```bash
+kubectl create namespace kruise-system --dry-run=client -o yaml | kubectl apply -f -
+helm upgrade --install kruise openkruise/kruise -n kruise-system \
+    --set installation.createNamespace=false --wait
+```
+
+The installer does exactly this, for every chart. **And if a kruise install fails part-way, remove
+the release before re-running** — its webhook configuration survives the failed release and refuses
+*every* pod creation in the cluster (`failed calling webhook "mpod.kb.io" ... connect: connection
+refused`), so nothing else can start either:
+
+```bash
+helm uninstall kruise -n kruise-system     # then re-run the installer
+```
 
 **A pod or Deployment never becomes available / the workload wait just counts up (e.g. 17%)**
 That percentage is the installer's wait bar, and it means the thing it is waiting for has not

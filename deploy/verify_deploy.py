@@ -278,14 +278,24 @@ def verify_installer() -> None:
     #  so its exit code cannot be believed in either direction. The disk decides.
     check('-x "$helmdir/helm"' in text,
           "install.sh: a helm install must be judged by what is on disk, not by the exit code")
-    #  helm's --create-namespace is not idempotent: it fails on a namespace that already exists
-    #  and that helm does not own ("namespaces \"kruise-system\" already exists"), which is how
-    #  the OpenKruise step stopped on a VM. It has to be conditional on the namespace being
-    #  absent, and the printed advice must not hand the user the same trap.
-    check("k8s_ns_args" in text,
-          "install.sh: --create-namespace must be decided by whether the namespace exists")
-    check(not re.search(r"--namespace [^\\\n]*--create-namespace", text),
-          "install.sh: no helm invocation may pass --create-namespace unconditionally")
+    #  helm's `--create-namespace` is not idempotent, and two of the three charts installed here
+    #  ship their OWN Namespace object (gated on `installation.createNamespace`, default true), so
+    #  the flag makes the namespace and the chart's manifest then fails to make it again:
+    #      Error: 1 error occurred: * namespaces "kruise-system" already exists
+    #  which is what a fresh cluster produced on a VM. The installer creates the namespace itself,
+    #  idempotently, and must never hand helm the flag at all -- on any chart, on any path.
+    check("k8s_ensure_namespace" in text,
+          "install.sh: the namespace must be created by the installer, idempotently")
+    check("k8s_ns_args" not in text and "--create-namespace" not in text.replace("#  Never hand helm `--create-namespace`.", ""),
+          "install.sh: no helm invocation may carry --create-namespace")
+    check(text.count("--set installation.createNamespace=false") >= 2,
+          "install.sh: both OpenKruise charts must be told not to manage the namespace")
+    check("kruise-game-system" in text and "openkruise/kruise-game kruise-system" not in text,
+          "install.sh: kruise-game must go into the namespace its own chart renders into")
+    #  A failed kruise release leaves its webhook configuration behind, and that webhook refuses
+    #  every pod creation in the cluster until it is removed. The failure has to say so.
+    check("helm uninstall kruise -n kruise-system" in text,
+          "install.sh: a failed kruise install must say how to remove the webhook it leaves behind")
     #  A helm failure that says only "context deadline exceeded" is unactionable, so every helm
     #  install goes through the retry-and-diagnose helper, and every Kubernetes failure prints what
     #  the cluster says. Counts include the definitions.
