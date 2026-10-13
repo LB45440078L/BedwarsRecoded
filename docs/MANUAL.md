@@ -34,6 +34,7 @@
 13. [Build it, command by command](#13-build-it-command-by-command)
     - [13.8 The guided installer](#138-the-guided-installer-installsh)
       - [13.8.1 Missing dependencies](#1381-missing-dependencies)
+      - [13.8.2 Progress: what the numbers mean](#1382-progress-what-the-numbers-mean)
 14. [The server jar: Spigot versus Paper](#14-the-server-jar-spigot-versus-paper)
 15. [Path A — the whole stack with Docker Compose](#15-path-a--the-whole-stack-with-docker-compose)
 16. [Path B — Kubernetes](#16-path-b--kubernetes)
@@ -1515,8 +1516,10 @@ for changing things afterwards.
    the bundled one. A directory without a `level.dat` is refused, because that is not a world.
 4. **Writes configuration.** `deploy/compose/.env` (mode 600) or
    `deploy/helm/values-install.yaml` — the answers as a file you can edit and reuse.
-5. **Builds and starts.** Image builds stream their real output with elapsed time, because a
-   spinner over a four-minute compile is a lie.
+5. **Builds and starts.** Every step that can take minutes reports progress rather than spinning
+   silently: elapsed time, how much of its expected time it has used, and the command's own last
+   line of output (see 13.8.2). A spinner over a four-minute compile is a lie, and a four-minute
+   compile that looks hung is how you lose a user.
 6. **Waits for readiness**, then **proves it** — not "the container started" but: the controller
    answers `/healthz`; `/infra` reports the provisioner you asked for; the lobby logged
    `role=LOBBY`; the proxy resolved its lobby server; the registry shows no hub masquerading as
@@ -1703,6 +1706,35 @@ PASS  aborting reported that nothing changed
 ```
 
 ---
+
+#### 13.8.2 Progress: what the numbers mean
+
+Nothing long spins silently. Each such step prints one line saying how long it has been running, how
+much of the time it is *expected* to need, and the last thing the command itself said:
+
+```
+  ~ building the images    2m14s   25% of 15m00s  |  [4/7] RUN mvn -B package -DskipTests
+  ~ installing kruise      1m03s   21% of  5m00s  |  waiting for deployment "kruise-controller-manager"
+  v downloading minikube            38%  (42.1 of 110 MiB)
+  ██████████████░░░░░░░░░░  55% waiting for the cluster's node to be Ready (22s/180s)
+```
+
+Four things worth knowing about those numbers:
+
+* **The percentage is progress through the expected time, not completion.** The installer does not
+  know how long a Kubernetes API server will take; it knows what it budgeted. `25% of 15m00s` means
+  *on schedule* and nothing more.
+* **Past the allowance it says so.** `past its 5m00s allowance` means the step is still running and
+  still being waited on, but it has used the time it was expected to need — usually the moment to
+  suspect something upstream, not the step itself. It is deliberately never shown as `100%`, which
+  would read as *done*.
+* **Downloads report real bytes.** The size is requested from the server first (`Content-Length`),
+  and if the server will not say, the line reports MiB and no percentage rather than inventing one.
+* **A log gets lines, not a bar.** Unattended — a file, a pipe, CI — the same reporting appears as a
+  line at the start and one every 30 seconds, so a log shows the step was moving.
+
+Waits that are not a command at all — a namespace appearing, a pod becoming ready — use the bar form
+(`55% waiting for ... (22s/180s)`), because there the limit is known exactly.
 
 ## 14. The server jar: Spigot versus Paper
 

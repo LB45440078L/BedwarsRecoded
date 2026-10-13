@@ -293,6 +293,19 @@ def verify_installer() -> None:
           "install.sh: every helm install must go through helm_install_with_retry")
     check(text.count("k8s_diagnose") >= 5,
           "install.sh: a failed Kubernetes step must print the cluster diagnosis")
+    #  A spinner that says nothing cannot be told apart from a hang, and people quit over it. Every
+    #  step that can take minutes reports elapsed time and a percentage of its expected time, and
+    #  the two long primitives (a command, a download) are the only things a long step should use.
+    check("run_cmd_progress" in text and "download_with_progress" in text,
+          "install.sh: long steps must report progress, not spin silently")
+    check(text.count("run_cmd_progress") >= 15,
+          "install.sh: the long steps (builds, loads, installs, containers) all report progress")
+    check("download_with_progress" in text and text.count("download_with_progress") >= 4,
+          "install.sh: every binary download must report how far along it is")
+    check("past its %dm%02ds allowance" in text,
+          "install.sh: a step out of time must say so, not display a percentage at or above 100%")
+    check('helm_budget' in text and "helm_budget \"$@\"" in text,
+          "install.sh: helm progress must be measured against helm's own --timeout")
     #  An API server that answers is not a cluster that can schedule: a node is NotReady for a
     #  while after it appears, and installing into that window fails with "context deadline
     #  exceeded" a couple of seconds in. Readiness is waited on, and it is asked in a way a

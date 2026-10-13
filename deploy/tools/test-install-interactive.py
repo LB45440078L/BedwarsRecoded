@@ -109,8 +109,8 @@ CHECKS = [
 #  half -- or that returned early -- then shows up as a missing check instead of as a run
 #  that quietly did less than it claims.
 RUN = []
-EXPECTED_CHECKS = 55         # 50 above + 5 node-readiness checks
-EXPECTED_WITHOUT_HOST = 42   # the same, minus the interactive thirteen
+EXPECTED_CHECKS = 62         # 55 above + 7 progress-reporting checks
+EXPECTED_WITHOUT_HOST = 49   # the same, minus the interactive thirteen
 
 
 #  A stage that cannot run on this host. Recorded with the number of checks it would have
@@ -160,6 +160,7 @@ def stub_stages():
     ok = check_failure_diagnosis() and ok
     ok = check_helm_retry_is_bounded() and ok
     ok = check_node_readiness_gate() and ok
+    ok = check_progress_reporting() and ok
     return ok
 
 
@@ -609,6 +610,10 @@ ui_hint() { printf 'HINT %s\\n' "$*"; }
 arch_suffix() { printf 'amd64\\n'; }
 run_streaming() { shift; "$@"; }
 run_cmd() { shift; "$@"; }
+#  The long runners report progress through the same interface, so the harness stubs
+#  them the same way -- otherwise this stage would be testing a stub, not the installer.
+run_cmd_progress() { shift 2; "$@"; }
+download_with_progress() { local dest="$3"; shift 2; curl -fsSL -o "$dest" "$1"; }
 __FUNCTION__
 if install_binary_tool helm; then printf 'RESULT=ok\\n'; else printf 'RESULT=failed\\n'; fi
 """
@@ -785,6 +790,7 @@ OPT_DRY_RUN=0
 ui_info() { printf 'INFO %s\\n' "$*"; }
 ui_warn() { printf 'WARN %s\\n' "$*"; }
 run_cmd() { local label="$1"; shift; printf 'RUN %s\\n' "$label"; LAST_FAILURE="$HARNESS_LAST"; "$@" >"$LAST_FAILURE" 2>&1; }
+run_cmd_progress() { local label="$1"; shift 2; printf 'RUN %s\n' "$label"; LAST_FAILURE="$HARNESS_LAST"; "$@" >"$LAST_FAILURE" 2>&1; }
 wait_for() { return ${HARNESS_WAITFOR:-0}; }
 __FUNCTION__
 if helm_install_with_retry "installing kruise" kruise openkruise/kruise kruise-system --wait; then
@@ -881,6 +887,85 @@ def check_node_readiness_gate():
             proc = subprocess.run(["/bin/bash", script], capture_output=True, text=True,
                                   env={"PATH": d + ":/usr/bin:/bin", "HOME": d}, timeout=60)
             ok = note(proc.stdout.strip() == expected, label) and ok
+    return ok
+
+
+def check_progress_reporting():
+    """A step that takes minutes has to answer "is this stuck?" while it runs.
+
+    A rotating spinner cannot: it looks the same whether the command is working or hung. These
+    checks pin the reporting itself -- the elapsed time, the percentage of the step's expected
+    time, and the honest wording once that time is exceeded.
+    """
+    import tempfile, time
+
+    names = ("file_size", "progress_line", "progress_done", "progress_detail",
+             "run_cmd_progress", "download_with_progress")
+    prelude = "".join(extract_function(n) + "\n" for n in names)
+
+    def run(body, interactive="1", timeout=60):
+        """Run a snippet with the reporting helpers loaded, and return its stdio."""
+        with tempfile.TemporaryDirectory(prefix="bedwars-progress-") as d:
+            script = os.path.join(d, "probe.sh")
+            with open(script, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "set +e\n"
+                    "UI_INTERACTIVE=%s\n"
+                    "OPT_DRY_RUN=0\n"
+                    "C_ACCENT='' C_OFF='' C_MUTED=''\n"
+                    "STATE_DIR=%s\n"
+                    "log_line() { printf 'LOG %%s\\n' \"$1\" >> %s/install.log; }\n"
+                    % (interactive, d, d) + prelude + "\n" + body)
+            return subprocess.run(["/bin/bash", script], capture_output=True, text=True,
+                                  timeout=timeout), d
+
+    ok = True
+
+    #  1. while it runs, the line carries the elapsed time and the percentage of the allowance
+    proc, _ = run("run_cmd_progress \"installing kruise\" 4 sleep 3\necho rc=$?\n")
+    ok = note("installing kruise" in proc.stdout and "of 0m04s" in proc.stdout
+              and "rc=0" in proc.stdout,
+              "a long step reports its percentage of the expected time while it runs") and ok
+    ok = note("%" in proc.stdout,
+              "and the percentage is an actual number, not a bare spinner") and ok
+
+    #  2. past the allowance it says so instead of showing a figure above 100%
+    proc, _ = run("run_cmd_progress \"slow step\" 2 sleep 3\n")
+    ok = note("past its 0m02s allowance" in proc.stdout,
+              "a step that has used its whole allowance is described as past it, never as 100% done") and ok
+
+    #  3. a failing command still returns its own status (the contract run_cmd has)
+    proc, d = run("run_cmd_progress \"will fail\" 5 sh -c 'exit 3'\necho rc=$?\n")
+    log = open(os.path.join(d, "install.log")).read() if False else ""
+    ok = note("rc=3" in proc.stdout, "progress reporting does not swallow the exit status") and ok
+
+    #  4. unattended (a log, a pipe): a start line and periodic lines, no carriage-return bar
+    proc, _ = run("run_cmd_progress \"unattended step\" 4 sleep 3\n", interactive="0")
+    ok = note("unattended step" in proc.stdout and "\r" not in proc.stdout,
+              "a log gets a readable start line instead of a carriage-return bar") and ok
+
+    #  5. the wording itself, without any waiting
+    proc, _ = run(
+        "progress_detail 150 300 ''; echo\n"
+        "progress_detail 400 300 ''; echo\n"
+        "progress_detail 65 - 'curl: 3 layers'; echo\n")
+    lines = [l for l in proc.stdout.splitlines() if l.strip()]
+    ok = note(lines[0] == "2m30s  50% of 5m00s" and lines[1] == "6m40s  past its 5m00s allowance"
+              and lines[2] == "1m05s  |  curl: 3 layers",
+              "the progress text is elapsed-vs-allowance, with the command's own last line") and ok
+
+    #  6. a download actually downloads, and reports while doing it
+    with tempfile.TemporaryDirectory(prefix="bedwars-dl-") as d:
+        src = os.path.join(d, "source.bin")
+        with open(src, "wb") as fh:
+            fh.write(b"x" * 65536)
+        proc, _ = run("download_with_progress \"downloading minikube\" file://%s %s/dest.bin\n"
+                      "echo rc=$?\n" % (src, d))
+        same = (os.path.exists(os.path.join(d, "dest.bin"))
+                and open(os.path.join(d, "dest.bin"), "rb").read() == b"x" * 65536)
+        ok = note(same and "rc=0" in proc.stdout and "downloading minikube" in proc.stdout,
+                  "a download reports progress and still delivers the bytes") and ok
+
     return ok
 
 

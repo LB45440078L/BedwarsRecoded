@@ -1331,15 +1331,15 @@ install_packages() {
     case "$PKG_MGR" in
         apt-get)
             if [ "$PKG_LISTS_UPDATED" != "1" ]; then
-                run_streaming "updating the package lists" $SUDO_N apt-get update || return 1
+                run_cmd_progress "updating the package lists" 300 $SUDO_N apt-get update || return 1
                 PKG_LISTS_UPDATED="1"
             fi
-            run_streaming "$label" $SUDO_N apt-get install -y "$@"
+            run_cmd_progress "$label" 300 $SUDO_N apt-get install -y "$@"
             ;;
-        dnf)    run_streaming "$label" $SUDO_N dnf install -y "$@" ;;
-        pacman) run_streaming "$label" $SUDO_N pacman -S --noconfirm --needed "$@" ;;
-        zypper) run_streaming "$label" $SUDO_N zypper --non-interactive install "$@" ;;
-        brew)   run_streaming "$label" brew install "$@" ;;
+        dnf)    run_cmd_progress "$label" 300 $SUDO_N dnf install -y "$@" ;;
+        pacman) run_cmd_progress "$label" 300 $SUDO_N pacman -S --noconfirm --needed "$@" ;;
+        zypper) run_cmd_progress "$label" 300 $SUDO_N zypper --non-interactive install "$@" ;;
+        brew)   run_cmd_progress "$label" 600 brew install "$@" ;;
         *)      return 1 ;;
     esac
 }
@@ -1426,7 +1426,7 @@ install_binary_file() {
     # install_binary_file <label> <source-url> <destination-basename>
     local label="$1" url="$2" name="$3" tmp
     tmp="$STATE_DIR/$name"
-    run_streaming "$label" curl -fsSL -o "$tmp" "$url" || return 1
+    download_with_progress "$label" "$url" "$tmp" || return 1
     run_cmd "installing $name" chmod +x "$tmp" || return 1
     install_downloaded_binary "$name" "$tmp" || return 1
     return 0
@@ -1469,7 +1469,7 @@ install_binary_tool() {
             # so what is about to execute is at least a file that was seen.
             url="https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3"
             tmp_script="$STATE_DIR/get-helm-3"
-            run_streaming "downloading the helm installer" curl -fsSL -o "$tmp_script" "$url" || { FAILED_INSTALL="$FAILED_INSTALL $tool"; return 1; }
+            download_with_progress "downloading the helm installer" "$url" "$tmp_script" || { FAILED_INSTALL="$FAILED_INSTALL $tool"; return 1; }
             #  The script installs into HELM_INSTALL_DIR, and reaches for sudo otherwise --
             #  a prompt issued from inside run_streaming goes to the log and hangs. Point it
             #  at a directory this user can write, and forbid sudo outright.
@@ -1494,7 +1494,7 @@ install_binary_tool() {
                 *":$helmdir:"*) on_path="1" ;;
                 *) PATH="$helmdir:$PATH"; export PATH ;;
             esac
-            run_streaming "installing helm" env HELM_INSTALL_DIR="$helmdir" USE_SUDO=false "$helmsh" "$tmp_script" || helm_rc=$?
+            run_cmd_progress "installing helm" 180 env HELM_INSTALL_DIR="$helmdir" USE_SUDO=false "$helmsh" "$tmp_script" || helm_rc=$?
             #  Judge the outcome by what is on disk, not by the exit code: it conflates "installed
             #  but not on PATH" with "could not install", and only the disk knows which happened.
             if ! command -v helm >/dev/null 2>&1 && [ ! -x "$helmdir/helm" ]; then
@@ -1523,7 +1523,7 @@ install_binary_tool() {
             # The plugin binary, exactly as the upstream docs install it.
             url="https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$arch"
             tmp_plugin="$STATE_DIR/docker-compose"
-            run_streaming "downloading the compose plugin" curl -fsSL -o "$tmp_plugin" "$url" || { FAILED_INSTALL="$FAILED_INSTALL $tool"; return 1; }
+            download_with_progress "downloading the compose plugin" "$url" "$tmp_plugin" || { FAILED_INSTALL="$FAILED_INSTALL $tool"; return 1; }
             run_cmd "installing the compose plugin" chmod +x "$tmp_plugin" || { FAILED_INSTALL="$FAILED_INSTALL $tool"; return 1; }
             plugin_dir="/usr/local/lib/docker/cli-plugins"
             #  A plugin in the user's own directory works just as well and needs no root,
@@ -2305,7 +2305,7 @@ kube_start_minikube() {
     #  Start it now rather than at provisioning time: everything the wizard asks next
     #  (namespaces, existing CRDs, where images have to be loaded) is better answered
     #  against a cluster that is actually up.
-    run_streaming "starting the minikube cluster '$profile'" minikube start -p "$profile" || {
+    run_cmd_progress "starting the minikube cluster '$profile'" 300 minikube start -p "$profile" || {
         ui_warn "minikube would not start the profile '$profile'"
         ui_hint "run 'minikube start -p $profile' by hand to see the full error"
         return 1
@@ -3107,7 +3107,7 @@ docker_object_storage_pull() {
     step_begin "Object storage images"
     ui_info "pulling the MinIO images (only needed for the S3 template path)"
     local rc=0
-    run_cmd_soft "pulling minio images" docker pull quay.io/minio/minio:latest || rc=$?
+    run_cmd_progress "pulling minio images" 600 docker pull quay.io/minio/minio:latest || rc=$?
     if [ "$rc" -ne 0 ]; then
         # A registry that refuses anonymous pulls is common on locked-down
         # networks. The repository documents a mirror; offer it rather than
@@ -3119,10 +3119,10 @@ docker_object_storage_pull() {
         if [ "$use_mirror" = "y" ]; then
             CFG_MINIO_IMAGE="bitnamilegacy/minio:latest"
             CFG_MC_IMAGE="bitnamilegacy/minio-client:latest"
-            run_cmd "pulling the mirrors" docker pull "$CFG_MINIO_IMAGE" || \
+            run_cmd_progress "pulling the mirrors" 600 docker pull "$CFG_MINIO_IMAGE" || \
                 fail "could not pull $CFG_MINIO_IMAGE either" \
                      "check network/registry access, or set BEDWARS_MINIO_IMAGE in deploy/compose/.env to a mirror you can reach"
-            run_cmd "pulling the client mirror" docker pull "$CFG_MC_IMAGE" || true
+            run_cmd_progress "pulling the client mirror" 600 docker pull "$CFG_MC_IMAGE" || true
             ui_ok "mirrors pulled; they are recorded in .env"
         else
             ui_warn "continuing without a verified MinIO image -- the object-storage services may fail"
@@ -3147,7 +3147,7 @@ docker_build() {
     local profiles=""
     profiles=$(compose_profiles)
     # shellcheck disable=SC2086
-    if ! run_streaming "building images" $COMPOSE $profiles build $svcs; then
+    if ! run_cmd_progress "building the images" 900 $COMPOSE $profiles build $svcs; then
         fail "image build failed" "the full build output is in $LOG_FILE"
     fi
     ui_ok "images built"
@@ -3159,7 +3159,7 @@ docker_start() {
     profiles=$(compose_profiles)
     svcs=$(compose_services)
     # shellcheck disable=SC2086
-    if ! run_cmd "starting containers" $COMPOSE $profiles up -d $svcs; then
+    if ! run_cmd_progress "starting the containers" 300 $COMPOSE $profiles up -d $svcs; then
         fail "docker compose up failed" "check 'deploy/compose/.env' and the log"
     fi
     ui_ok "containers requested: $svcs"
@@ -3314,11 +3314,11 @@ k8s_establish_cluster() {
                 ui_info "the kind cluster '$kname' exists; making sure its node is running"
                 run_cmd "starting the kind node" docker start "$kname-control-plane" || true
             else
-                run_streaming "creating the kind cluster '$kname'" \
+                run_cmd_progress "creating the kind cluster '$kname'" 300 \
                     kind create cluster --name "$kname" --wait 180s || {
                     ui_warn "the first attempt failed -- a half-created cluster is common"
                     run_cmd "deleting the partial cluster" kind delete cluster --name "$kname" || true
-                    run_streaming "creating the kind cluster (retry)" \
+                    run_cmd_progress "creating the kind cluster (retry)" 300 \
                         kind create cluster --name "$kname" --wait 180s || \
                         fail "kind would not create a cluster" "run 'kind create cluster' by hand to see the full error"
                 }
@@ -3339,12 +3339,12 @@ k8s_establish_cluster() {
             if [ "$state" = "Running" ]; then
                 ui_ok "minikube is already running"
             else
-                if ! run_streaming "starting minikube" minikube start --driver="$CFG_MINIKUBE_DRIVER" \
+                if ! run_cmd_progress "starting minikube" 300 minikube start --driver="$CFG_MINIKUBE_DRIVER" \
                         --cpus="$CFG_MINIKUBE_CPUS" --memory="$CFG_MINIKUBE_MEMORY"; then
                     ui_warn "the first start failed -- a half-initialised cluster is common"
                     ui_hint "retrying once from a clean slate"
                     run_cmd "deleting the bad cluster" minikube delete || true
-                    run_streaming "starting minikube (retry)" minikube start --driver="$CFG_MINIKUBE_DRIVER" \
+                    run_cmd_progress "starting minikube (retry)" 300 minikube start --driver="$CFG_MINIKUBE_DRIVER" \
                         --cpus="$CFG_MINIKUBE_CPUS" --memory="$CFG_MINIKUBE_MEMORY" || \
                         fail "minikube would not start" "run 'minikube start' by hand to see the full error"
                 fi
@@ -3451,6 +3451,143 @@ k8s_node_ready() {
     printf '%s\n' "$out" | awk '{print $2}' | tr ',' '\n' | grep -qx "Ready"
 }
 
+#  ---------------------------------------------------------------------------------------------
+#  Progress for anything that takes minutes.
+#
+#  A rotating spinner cannot answer the one question a person watching it has: is this stuck? So a
+#  long step prints how long it has been running, how much of the time it is EXPECTED to need, and
+#  the last line of its own output. The percentage is progress through the time allowance, not a
+#  completion figure -- past the allowance it says so instead of inventing a number, because a
+#  progress display that lies is worse than none.
+#  ---------------------------------------------------------------------------------------------
+PROGRESS_LAST_PRINT=0
+
+file_size() {
+    #  macOS and Linux spell stat differently, and one of them is always the odd one out.
+    stat -f%z "$1" 2>/dev/null || stat -c%s "$1" 2>/dev/null || printf '0'
+}
+
+progress_line() {
+    # progress_line <symbol> <label> <elapsed-seconds> <detail> [interval-seconds]
+    local sym="$1" label="$2" elapsed="$3" detail="$4" interval="${5:-30}"
+    if [ "$UI_INTERACTIVE" = "1" ]; then
+        printf '\r  %s%s%s %s  %s%s%s\033[K' \
+            "$C_ACCENT" "$sym" "$C_OFF" "$label" "$C_MUTED" "$detail" "$C_OFF"
+        return 0
+    fi
+    #  Unattended: one line at the start and then every $interval seconds, so a log records that the
+    #  step was moving rather than looking like it hung once and stopped.
+    if [ "$elapsed" = "0" ]; then
+        printf '  %s ...\n' "$label"
+        PROGRESS_LAST_PRINT=0
+        return 0
+    fi
+    if [ $(( elapsed - PROGRESS_LAST_PRINT )) -ge "$interval" ]; then
+        PROGRESS_LAST_PRINT="$elapsed"
+        printf '  %s  %s\n' "$label" "$detail"
+    fi
+}
+
+progress_done() {
+    [ "$UI_INTERACTIVE" = "1" ] && printf '\r\033[K'
+    PROGRESS_LAST_PRINT=0
+    return 0
+}
+
+progress_detail() {
+    # progress_detail <elapsed-seconds> <budget-seconds|-> <tail-line>
+    #  "0m07s  2% of 5m00s  |  waiting for deployment". The seconds come FIRST and always move: one
+    #  percent of a five-minute step takes three seconds, so a lone percentage looks frozen exactly
+    #  when someone is deciding whether to quit. The tail is the command's own last line, which for
+    #  a build is the only honest progress there is.
+    local elapsed="$1" budget="$2" tail_line="$3" out=""
+    out=$(printf '%dm%02ds' $(( elapsed / 60 )) $(( elapsed % 60 )))
+    #  At the full allowance the step is out of time, not done: showing "100%" for a command that
+    #  may be nowhere near finished is exactly the lie this is meant to avoid.
+    if [ "$budget" != "-" ] && [ -n "$budget" ]; then
+        if [ "$elapsed" -lt "$budget" ]; then
+            out="$out  $(printf '%d%% of %dm%02ds' $(( elapsed * 100 / budget )) $(( budget / 60 )) $(( budget % 60 )))"
+        else
+            out="$out  $(printf 'past its %dm%02ds allowance' $(( budget / 60 )) $(( budget % 60 )))"
+        fi
+    fi
+    [ -n "$tail_line" ] && out="$out  |  $tail_line"
+    printf '%s' "$out"
+}
+
+run_cmd_progress() {
+    # run_cmd_progress <label> <budget-seconds|-> <command...>
+    #  Like run_cmd, but it reports progress while it runs. The budget is how long the step is
+    #  expected to need (a helm timeout, a build allowance) and exists only to answer "is this
+    #  normal?"; a step that exceeds it is still left to finish.
+    local label="$1" budget="$2"; shift 2
+    if [ "$OPT_DRY_RUN" = "1" ]; then
+        printf '  %s[dry-run]%s %s\n' "$C_MUTED" "$C_OFF" "$*"
+        log_line "DRY-RUN: $*"
+        return 0
+    fi
+    log_line "RUN: $*"
+    LAST_FAILURE="$STATE_DIR/last-command.log"
+    : >"$LAST_FAILURE" 2>/dev/null || true
+    "$@" >"$LAST_FAILURE" 2>&1 &
+    local pid=$! waited=0 rc=0 tail_line=""
+    while kill -0 "$pid" 2>/dev/null; do
+        tail_line=$(tail -n 1 "$LAST_FAILURE" 2>/dev/null | cut -c1-64 | tr -d '\r' || true)
+        progress_line "~" "$label" "$waited" "$(progress_detail "$waited" "$budget" "$tail_line")"
+        sleep 1
+        waited=$(( waited + 1 ))
+    done
+    wait "$pid" 2>/dev/null || rc=$?
+    progress_done
+    if [ "$rc" -ne 0 ]; then
+        log_line "FAILED ($rc): $*"
+        return "$rc"
+    fi
+    log_line "OK: $*"
+    return 0
+}
+
+download_with_progress() {
+    # download_with_progress <label> <url> <destination>
+    #  A download with a real percentage: curl fetches in the background while this watches the
+    #  file grow, having asked the server how big it is first. When the server will not say, it
+    #  reports how much has arrived instead of guessing at a fraction.
+    local label="$1" url="$2" dest="$3"
+    if [ "$OPT_DRY_RUN" = "1" ]; then
+        printf '  %s[dry-run]%s curl -fsSL -o %s %s\n' "$C_MUTED" "$C_OFF" "$dest" "$url"
+        log_line "DRY-RUN: curl -fsSL -o $dest $url"
+        return 0
+    fi
+    log_line "RUN: curl -fsSL -o $dest $url"
+    LAST_FAILURE="$STATE_DIR/last-command.log"
+    local total got=0 waited=0 rc=0 detail=""
+    total=$(curl -sIL --max-time 20 "$url" 2>/dev/null |
+            awk 'tolower($1) == "content-length:" { v = $2 } END { print v }' | tr -d '\r' || true)
+    case "$total" in ''|*[!0-9]*) total=0 ;; esac
+    curl -fsSL -o "$dest" "$url" >"$LAST_FAILURE" 2>&1 &
+    local pid=$!
+    while kill -0 "$pid" 2>/dev/null; do
+        got=$(file_size "$dest")
+        if [ "$total" -gt 0 ] 2>/dev/null; then
+            detail=$(awk -v g="$got" -v tot="$total" \
+                'BEGIN { printf "%d%%  (%.1f of %.0f MiB)", (g * 100) / tot, g / 1048576, tot / 1048576 }')
+        else
+            detail=$(awk -v g="$got" 'BEGIN { printf "%.1f MiB", g / 1048576 }')
+        fi
+        progress_line "v" "$label" "$waited" "$detail" 15
+        sleep 1
+        waited=$(( waited + 1 ))
+    done
+    wait "$pid" 2>/dev/null || rc=$?
+    progress_done
+    if [ "$rc" -ne 0 ]; then
+        log_line "FAILED ($rc): curl -fsSL -o $dest $url"
+        return "$rc"
+    fi
+    log_line "OK: curl -fsSL -o $dest $url"
+    return 0
+}
+
 #  `helm upgrade --install --create-namespace` is NOT idempotent. When the namespace already
 #  exists and is not owned by the release, helm refuses:
 #      Error: 1 error occurred: * namespaces "kruise-system" already exists
@@ -3548,10 +3685,37 @@ k8s_diagnose() {
 #  the chart. Retry once, only after the cluster answers again, and only for that class of error:
 #  a chart that does not exist or a value that is wrong is not going to fix itself, and a loop
 #  would just hide the real message.
+timeout_to_seconds() {
+    #  "5m" / "300s" / "1h" as helm writes them.
+    case "$1" in
+        *h) printf '%s' $(( ${1%h} * 3600 )) ;;
+        *m) printf '%s' $(( ${1%m} * 60 )) ;;
+        *s) printf '%s' "${1%s}" ;;
+        *[!0-9]*) printf '300' ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+helm_budget() {
+    #  Progress for a helm install is measured against helm's OWN timeout, because that is when helm
+    #  will give up; any other horizon would be invented.
+    local a prev=""
+    for a in "$@"; do
+        case "$a" in
+            --timeout=*) timeout_to_seconds "${a#--timeout=}"; return 0 ;;
+        esac
+        if [ "$prev" = "--timeout" ]; then timeout_to_seconds "$a"; return 0; fi
+        prev="$a"
+    done
+    printf '300'
+}
+
 helm_install_with_retry() {
     # helm_install_with_retry <label> <release> <chart> <namespace> [extra args...]
     local label="$1" release="$2" chart="$3" ns="$4"; shift 4
-    if run_cmd "$label" helm upgrade --install "$release" "$chart" --namespace "$ns" "$@"; then
+    local budget=""
+    budget="$(helm_budget "$@")"
+    if run_cmd_progress "$label" "$budget" helm upgrade --install "$release" "$chart" --namespace "$ns" "$@"; then
         return 0
     fi
     local said=""
@@ -3561,7 +3725,7 @@ helm_install_with_retry() {
             ui_warn "$label failed while the cluster was unreachable -- that is not the chart"
             if wait_for "the cluster's node to be Ready again" 120 k8s_node_ready; then
                 ui_info "retrying once: $label"
-                run_cmd "$label (retry)" helm upgrade --install "$release" "$chart" --namespace "$ns" "$@"
+                run_cmd_progress "$label (retry)" "$budget" helm upgrade --install "$release" "$chart" --namespace "$ns" "$@"
                 return $?
             fi
             ui_warn "the cluster still is not answering after two minutes"
@@ -3651,7 +3815,7 @@ k8s_build_images() {
     step_begin "Building and publishing the images"
     local profiles
     profiles=$(compose_profiles)
-    if ! run_streaming "building images" docker compose -f "$ROOT/deploy/compose/docker-compose.yml" build controller lobby velocity; then
+    if ! run_cmd_progress "building the images" 900 docker compose -f "$ROOT/deploy/compose/docker-compose.yml" build controller lobby velocity; then
         fail "image build failed" "the full output is in $LOG_FILE"
     fi
     ui_ok "images built"
@@ -3674,7 +3838,7 @@ k8s_load_images() {
         fi
         case "$loader" in
             minikube)
-                run_cmd "loading $img" minikube image load "$img" || ui_warn "could not load $img"
+                run_cmd_progress "loading $img into the cluster" 600 minikube image load "$img" || ui_warn "could not load $img"
                 # 'minikube image load' exits 0 even when it loaded nothing, so
                 # verify the presence rather than trusting the exit code.
                 if minikube image ls 2>/dev/null | grep -q "$img"; then
@@ -3684,7 +3848,7 @@ k8s_load_images() {
                 fi
                 ;;
             kind)
-                run_cmd "loading $img" kind load docker-image "$img" || ui_warn "could not load $img"
+                run_cmd_progress "loading $img into the cluster" 600 kind load docker-image "$img" || ui_warn "could not load $img"
                 ui_ok "$img loaded"
                 ;;
             *)

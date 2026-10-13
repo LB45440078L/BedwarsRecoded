@@ -238,7 +238,12 @@ The fastest route from a fresh checkout to a running network is the guided insta
 
 It probes the machine and tells you which path it is ready for, asks every parameter (the
 repository's own defaults are one Enter away), copies your world files and server jar into
-place, streams the real image-build output with elapsed time, waits for readiness, and then
+place, waits for readiness, and then
+Nothing long runs behind a silent spinner — every build, image load, chart install, package
+install and download prints how long it has been running, how much of the time it is *expected* to
+need (`1m03s  21% of 5m00s`), and the command's own last line of output, so "working" and "stuck"
+never look alike.
+
 **proves** the result: controller health, the lobby logging `role=LOBBY`, the proxy resolving
 its lobby server, and no hub masquerading as a match host in the registry. If something is
 missing it detects the distribution (apt, dnf, pacman, zypper or Homebrew) and **offers to
