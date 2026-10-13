@@ -244,7 +244,10 @@ its lobby server, and no hub masquerading as a match host in the registry. If so
 missing it detects the distribution (apt, dnf, pacman, zypper or Homebrew) and **offers to
 install it** — Docker, Compose and kubectl from your own package manager, or the vendor binary
 where no distribution ships one — rather than closing with a list of names to chase. Decline and
-it prints the exact commands for your machine and stops cleanly. The images carry their own JDK,
+it prints the exact commands for your machine and stops cleanly. Docker is judged by *asking the
+daemon* (`docker info`), not by looking for a binary: a daemon that is running while your shell is
+refused its socket is reported as exactly that, with the `usermod -aG docker` / `newgrp docker`
+fix, and never as "the daemon is not answering". The images carry their own JDK,
 so a missing `java`/`maven` is a note (they are only needed to build the plugin here), never a
 blocker. `--yes` accepts every
 default for an unattended run; `--mode kubernetes` skips the mode question. Walkthrough:

@@ -856,6 +856,8 @@ ENV_FAILED="0"
 OS_FAMILY="unknown"      # debian | fedora | arch | suse | macos | unknown
 DOCKER_BIN=""            # the docker that `command -v` resolves
 DOCKER_SHIM="0"          # 1 when that docker is the Windows one WSL exposes
+DOCKER_STATE=""          # absent | shim | ok | permission | not_running | unknown
+DOCKER_ERR=""            # the first line docker itself said, when the answer was not usable
 PKG_MGR=""               # apt-get | dnf | pacman | zypper | brew | (empty)
 SUDO=""                  # "sudo" unless already root
 IS_ROOT="0"
@@ -883,44 +885,52 @@ probe_tools() {
     # --- the container runtime ----------------------------------------------
     #  Both paths need it: the images (the Spigot server, the controller, the proxy)
     #  are built here and then either run or loaded into the cluster.
-    if command -v docker >/dev/null 2>&1; then
-        DOCKER_BIN=$(command -v docker)
-        DOCKER_SHIM="0"
-        case "$DOCKER_BIN" in
-            # WSL PATH interop puts the Windows docker.exe on the PATH. It cannot mount
-            # this filesystem and answers with "activate the WSL integration" instead of
-            # talking to a daemon, so it is not a runtime this distribution can use.
-            /mnt/*|*.exe) DOCKER_SHIM="1" ;;
-        esac
-        if [ "$DOCKER_SHIM" = "1" ]; then
+    probe_docker_daemon
+    case "$DOCKER_STATE" in
+        absent)
+            record_env warn "docker" "not found -- the images are built with it on both paths"
+            ;;
+        shim)
             record_env warn "docker" "the Windows docker ($DOCKER_BIN) is not usable inside WSL"
             ui_hint "enable WSL integration in Docker Desktop, or install docker in this distro:"
             ui_hint "  sudo apt-get install -y docker.io && sudo service docker start"
             ui_hint "then /usr/bin/docker has to come before /mnt/... on PATH for it to be used"
-        else
-            DOCKER_VERSION=$(docker version --format '{{.Server.Version}}' 2>/dev/null | head -1 || true)
-            # A binary that is not docker prints prose and still exits 0, so an answer
-            # that looks like a version is what tells a daemon from an instruction leaflet.
-            case "$DOCKER_VERSION" in
-                ""|*[!0-9.]*) DOCKER_VERSION="" ;;
-            esac
-            if [ -n "$DOCKER_VERSION" ]; then
-                HAVE_DOCKER="1"
-                record_env ok "docker" "$DOCKER_VERSION, daemon reachable"
-                if docker compose version >/dev/null 2>&1; then
-                    HAVE_DOCKER_COMPOSE="1"
-                    record_env ok "docker compose" "$(docker compose version --short 2>/dev/null | head -1 || echo v2)"
-                else
-                    record_env warn "docker compose" "the v2 'docker compose' plugin is missing; the Docker path needs it"
-                fi
-            else
-                record_env warn "docker" "installed, but its daemon is not answering"
-                ui_hint "start it, then re-run: Docker Desktop, or 'sudo systemctl start docker' on Linux"
+            ;;
+        permission)
+            #  The daemon is up. Say so, and name the actual problem: the socket's group.
+            record_env warn "docker" "the daemon is running, but this user cannot open its socket"
+            if docker_reachable_only_with_sudo; then
+                ui_hint "confirmed: docker works with sudo here, so only your group membership is missing"
             fi
-        fi
-    else
-        record_env warn "docker" "not found -- the images are built with it on both paths"
-    fi
+            ui_hint "join the docker group, then apply it to this shell:"
+            ui_hint "  $SUDO usermod -aG docker \${USER} && newgrp docker"
+            ui_hint "a fresh login works too; then re-run this installer"
+            ;;
+        not_running)
+            record_env warn "docker" "installed, but no daemon is listening"
+            if [ "$OS_FAMILY" = "macos" ]; then
+                ui_hint "start Docker Desktop, then re-run this installer"
+            else
+                ui_hint "start it:  $SUDO systemctl start docker   (or:  $SUDO service docker start)"
+            fi
+            ;;
+        ok)
+            HAVE_DOCKER="1"
+            record_env ok "docker" "$DOCKER_VERSION, daemon reachable"
+            if docker compose version >/dev/null 2>&1; then
+                HAVE_DOCKER_COMPOSE="1"
+                record_env ok "docker compose" "$(docker compose version --short 2>/dev/null | head -1 || echo v2)"
+            else
+                record_env warn "docker compose" "the v2 'docker compose' plugin is missing; the Docker path needs it"
+            fi
+            ;;
+        *)
+            #  Unrecognised answer: print what docker actually said, so the next person has
+            #  the error in front of them instead of a guess.
+            record_env warn "docker" "installed, but it did not answer usefully: ${DOCKER_ERR:-no output}"
+            ui_hint "run 'docker info' yourself to see the full error"
+            ;;
+    esac
 
     # --- Kubernetes ----------------------------------------------------------
     if command -v kubectl >/dev/null 2>&1; then
@@ -1103,6 +1113,85 @@ tool_ok() {
         maven)   command -v mvn >/dev/null 2>&1 ;;
         *)       return 1 ;;
     esac
+}
+
+#  Is this a version, or a paragraph? A binary that is not docker prints prose and still
+#  exits 0, so the answer has to look like a version -- but a real daemon may answer with a
+#  suffixed build ("20.10.24+dfsg1" is what Debian's own package reports), so the shape is
+#  "starts with a digit, then only characters a version can contain".
+looks_like_version() {
+    case "$1" in
+        v[0-9]*|[0-9]*) ;;
+        *) return 1 ;;
+    esac
+    case "$1" in
+        *[!0-9A-Za-z.+_-]*) return 1 ;;
+    esac
+    return 0
+}
+
+#  What the docker on PATH can actually reach, and why not when it cannot.
+#
+#  Sets DOCKER_STATE to one of: absent | shim | ok | permission | not_running | unknown,
+#  plus DOCKER_BIN / DOCKER_VERSION / DOCKER_ERR.
+#
+#  The distinction is the whole point. "The daemon is not answering" is wrong -- and sends
+#  people to restart a service that is already running -- when the daemon is up and this
+#  user is simply not in the docker group yet, which is the state of every fresh Ubuntu
+#  before a re-login. A user with a screenshot of `systemctl status docker: active
+#  (running)` reported exactly that.
+probe_docker_daemon() {
+    DOCKER_STATE="absent"; DOCKER_VERSION=""; DOCKER_ERR=""; DOCKER_SHIM="0"
+    command -v docker >/dev/null 2>&1 || return 0
+    DOCKER_BIN=$(command -v docker)
+    case "$DOCKER_BIN" in
+        # WSL PATH interop puts the Windows docker.exe on the PATH: it cannot reach a Linux
+        # daemon at all, so starting one is pointless advice.
+        /mnt/*|*.exe) DOCKER_SHIM="1"; DOCKER_STATE="shim"; return 0 ;;
+    esac
+    local raw="" first="" cleaned=""
+    #  Ask the daemon for its version. No pipeline here on purpose: under `set -o pipefail`
+    #  a `printf | head -1` can fail with SIGPIPE and abort the whole run (this installer
+    #  has been killed by exactly that class of bug before), so the first line is taken with
+    #  parameter expansion instead.
+    raw=$(docker info --format '{{.ServerVersion}}' 2>&1) || true
+    first="${raw%%$'\n'*}"
+    cleaned="${first//[[:space:]]/}"
+    case "$raw" in
+        #  Permission first: a refused socket also says "dial unix ...", so testing for the
+        #  transport before the cause would misreport the commonest case on a fresh host.
+        *"permission denied"*) DOCKER_STATE="permission" ;;
+        *"Cannot connect to the Docker daemon"*|*"Is the docker daemon running"*|\
+        *"connection refused"*|*"no such file or directory"*|*"connect: connection"*)
+            DOCKER_STATE="not_running" ;;
+        *)
+            if looks_like_version "$cleaned"; then
+                DOCKER_STATE="ok"
+                DOCKER_VERSION="$cleaned"
+            else
+                DOCKER_STATE="unknown"
+                DOCKER_ERR="$first"
+            fi
+            ;;
+    esac
+    return 0
+}
+
+#  True only when the daemon answers. `wait_for` polls a command's exit status, and the
+#  probe itself always returns 0 (it reports by setting DOCKER_STATE), so this is the
+#  predicate to poll.
+docker_daemon_ok() {
+    probe_docker_daemon
+    [ "$DOCKER_STATE" = "ok" ]
+}
+
+#  Can this user reach the daemon with sudo but not without it? Then the daemon is fine and
+#  only the group membership is missing -- which makes the diagnosis certain rather than
+#  likely. sudo -n never prompts: if a password is needed it simply fails.
+docker_reachable_only_with_sudo() {
+    [ -n "$SUDO" ] || return 1
+    [ "$DOCKER_STATE" = "permission" ] || return 1
+    $SUDO -n docker info >/dev/null 2>&1
 }
 
 #  A docker this machine can actually use: present, and not the Windows one that WSL
@@ -1462,9 +1551,58 @@ manual_instructions() {
     ui_hint "this machine looks like: $(platform_label)"
 }
 
+#  The daemon is up but this user cannot open its socket. Report that honestly, offer the
+#  group fix, and stop. Shared: the preflight, the dependency check and the daemon-start
+#  attempt all arrive here, and all of them used to say "the daemon is not answering" --
+#  advice to restart a service that is running, from an installer being run on a host whose
+#  `systemctl status docker` says `active (running)`.
+docker_permission_stop() {
+    ui_blank
+    ui_warn "the docker daemon is running, but this user cannot open its socket"
+    if docker_reachable_only_with_sudo; then
+        ui_hint "confirmed: 'sudo docker info' answers, so the daemon is healthy and only your"
+        ui_hint "group membership is missing"
+    fi
+    local in_group="0"
+    case " $(id -nG) " in *" docker "*) in_group="1" ;; esac
+    if [ -n "$SUDO" ] && [ "$in_group" = "0" ]; then
+        if [ "$OPT_YES" = "1" ] || [ "$OPT_INSTALL_DEPS" = "no" ]; then
+            #  Never change someone's group membership without being asked, and never in an
+            #  unattended run.
+            ui_hint "add yourself to the docker group:"
+            ui_hint "  $SUDO usermod -aG docker \${USER}"
+        else
+            ask_yesno addgrp "Add $USER to the docker group now?" "y"
+            if [ "$addgrp" = "y" ]; then
+                # Soft on purpose: it may need a password.
+                run_cmd_soft "adding $USER to the docker group" \
+                    sh -c "$SUDO usermod -aG docker \$USER" || true
+                ui_ok "added to the docker group"
+            else
+                ui_hint "add yourself to the docker group:"
+                ui_hint "  $SUDO usermod -aG docker \${USER}"
+            fi
+        fi
+    elif [ "$in_group" = "1" ]; then
+        ui_hint "you are already in the docker group, so this shell has not picked it up yet"
+    fi
+    ui_hint "then apply it to THIS shell and run this installer again:"
+    ui_hint "  newgrp docker      # or log out and back in"
+    fail "docker is not usable by this user yet" \
+         "run: newgrp docker   (then run this installer again)"
+}
+
 #  Docker is installed but nothing is listening: that is not an install problem, so
 #  do not send the user off to install it again.
 offer_start_docker() {
+    #  A daemon that is already up is not started again; and a socket this user may not open
+    #  is not a daemon problem at all -- starting it would "succeed" and change nothing.
+    probe_docker_daemon
+    if [ "$DOCKER_STATE" = "permission" ]; then
+        ui_warn "the docker daemon is running -- this user just cannot open its socket"
+        ui_hint "the daemon does not need starting; your group membership does"
+        return 1
+    fi
     phase "$(em '🐳') Starting the Docker daemon"
     ui_warn "the docker command exists, but its daemon is not answering"
     local start=""
@@ -1482,8 +1620,14 @@ offer_start_docker() {
         # Soft on purpose: it may need a password, or the unit may not exist yet.
         run_cmd_soft "starting the docker daemon" sh -c "$start" || true
     fi
-    if wait_for "the docker daemon to answer" 60 docker version --format "{{.Server.Version}}"; then
-        ui_ok "the docker daemon is answering now"
+    if wait_for "the docker daemon to answer" 60 docker_daemon_ok; then
+        if [ "$OPT_DRY_RUN" = "1" ]; then
+            # wait_for cannot actually observe anything in a dry run, so do not print a
+            # success line for something that was never checked.
+            ui_info "a real run would verify the daemon here"
+        else
+            ui_ok "the docker daemon is answering now"
+        fi
         return 0
     fi
     ui_warn "the daemon still is not answering"
@@ -1526,6 +1670,44 @@ ensure_dependencies() {
     fi
     ui_blank
     ui_kv "this machine" "$(platform_label)"
+
+    #  Every remaining branch below either installs packages or prints instructions for
+    #  installing them. Neither is right when the only thing "missing" is permission to open
+    #  a socket of a daemon that is already running: the honest fix is group membership, and
+    #  an installer that reports "the daemon is not answering" here sends people to restart a
+    #  service their own `systemctl status docker` calls `active (running)`. So settle that
+    #  case before any of the branches can speak.
+    if [ -n "$missing_req" ]; then
+        local only_docker="1" t3=""
+        for t3 in $missing_req; do
+            case "$t3" in
+                docker|compose) ;;
+                *) only_docker="0" ;;
+            esac
+        done
+        if [ "$only_docker" = "1" ]; then
+            probe_docker_daemon
+            case "$DOCKER_STATE" in
+                permission)
+                    docker_permission_stop
+                    ;;
+                not_running)
+                    #  Installed and simply not started: also not an install problem. (The
+                    #  offer to start it has already been made above.)
+                    ui_blank
+                    ui_warn "docker is installed, but no daemon is listening"
+                    if [ "$OS_FAMILY" = "macos" ]; then
+                        ui_hint "start Docker Desktop, then run this installer again"
+                    else
+                        ui_hint "start it:  $SUDO systemctl start docker   (or:  $SUDO service docker start)"
+                        ui_hint "then run this installer again"
+                    fi
+                    fail "the docker daemon is not running" \
+                         "start Docker and run this installer again"
+                    ;;
+            esac
+        fi
+    fi
 
     # Nothing to offer without a package manager, so go straight to instructions.
     if [ -z "$PKG_MGR" ]; then
@@ -1624,6 +1806,12 @@ ensure_dependencies() {
 
     if [ -n "$still" ]; then
         if [ "$daemon_only" = "1" ]; then
+            #  "Missing" here can also mean "present and healthy but not open to this user",
+            #  which is a different fix (group membership, not restarting a daemon).
+            probe_docker_daemon
+            if [ "$DOCKER_STATE" = "permission" ]; then
+                docker_permission_stop
+            fi
             ui_blank
             ui_warn "docker is installed, but its daemon is not running, so nothing can start yet"
             if [ "$OS_FAMILY" = "macos" ]; then
@@ -1640,21 +1828,37 @@ ensure_dependencies() {
              "install them as shown above, then run this installer again"
     fi
 
-    # Present and answering, but not to this user: docker group membership only takes
-    # effect at a new login, which is why this stops rather than pretending to finish.
-    if ! docker info >/dev/null 2>&1; then
-        ui_blank
-        if [ "$OS_FAMILY" = "macos" ]; then
-            ui_warn "docker is installed, but Docker Desktop is not answering yet"
-            ui_hint "start Docker Desktop, let it settle, then re-run this installer"
-        else
-            ui_warn "docker is installed, but this user cannot talk to the daemon yet"
-            ui_hint "if it needs sudo, add yourself to the docker group and log back in:"
-            ui_hint "  $SUDO usermod -aG docker \${USER}   (then log out and back in, or run: newgrp docker)"
-        fi
-        fail "docker is not usable by this user yet" \
-             "log out and back in, then run this installer again"
-    fi
+    #  Present, and possibly perfectly healthy, but not open to this user: the docker
+    #  socket belongs to a group, and group membership only takes effect in a NEW session.
+    #  This is the normal state of a fresh Ubuntu install, and reporting it as "the daemon
+    #  is not running" sends people to restart a service that is already running.
+    probe_docker_daemon
+    case "$DOCKER_STATE" in
+        ok)
+            ;;
+        permission)
+            docker_permission_stop
+            ;;
+        not_running)
+            ui_blank
+            if [ "$OS_FAMILY" = "macos" ]; then
+                ui_warn "docker is installed, but Docker Desktop is not answering yet"
+                ui_hint "start Docker Desktop, let it settle, then re-run this installer"
+            else
+                ui_warn "docker is installed, but no daemon is listening on its socket"
+                ui_hint "start it:  $SUDO systemctl start docker   (or:  $SUDO service docker start)"
+            fi
+            fail "the docker daemon is not running" \
+                 "start Docker, then run this installer again"
+            ;;
+        *)
+            ui_blank
+            ui_warn "docker is installed, but it did not answer usefully: ${DOCKER_ERR:-no output}"
+            ui_hint "run 'docker info' to see the full error, then re-run this installer"
+            fail "docker is not usable on this machine" \
+                 "see the message above"
+            ;;
+    esac
     ui_ok "every dependency this path needs is present"
     return 0
 }

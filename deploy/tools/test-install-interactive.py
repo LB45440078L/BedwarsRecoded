@@ -105,10 +105,54 @@ CHECKS = [
 ]
 
 
+#  Every check goes through note(), so the count is known. A stage whose body was cut in
+#  half -- or that returned early -- then shows up as a missing check instead of as a run
+#  that quietly did less than it claims.
+RUN = []
+EXPECTED_CHECKS = 19         # 13 interactive + 3 daemon states + 3 stub flows
+EXPECTED_WITHOUT_HOST = 6    # the same, minus the interactive thirteen
+
+
+def note(passed, label, detail=""):
+    """Record one check and print its result."""
+    RUN.append((bool(passed), label))
+    print(("PASS  " if passed else "FAIL  ") + label + detail)
+    return bool(passed)
+
+
+def docker_daemon_answers():
+    """Is there a daemon to install against? The interactive stage needs one."""
+    try:
+        proc = subprocess.run(["docker", "info", "--format", "{{.ServerVersion}}"],
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
+
+
+def stub_stages():
+    """The stages that need nothing from the host: they stub what they test."""
+    ok = check_unattended_redaction()
+    ok = check_missing_dependency_flow() and ok
+    ok = check_broken_tools_do_not_abort() and ok
+    ok = check_docker_daemon_states() and ok
+    return ok
+
+
 def main():
     if not os.path.exists(INSTALLER):
         print("FAIL: no install.sh at %s" % INSTALLER)
         return 1
+
+    # The walk-through below assumes the machine the installer is meant to meet first: one
+    # where the chosen path can actually run. With no daemon the installer stops -- correctly
+    # -- at the dependency check, before the first services prompt, so this stage is skipped
+    # loudly rather than reported as a failure of the installer.
+    if not docker_daemon_answers():
+        print("SKIP  the interactive walk-through (no docker daemon answering on this host)")
+        print("      the stub-driven stages below need no host and still run")
+        ok = stub_stages()
+        return summary(ok, EXPECTED_WITHOUT_HOST)
 
     master, slave = pty.openpty()
     proc = subprocess.Popen([INSTALLER, "--dry-run"], stdin=slave, stdout=slave,
@@ -178,17 +222,119 @@ def main():
 
     ok = True
     for label, check in CHECKS:
-        passed = check(text)
-        ok = ok and passed
-        print(("PASS  " if passed else "FAIL  ") + label)
+        ok = note(check(text), label) and ok
 
-    # The interactive flow above ends in [a]bort, so it never reaches the step that
-    # writes the config. The unattended flow does, and it is where the secret must stay
-    # out of the output: a dry run has to be safe to paste into a bug report.
-    ok = check_unattended_redaction() and ok
-    ok = check_missing_dependency_flow() and ok
-    ok = check_broken_tools_do_not_abort() and ok
+    # The interactive flow above ends in [a]bort, so it never reaches the step that writes
+    # the config. The unattended flow does, and it is where the secret must stay out of the
+    # output: a dry run has to be safe to paste into a bug report.
+    ok = stub_stages() and ok
+    return summary(ok, EXPECTED_CHECKS)
+
+
+def summary(ok, expected):
+    """Report the total, and refuse to call an under-run a pass."""
+    failed = [label for passed, label in RUN if not passed]
+    if len(RUN) < expected:
+        print("FAIL  only %d of %d checks ran -- a stage stopped early or never ran"
+              % (len(RUN), expected))
+        ok = False
+    print("checks: %d run, %d failed%s"
+          % (len(RUN), len(failed), (" (" + "; ".join(failed[:3]) + ")") if failed else ""))
     return 0 if ok else 1
+
+#  The three daemon states that must never be confused with each other. A socket this user
+#  may not open is NOT a stopped daemon: reporting "the daemon is not answering" there sends
+#  people to restart a service that their own `systemctl status docker` calls
+#  `active (running)` -- reported from a VM, with a screenshot as proof.
+SOCKET_REFUSED_DOCKER = (
+    "#!/bin/sh\n"
+    "case \"$1\" in\n"
+    "  info)\n"
+    "    echo \"permission denied while trying to connect to the Docker daemon socket at "
+    "unix:///var/run/docker.sock: Get \\\"http://%2Fvar%2Frun%2Fdocker.sock/v1.51/info\\\": "
+    "dial unix /var/run/docker.sock: connect: permission denied\" >&2\n"
+    "    exit 1 ;;\n"
+    "  version) echo \"Docker version 27.3.1, build deadbeef\"; exit 0 ;;\n"
+    "esac\n"
+    "exit 0\n"
+)
+
+STOPPED_DOCKER = (
+    "#!/bin/sh\n"
+    "case \"$1\" in\n"
+    "  info)\n"
+    "    echo \"Cannot connect to the Docker daemon at unix:///var/run/docker.sock. "
+    "Is the docker daemon running?\" >&2\n"
+    "    exit 1 ;;\n"
+    "  version) echo \"Docker version 27.3.1, build deadbeef\"; exit 0 ;;\n"
+    "esac\n"
+    "exit 0\n"
+)
+
+#  Debian's own package reports a suffixed engine version. A shape check that only accepted
+#  digits and dots threw that away and called a healthy daemon unreachable.
+SUFFIXED_DOCKER = (
+    "#!/bin/sh\n"
+    "case \"$1\" in\n"
+    "  info) echo \"20.10.24+dfsg1\"; exit 0 ;;\n"
+    "  version) echo \"Docker version 20.10.24+dfsg1, build deadbeef\"; exit 0 ;;\n"
+    "esac\n"
+    "exit 0\n"
+)
+
+
+def run_installer_with_stub_docker(stub):
+    """Run a dry-run install against a stubbed docker and return its colourless output."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="bedwars-fakedocker-") as tmpdir:
+        build_fake_path(tmpdir, stubs={"docker": stub})
+        env = dict(os.environ)
+        env["PATH"] = tmpdir
+        env["NO_COLOR"] = "1"
+        env["TERM"] = "dumb"
+        proc = subprocess.run([INSTALLER, "--dry-run", "--mode", "docker", "--no-install-deps"],
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              cwd=REPO_ROOT, env=env, timeout=240)
+        return ANSI.sub("", proc.stdout.decode("utf-8", "replace"))
+
+
+def check_docker_daemon_states():
+    """Each daemon state has to be named correctly, and advise the fix that is real."""
+    cases = (
+        (
+            SOCKET_REFUSED_DOCKER,
+            "a refused socket is a permission problem, not a stopped daemon",
+            ("cannot open its socket", "newgrp"),
+            ("is not answering", "not responding", "brew install --cask docker"),
+        ),
+        (
+            STOPPED_DOCKER,
+            "a stopped daemon is reported as stopped",
+            ("no daemon is listening", "start Docker"),
+            ("cannot open its socket",),
+        ),
+        (
+            SUFFIXED_DOCKER,
+            "a suffixed Debian engine version is accepted as a version",
+            ("20.10.24+dfsg1, daemon reachable",),
+            ("did not answer usefully", "not answering"),
+        ),
+    )
+    ok = True
+    for stub, label, must, must_not in cases:
+        text = run_installer_with_stub_docker(stub)
+        missing = [m for m in must if m not in text]
+        unwanted = [m for m in must_not if m in text]
+        passed = not missing and not unwanted
+        ok = ok and passed
+        detail = ""
+        if missing:
+            detail += "  missing %r" % (missing,)
+        if unwanted:
+            detail += "  unwanted %r" % (unwanted,)
+        note(passed, label, detail)
+    return ok
 
 
 UNREDACTED = re.compile(r"^BEDWARS_API_TOKEN=[A-Za-z0-9]{16,}", re.M)
@@ -297,7 +443,7 @@ def check_missing_dependency_flow():
             print("FAIL  --install-deps did not run (or describe) a package-manager install")
             return False
 
-    print("PASS  missing dependencies are offered, and declining explains what to install")
+    note(True, "missing dependencies are offered, and declining explains what to install")
     return True
 
 
@@ -346,7 +492,7 @@ def check_broken_tools_do_not_abort():
             print("FAIL  the probe left a stack trace in the output")
             return False
 
-    print("PASS  a broken tool probe reports instead of aborting, and a docker shim is not a daemon")
+    note(True, "a broken tool probe reports instead of aborting, and a docker shim is not a daemon")
     return True
 
 
@@ -372,7 +518,7 @@ def check_unattended_redaction():
     if "BEDWARS_OFFLINE_MODE=" not in out:
         print("FAIL  the unattended dry run did not write the offline-mode setting")
         return False
-    print("PASS  the unattended dry run redacts the generated token")
+    note(True, "the unattended dry run redacts the generated token")
     return True
 
 

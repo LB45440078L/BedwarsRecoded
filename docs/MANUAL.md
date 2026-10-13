@@ -1577,13 +1577,26 @@ stops:
 
 Three things it knows that are easy to get wrong by hand:
 
-- **An installed Docker with a dead daemon is not a missing dependency.** It offers to start the
-  daemon (`systemctl start docker`, `service docker start`, or launching Docker Desktop) instead
-  of sending you off to install it again.
-- **A fresh Docker install does not make this user able to use it.** If the daemon needs `sudo`,
-  the installer prints the `usermod -aG docker` line and stops, because group membership only
-  applies to a new login — re-running after `newgrp docker` or a re-login is the fix, and saying
-  so is better than a confusing "permission denied" ten steps later.
+- **It asks the daemon, not the filesystem.** Docker is probed with `docker info` — what the
+  daemon reports — so the three states are told apart and named:
+
+  | What is true | What the installer says | What it does |
+  |---|---|---|
+  | daemon up, socket open to you | `27.3.1, daemon reachable` | continues |
+  | daemon up, socket refused to you | `the daemon is running, but this user cannot open its socket` | offers `usermod -aG docker`, prints `newgrp docker`, stops |
+  | nothing listening | `installed, but no daemon is listening` | offers to start it |
+
+  A refused socket is *not* a stopped daemon. Saying "the daemon is not answering" there sends
+  you to restart a service your own `systemctl status docker` calls `active (running)`; the
+  installer is explicit that the daemon is healthy and the fix is group membership. When it can
+  prove it (`sudo docker info` answering through `sudo -n`, which never prompts) it says so.
+- **A fresh Docker install does not make this user able to use it.** Group membership applies to
+  a new session, so the installer prints the `usermod -aG docker` line and stops rather than
+  failing later with a bare "permission denied". `newgrp docker` in the same terminal, or a
+  re-login, then re-run.
+- **A daemon's version may carry a build suffix** (Debian's own package reports
+  `20.10.24+dfsg1`). Any version-shaped answer counts; only prose is rejected, because that is
+  what a binary which is *not* docker prints while still exiting 0.
 - **On WSL** it says so and points at the Docker Desktop WSL integration, which is far less
   painful than running a daemon inside the distribution.
 
@@ -3630,7 +3643,24 @@ Likely a timing artefact, not a fault: the pod's ready report lands a moment aft
 starts. Poll for a few seconds before concluding anything. (This produced a real false alarm
 during verification.)
 
-### 20.4 Gameplay and the plugin
+### 20.4 The installer
+
+**It says the Docker daemon is not responding, but `systemctl status docker` says `active (running)`**
+This is diagnosed, not guessed: the installer asks the daemon itself (`docker info`) and reports
+one of three things. If you are seeing "cannot open its socket", the daemon is up and your user is
+not in the `docker` group yet — run `sudo usermod -aG docker "$USER"`, then `newgrp docker` in that
+terminal (or log out and back in) and re-run. A user added to the group is only a member in *new*
+sessions, which is why the installer stops and says so instead of continuing. If instead it says
+"no daemon is listening", start it: `sudo systemctl start docker`. If it says it "did not answer
+usefully", it prints what docker actually said — run `docker info` yourself to see the full error.
+See 13.8 for the table.
+
+**`the docker daemon is not answering` appears when the daemon is fine**
+You are running an older copy of `install.sh`. In current versions that sentence cannot be
+reached from a running daemon; the state is determined by asking the daemon, and each outcome has
+its own message.
+
+### 20.5 Gameplay and the plugin
 
 **Players are rejected with "You are not whitelisted on this server!"**
 `server.force-whitelist-off` is `LEAVE` and the server's whitelist is on and empty. Set it to
