@@ -109,8 +109,8 @@ CHECKS = [
 #  half -- or that returned early -- then shows up as a missing check instead of as a run
 #  that quietly did less than it claims.
 RUN = []
-EXPECTED_CHECKS = 65         # 62 above + 2 net new namespace checks + 4 helper checks
-EXPECTED_WITHOUT_HOST = 52   # the same, minus the interactive thirteen
+EXPECTED_CHECKS = 67         # 65 above + the stale-record heal and its vacuity guard
+EXPECTED_WITHOUT_HOST = 54   # the same, minus the interactive thirteen
 
 
 #  A stage that cannot run on this host. Recorded with the number of checks it would have
@@ -780,11 +780,20 @@ printf 'ATTEMPTS=%s\\n' "$(cat "$HELM_STUB_STATE")"
 """
 
 HELM_FLAKY = ("#!/bin/sh\n"
+              #  An uninstall is recorded but not counted as an install attempt: the checks assert
+              #  how many times the INSTALL was tried, and a cleanup would otherwise inflate it.
+              "case \"$*\" in *uninstall*)\n"
+              "  echo uninstall >> \"$HELM_STUB_STATE.uninstall\"; exit 0 ;; esac\n"
               "n=$(cat \"$HELM_STUB_STATE\" 2>/dev/null || echo 0)\n"
               "n=$((n + 1)); echo $n > \"$HELM_STUB_STATE\"\n"
               "case \"${HELM_STUB_MODE:-always}\" in\n"
               "  blip) if [ \"$n\" = \"1\" ]; then echo 'Error: UPGRADE FAILED: context deadline exceeded' >&2; exit 1; fi; exit 0 ;;\n"
               "  chart) echo 'Error: failed to download \"openkruise/kruise\"' >&2; exit 1 ;;\n"
+              #  Reported: a release record whose objects are gone, so helm's upgrade path fails on
+              #  the first object it cannot find.
+              "  stale) if [ \"$n\" = \"1\" ]; then echo 'Error: UPGRADE FAILED: services \"kruise-webhook-service\" not found' >&2; exit 1; fi; exit 0 ;;\n"
+              #  A \"not found\" that is the chart's own business, and must not be healed.
+              "  notfound_chart) echo 'Error: chart \"kruise\" not found in openkruise index' >&2; exit 1 ;;\n"
               "  *) echo 'Error: UPGRADE FAILED: context deadline exceeded' >&2; exit 1 ;;\n"
               "esac\n")
 
@@ -804,7 +813,10 @@ def run_retry_harness(root, mode, waitfor="0"):
            "HELM_STUB_MODE": mode, "HARNESS_LAST": os.path.join(root, "last.log"),
            "HARNESS_WAITFOR": waitfor, "NO_COLOR": "1"}
     proc = subprocess.run(["/bin/bash", script], capture_output=True, text=True, env=env, timeout=120)
-    return ANSI.sub("", proc.stdout + proc.stderr)
+    out = ANSI.sub("", proc.stdout + proc.stderr)
+    #  Whether the stale release was cleaned up is part of the assertion, so report it.
+    uninstall = state + ".uninstall"
+    return out + ("UNINSTALL=yes\n" if os.path.exists(uninstall) else "UNINSTALL=no\n")
 
 
 def check_helm_retry_is_bounded():
@@ -824,6 +836,19 @@ def check_helm_retry_is_bounded():
         out = run_retry_harness(root, "always", waitfor="1")
         ok = note("RESULT=failed" in out and "ATTEMPTS=1" in out and "still is not answering" in out,
                   "and if the cluster never answers again, it says that and stops") and ok
+        #  Reported: `Error: UPGRADE FAILED: services "kruise-webhook-service" not found`, on a
+        #  cluster where the release did not exist and the namespace was empty. A record whose
+        #  objects are gone makes every later attempt fail on the same missing object, so the stale
+        #  record has to be removed before anything else can succeed.
+        out = run_retry_harness(root, "stale")
+        ok = note("RESULT=ok" in out and "ATTEMPTS=2" in out
+                  and "UNINSTALL=yes" in out and "disagree" in out,
+                  "a release record whose objects are gone is removed, then installed cleanly") and ok
+        #  ... but a "not found" that belongs to the chart must be left alone, or the cleanup
+        #  becomes a way to silently delete a healthy release.
+        out = run_retry_harness(root, "notfound_chart")
+        ok = note("RESULT=failed" in out and "ATTEMPTS=1" in out and "UNINSTALL=no" in out,
+                  "a chart's own 'not found' is never mistaken for a stale release") and ok
     return ok
 
 

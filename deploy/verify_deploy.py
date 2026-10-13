@@ -296,6 +296,15 @@ def verify_installer() -> None:
     #  every pod creation in the cluster until it is removed. The failure has to say so.
     check("helm uninstall kruise -n kruise-system" in text,
           "install.sh: a failed kruise install must say how to remove the webhook it leaves behind")
+    #  A release record whose objects are gone makes helm's upgrade path fail on the first missing
+    #  object (`UPGRADE FAILED: services "kruise-webhook-service" not found`) forever, so a stale
+    #  record is removed and the install tried once cleanly.
+    check('helm uninstall "$release" --namespace "$ns"' in text and "the release record and the cluster disagree" in text,
+          "install.sh: a stale release record must be removed, not retried against")
+    #  A half-installed OpenKruise poisons the cluster (its webhook refuses every pod creation), so
+    #  those two installs must be atomic: a failure removes what it created.
+    check(text.count("--atomic") >= 2,
+          "install.sh: the OpenKruise charts must be installed atomically")
     #  A helm failure that says only "context deadline exceeded" is unactionable, so every helm
     #  install goes through the retry-and-diagnose helper, and every Kubernetes failure prints what
     #  the cluster says. Counts include the definitions.

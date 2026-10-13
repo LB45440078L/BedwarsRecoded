@@ -649,9 +649,9 @@ $ kubectl create namespace kruise-game-system --dry-run=client -o yaml | kubectl
 $ helm repo add openkruise https://openkruise.github.io/charts/
 $ helm repo update
 $ helm install kruise openkruise/kruise --namespace kruise-system \
-    --set installation.createNamespace=false --wait
+    --set installation.createNamespace=false --atomic --wait
 $ helm install kruise-game openkruise/kruise-game --namespace kruise-game-system \
-    --set installation.createNamespace=false --wait
+    --set installation.createNamespace=false --atomic --wait
 ```
 
 This is the *only* route: OpenKruise attaches no assets to its GitHub releases, so the
@@ -2289,9 +2289,9 @@ $ kubectl create namespace kruise-game-system --dry-run=client -o yaml | kubectl
 $ helm repo add openkruise https://openkruise.github.io/charts/
 $ helm repo update
 $ helm install kruise openkruise/kruise --namespace kruise-system \
-    --set installation.createNamespace=false --wait
+    --set installation.createNamespace=false --atomic --wait
 $ helm install kruise-game openkruise/kruise-game --namespace kruise-game-system \
-    --set installation.createNamespace=false --wait
+    --set installation.createNamespace=false --atomic --wait
 $ kubectl get crd gameserversets.game.kruise.io
 ```
 
@@ -3725,6 +3725,23 @@ refused`), so nothing else can start either:
 ```bash
 helm uninstall kruise -n kruise-system     # then re-run the installer
 ```
+
+**`Error: UPGRADE FAILED: services "kruise-webhook-service" not found`**
+The chart is fine; the release *record* is stale. helm stores a release's manifest as well as its
+objects, so if the objects are gone — a namespace deleted under it, a `helm uninstall` interrupted,
+a rollback that did not finish — the next `helm upgrade --install` takes the upgrade path and fails
+on the first object it cannot find. The diagnosis shows the shape: `helm status` says the release is
+not found *or* lists it, while `kubectl -n kruise-system get all` is empty. Remove the record and
+install cleanly:
+
+```bash
+helm uninstall kruise -n kruise-system    # ignore "release: not found"
+kubectl -n kruise-system get all          # should be empty
+```
+
+The installer recognises this error, removes the stale record itself, and installs once from clean —
+and it installs both OpenKruise charts with `--atomic`, so a failure removes what it created instead
+of leaving a webhook behind that refuses every pod creation in the cluster.
 
 **A pod or Deployment never becomes available / the workload wait just counts up (e.g. 17%)**
 That percentage is the installer's wait bar, and it means the thing it is waiting for has not

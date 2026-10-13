@@ -3740,6 +3740,29 @@ helm_install_with_retry() {
     fi
     local said=""
     said="$(tail -n 5 "$LAST_FAILURE" 2>/dev/null || true)"
+    #  A release record whose resources are gone (or resources whose record is gone) makes helm take
+    #  the upgrade path and fail on the first object it cannot find:
+    #      Error: UPGRADE FAILED: services "kruise-webhook-service" not found
+    #  which looks like a broken chart and is nothing of the sort -- the record is the stale half.
+    #  Remove it and install once, cleanly, because no later attempt can get past it otherwise.
+    case "$said" in
+        *"not found"*|*"has no deployed releases"*)
+            case "$said" in
+                *"UPGRADE FAILED"*|*"cannot patch"*|*"has no deployed releases"*)
+                    ui_warn "$label: the release record and the cluster disagree -- the release exists"
+                    ui_warn "but the objects it describes do not, so every attempt fails on the first"
+                    ui_warn "missing one. Removing the stale record and installing cleanly."
+                    run_cmd "$label: removing the stale release record" \
+                        helm uninstall "$release" --namespace "$ns" || true
+                    if run_cmd_progress "$label (fresh install)" "$budget" \
+                            helm upgrade --install "$release" "$chart" --namespace "$ns" "$@"; then
+                        return 0
+                    fi
+                    return 1
+                    ;;
+            esac
+            ;;
+    esac
     case "$said" in
         *"deadline exceeded"*|*"connection refused"*|*"unable to connect"*|*"no route to host"*)
             ui_warn "$label failed while the cluster was unreachable -- that is not the chart"
@@ -3809,14 +3832,19 @@ k8s_openkruise() {
              "check that your kubeconfig may create namespaces: kubectl create namespace kruise-system"
     #  `installation.createNamespace=false` is not decoration: the chart renders a Namespace object
     #  when it is true (its default), and that object collides with the namespace we just made.
+    #  `--atomic` because a half-installed OpenKruise is worse than none: its webhook configuration
+    #  survives a failed release and refuses every pod creation in the cluster, so anything that goes
+    #  wrong here must end with the release removed rather than left behind.
     if ! helm_install_with_retry "installing kruise" kruise openkruise/kruise kruise-system \
-            --set installation.createNamespace=false --wait --timeout 5m; then
+            --set installation.createNamespace=false --atomic --wait --timeout 5m; then
         k8s_diagnose "the kruise release" kruise-system kruise
         #  A half-installed kruise is worse than none: its webhook configuration survives the failed
         #  release and refuses EVERY pod creation in the cluster, which is what the events in the
         #  diagnosis above show ("failed calling webhook ... connect: connection refused").
         ui_warn "a failed kruise release leaves its webhook behind, and that webhook blocks pod creation"
-        ui_hint "remove it before re-running:  helm uninstall kruise -n kruise-system"
+        ui_hint "remove anything left behind before re-running:"
+        ui_hint "  helm uninstall kruise -n kruise-system       # ignore 'release: not found'"
+        ui_hint "  kubectl -n kruise-system get all            # should be empty"
         fail "could not install OpenKruise" "see chapter 8.1 of docs/MANUAL.md for the manual steps"
     fi
     #  kruise-game manages its own namespace and renders its resources into it, so installing it
@@ -3825,7 +3853,7 @@ k8s_openkruise() {
         fail "could not create the namespace kruise-game-system" \
              "check that your kubeconfig may create namespaces: kubectl create namespace kruise-game-system"
     if ! helm_install_with_retry "installing kruise-game" kruise-game openkruise/kruise-game kruise-game-system \
-            --set installation.createNamespace=false --wait --timeout 5m; then
+            --set installation.createNamespace=false --atomic --wait --timeout 5m; then
         k8s_diagnose "the kruise-game release" kruise-game-system kruise-game
         ui_hint "remove a failed release before re-running:  helm uninstall kruise-game -n kruise-game-system"
         fail "could not install kruise-game" "the GameServerSet CRD will be missing without it"
