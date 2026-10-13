@@ -269,6 +269,13 @@ def verify_installer() -> None:
           "install.sh: --create-namespace must be decided by whether the namespace exists")
     check(not re.search(r"--namespace [^\\\n]*--create-namespace", text),
           "install.sh: no helm invocation may pass --create-namespace unconditionally")
+    #  A helm failure that says only "context deadline exceeded" is unactionable, so every helm
+    #  install goes through the retry-and-diagnose helper, and every Kubernetes failure prints what
+    #  the cluster says. Counts include the definitions.
+    check(text.count("helm_install_with_retry") >= 4,
+          "install.sh: every helm install must go through helm_install_with_retry")
+    check(text.count("k8s_diagnose") >= 5,
+          "install.sh: a failed Kubernetes step must print the cluster diagnosis")
 
 
 def verify_lobby() -> None:

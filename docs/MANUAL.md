@@ -3663,6 +3663,27 @@ namespace exists and only passes `--create-namespace` when it does not. The same
 BedWars release install itself, where step `[2/8]` has always created the namespace first, and the
 printed advice no longer suggests the flag by hand.
 
+**`helm upgrade` fails with `Error: UPGRADE FAILED: context deadline exceeded`, seconds in**
+That message is not about the chart, and it is not helm's own timeout (`--timeout` would say "timed
+out waiting for the condition" after the full interval). It is the Kubernetes API server not
+answering — a minikube VM that is restarting its apiserver, a node under memory pressure, or a
+cluster that is simply not up. The installer now:
+
+* asks the cluster whether it answers at all **before** spending a helm run on it, and stops with a
+  sentence that says so if it does not;
+* retries the install **once**, and only for that class of error (`deadline exceeded`, `connection
+  refused`, `unable to connect`, `no route to host`) after waiting for the cluster to answer again
+  — a chart that cannot be downloaded is never retried, and nothing loops;
+* prints a **diagnosis block** on failure: `kubectl version`, `/readyz`, the nodes with their
+  allocatable memory and CPU, every workload and recent event in the namespace, the helm release's
+  status and history, and `describe pod` for the first pod that is not Running. The whole block
+  goes into `.installer/install.log` as well, so a failure report carries its own explanation.
+
+If you see it, the diagnosis block answers the actual question. The usual cause on a small VM is
+memory: OpenKruise's manager plus a match server is a real footprint, and a node with ~2 GB
+allocatable will fail in every way except the obvious one. `minikube start --cpus=4 --memory=6144`
+is the fix; the installer asks for those numbers and defaults to 3 CPU / 4096 MB.
+
 **`error: unable to recognize ...: no matches for kind "GameServerSet"`**
 The OpenKruise CRD is not installed. Install OpenKruise and kruise-game first (chapter 8.1).
 Note that `kubectl apply -k` does not fail loudly for this — it reports the unknown kind and

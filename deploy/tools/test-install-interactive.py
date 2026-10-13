@@ -109,8 +109,8 @@ CHECKS = [
 #  half -- or that returned early -- then shows up as a missing check instead of as a run
 #  that quietly did less than it claims.
 RUN = []
-EXPECTED_CHECKS = 41         # 23 above + 5 sudo-hang + 7 OpenKruise + 4 helm + 2 namespace
-EXPECTED_WITHOUT_HOST = 28   # the same, minus the interactive thirteen
+EXPECTED_CHECKS = 50         # 41 above + 5 diagnosis + 4 retry
+EXPECTED_WITHOUT_HOST = 37   # the same, minus the interactive thirteen
 
 
 #  A stage that cannot run on this host. Recorded with the number of checks it would have
@@ -157,6 +157,8 @@ def stub_stages():
     ok = check_openkruise_installs_helm() and ok
     ok = check_helm_install_judged_by_disk() and ok
     ok = check_helm_create_namespace_is_conditional() and ok
+    ok = check_failure_diagnosis() and ok
+    ok = check_helm_retry_is_bounded() and ok
     return ok
 
 
@@ -703,6 +705,140 @@ def check_helm_install_judged_by_disk():
         ok = note("RESULT=failed" in out,
                   "but a helm installer that installs nothing is still reported as a failure") and ok
         os.chmod(root_only, 0o700)
+    return ok
+
+
+#  A cluster whose API server is unreachable, whose node is out of memory, and whose pod is in
+#  CrashLoopBackOff: everything the "context deadline exceeded" line refuses to say.
+DIAGNOSE_STUBS = {
+    "kubectl": ("#!/bin/sh\n"
+                "case \"$*\" in\n"
+                "  *\"get --raw=/readyz\"*) echo ok; exit 0 ;;\n"
+                "  *\"get nodes -o wide\"*) printf 'NAME       STATUS   ROLES\nminikube   Ready    control-plane\n' ;;\n"
+                "  *\"get nodes -o custom-columns\"*) printf 'NAME       MEMORY\nminikube   1800000Ki\n' ;;\n"
+                "  *\"get pods --no-headers\"*) printf 'kruise-manager-abc   0/1   CrashLoopBackOff   9   4m\n' ;;\n"
+                "  *\"describe pod\"*) printf 'Last State:  Terminated\n  Reason:    OOMKilled\n  Exit Code: 137\n' ;;\n"
+                "  *\"get events\"*) printf 'LAST SEEN   TYPE      REASON   OBJECT\n4m          Warning   OOMKilling   pod/kruise-manager-abc\n' ;;\n"
+                "  *) exit 0 ;;\n"
+                "esac\n"),
+    "helm": ("#!/bin/sh\ncase \"$*\" in\n"
+             "  *\"status\"*) printf 'STATUS: failed\nREVISION: 1\n' ;;\n"
+             "  *\"history\"*) printf 'REVISION  STATUS\n1         failed\n' ;;\n"
+             "  *) exit 1 ;;\n"
+             "esac\n"),
+}
+
+DIAGNOSE_HARNESS = """set -u
+OPT_DRY_RUN=${HARNESS_DRY:-0}
+LOG_FILE="$HARNESS_LOG"
+LAST_FAILURE=""
+ui_hint() { printf 'HINT %s\\n' "$*"; }
+log_line() { printf 'LOG %s\\n' "$*" >> "$LOG_FILE"; }
+__FUNCTIONS__
+k8s_diagnose "the kruise release" kruise-system kruise
+"""
+
+
+def run_diagnose(root, dry=False):
+    pathdir = os.path.join(root, "bin")
+    os.makedirs(pathdir, exist_ok=True)
+    build_fake_path(pathdir, hide=("kubectl", "helm"), stubs=DIAGNOSE_STUBS)
+    logfile = os.path.join(root, "install.log")
+    script = os.path.join(root, "diag.sh")
+    body = (DIAGNOSE_HARNESS
+            .replace("__FUNCTIONS__", extract_function("k8s_diag_cmd") + extract_function("k8s_diagnose"))
+            .replace("${HARNESS_DRY:-0}", "1" if dry else "0"))
+    with open(script, "w", encoding="utf-8") as fh:
+        fh.write(body)
+    env = {"PATH": pathdir + ":/usr/bin:/bin", "HOME": root, "HARNESS_LOG": logfile, "NO_COLOR": "1"}
+    proc = subprocess.run(["/bin/bash", script], capture_output=True, text=True, env=env, timeout=120)
+    return ANSI.sub("", proc.stdout + proc.stderr), logfile
+
+
+def check_failure_diagnosis():
+    """A failed Kubernetes step must explain itself, not print one line from helm."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="bedwars-diag-") as root:
+        out, logfile = run_diagnose(root)
+        ok = note("diagnosis: what the cluster says" in out and "the API server (/readyz)" in out
+                  and "nodes (are they Ready" in out,
+                  "a failed step reports what the cluster says, not just helm's one line")
+        ok = note("allocatable memory per node" in out and "1800000Ki" in out,
+                  "it reports the memory the node can actually allocate") and ok
+        ok = note("why kruise-manager-abc is not Running" in out and "OOMKilled" in out,
+                  "and describes the pod that is not Running, with the reason") and ok
+        #  The same detail has to reach the log file, or a report from a user is still one line.
+        logged = open(logfile, encoding="utf-8").read() if os.path.exists(logfile) else ""
+        ok = note("OOMKilled" in logged,
+                  "every collected line is written to the log as well as the screen") and ok
+
+        out_dry, _ = run_diagnose(root, dry=True)
+        ok = note("diagnosis" not in out_dry,
+                  "and a dry run collects nothing, since there is no cluster to ask") and ok
+    return ok
+
+
+RETRY_HARNESS = """set -u
+OPT_DRY_RUN=0
+ui_info() { printf 'INFO %s\\n' "$*"; }
+ui_warn() { printf 'WARN %s\\n' "$*"; }
+run_cmd() { local label="$1"; shift; printf 'RUN %s\\n' "$label"; LAST_FAILURE="$HARNESS_LAST"; "$@" >"$LAST_FAILURE" 2>&1; }
+wait_for() { return ${HARNESS_WAITFOR:-0}; }
+__FUNCTION__
+if helm_install_with_retry "installing kruise" kruise openkruise/kruise kruise-system --wait; then
+  printf 'RESULT=ok\\n'
+else
+  printf 'RESULT=failed\\n'
+fi
+printf 'ATTEMPTS=%s\\n' "$(cat "$HELM_STUB_STATE")"
+"""
+
+HELM_FLAKY = ("#!/bin/sh\n"
+              "n=$(cat \"$HELM_STUB_STATE\" 2>/dev/null || echo 0)\n"
+              "n=$((n + 1)); echo $n > \"$HELM_STUB_STATE\"\n"
+              "case \"${HELM_STUB_MODE:-always}\" in\n"
+              "  blip) if [ \"$n\" = \"1\" ]; then echo 'Error: UPGRADE FAILED: context deadline exceeded' >&2; exit 1; fi; exit 0 ;;\n"
+              "  chart) echo 'Error: failed to download \"openkruise/kruise\"' >&2; exit 1 ;;\n"
+              "  *) echo 'Error: UPGRADE FAILED: context deadline exceeded' >&2; exit 1 ;;\n"
+              "esac\n")
+
+
+def run_retry_harness(root, mode, waitfor="0"):
+    pathdir = os.path.join(root, "bin")
+    os.makedirs(pathdir, exist_ok=True)
+    build_fake_path(pathdir, hide=("helm",), stubs={"helm": HELM_FLAKY})
+    #  Each case gets its own counter file. Sharing one means the previous case's attempts are
+    #  counted again, and an assertion about "how many attempts" passes or fails for the wrong
+    #  reason -- which is exactly how a vacuous check sneaks in.
+    state = os.path.join(root, "attempts-%s-%s" % (mode, waitfor))
+    script = os.path.join(root, "retry.sh")
+    with open(script, "w", encoding="utf-8") as fh:
+        fh.write(RETRY_HARNESS.replace("__FUNCTION__", extract_function("helm_install_with_retry")))
+    env = {"PATH": pathdir + ":/usr/bin:/bin", "HOME": root, "HELM_STUB_STATE": state,
+           "HELM_STUB_MODE": mode, "HARNESS_LAST": os.path.join(root, "last.log"),
+           "HARNESS_WAITFOR": waitfor, "NO_COLOR": "1"}
+    proc = subprocess.run(["/bin/bash", script], capture_output=True, text=True, env=env, timeout=120)
+    return ANSI.sub("", proc.stdout + proc.stderr)
+
+
+def check_helm_retry_is_bounded():
+    """A cluster blip is worth one retry; a broken chart is not worth any."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="bedwars-retry-") as root:
+        out = run_retry_harness(root, "blip")
+        ok = note("RESULT=ok" in out and "ATTEMPTS=2" in out and "retrying once" in out,
+                  "a connectivity failure is retried once, after the cluster answers again")
+        out = run_retry_harness(root, "always")
+        ok = note("RESULT=failed" in out and "ATTEMPTS=2" in out,
+                  "a cluster that stays down is retried once, not in a loop") and ok
+        out = run_retry_harness(root, "chart")
+        ok = note("RESULT=failed" in out and "ATTEMPTS=1" in out,
+                  "a chart that cannot be downloaded is not retried at all") and ok
+        out = run_retry_harness(root, "always", waitfor="1")
+        ok = note("RESULT=failed" in out and "ATTEMPTS=1" in out and "still is not answering" in out,
+                  "and if the cluster never answers again, it says that and stops") and ok
     return ok
 
 

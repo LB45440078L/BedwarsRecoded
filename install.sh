@@ -3462,6 +3462,92 @@ ensure_helm() {
     command -v helm >/dev/null 2>&1
 }
 
+#  When a Kubernetes step fails, helm prints one line -- often just "context deadline exceeded"
+#  -- and it explains nothing: was the chart wrong, the API server down, the node out of memory,
+#  the image unpullable? This collects what the cluster itself says. Read-only and cheap, and
+#  written to the log too, so a failure report carries its own explanation instead of needing
+#  another round trip.
+k8s_diag_cmd() {
+    # k8s_diag_cmd <description> <command...>
+    local desc="$1"; shift
+    local out="" _l=""
+    log_line "DIAG: $desc :: $*"
+    out="$("$@" 2>&1 | head -n 12)"
+    printf '    %s\n' "$desc"
+    if [ -n "$out" ]; then
+        while IFS= read -r _l; do
+            ui_hint "      $_l"
+            log_line "DIAG   $_l"
+        done < <(printf '%s\n' "$out")
+    else
+        ui_hint "      (no output)"
+    fi
+}
+
+k8s_diagnose() {
+    # k8s_diagnose <what failed> [namespace] [helm release]
+    [ "$OPT_DRY_RUN" = "1" ] && return 0
+    local what="$1" ns="${2:-}" release="${3:-}" pod=""
+    printf '\n'
+    ui_hint "diagnosis: what the cluster says about $what"
+    k8s_diag_cmd "kubectl version" kubectl version -o yaml
+    k8s_diag_cmd "the API server (/readyz)" kubectl get --raw=/readyz
+    k8s_diag_cmd "nodes (are they Ready, and how much can they allocate)" kubectl get nodes -o wide
+    #  Memory is the failure this architecture meets first: Kruise's manager plus a match server
+    #  is a real footprint, and a node that cannot hold it fails in every way except the obvious.
+    k8s_diag_cmd "allocatable memory per node" kubectl get nodes -o custom-columns=NAME:.metadata.name,MEMORY:.status.allocatable.memory,CPU:.status.allocatable.cpu
+    k8s_diag_cmd "node and pod resource use (needs a metrics server)" kubectl top nodes
+    if [ -n "$ns" ]; then
+        k8s_diag_cmd "workloads in $ns" kubectl -n "$ns" get deploy,daemonset,statefulset,pod -o wide
+        k8s_diag_cmd "recent events in $ns" kubectl -n "$ns" get events --sort-by=.lastTimestamp
+    fi
+    if [ -n "$release" ]; then
+        k8s_diag_cmd "helm status $release" helm status "$release" -n "${ns:-default}"
+        k8s_diag_cmd "helm history $release" helm history "$release" -n "${ns:-default}"
+    fi
+    #  A pod that is not Running explains most failures, and `describe` is where the reason is.
+    if [ -n "$ns" ]; then
+        pod="$(kubectl -n "$ns" get pods --no-headers 2>/dev/null | awk '$3 != "Running" && $3 != "Completed" {print $1; exit}')"
+        if [ -n "$pod" ]; then
+            k8s_diag_cmd "why $pod is not Running" kubectl -n "$ns" describe pod "$pod"
+        fi
+    fi
+    ui_hint "the full text of every one of these is in the log: $LOG_FILE"
+}
+
+#  A transient API-server blip -- minikube restarting its apiserver, a node under memory pressure --
+#  surfaces as "context deadline exceeded" a few seconds into a helm run and has nothing to do with
+#  the chart. Retry once, only after the cluster answers again, and only for that class of error:
+#  a chart that does not exist or a value that is wrong is not going to fix itself, and a loop
+#  would just hide the real message.
+helm_install_with_retry() {
+    # helm_install_with_retry <label> <release> <chart> <namespace> [extra args...]
+    local label="$1" release="$2" chart="$3" ns="$4"; shift 4
+    if run_cmd "$label" helm upgrade --install "$release" "$chart" --namespace "$ns" "$@"; then
+        return 0
+    fi
+    local said=""
+    said="$(tail -n 5 "$LAST_FAILURE" 2>/dev/null || true)"
+    case "$said" in
+        *"deadline exceeded"*|*"connection refused"*|*"unable to connect"*|*"no route to host"*)
+            ui_warn "$label failed while the cluster was unreachable -- that is not the chart"
+            if wait_for "the cluster to answer again" 120 kubectl get nodes; then
+                ui_info "retrying once: $label"
+                run_cmd "$label (retry)" helm upgrade --install "$release" "$chart" --namespace "$ns" "$@"
+                return $?
+            fi
+            ui_warn "the cluster still is not answering after two minutes"
+            ;;
+        *)
+            #  Not a connectivity failure: say what it was and do not retry. The caller diagnoses.
+            case "$said" in
+                *"Error"*) ;; # already visible from fail()'s tail
+            esac
+            ;;
+    esac
+    return 1
+}
+
 k8s_openkruise() {
     local have_crd="no"
     if kubectl get crd gameserversets.game.kruise.io >/dev/null 2>&1; then
@@ -3485,16 +3571,25 @@ k8s_openkruise() {
     #  installer now installs it instead of fetching something that does not exist.
     ensure_helm || fail "helm is required to install OpenKruise" \
         "upstream publishes no kubectl manifest; install helm (https://helm.sh/docs/intro/install/) or follow chapter 8.1"
+    #  Ask the cluster whether it is answering at all before burning a helm run on it: an
+    #  unreachable API server produces exactly one line of helm output and no clue.
+    if [ "$OPT_DRY_RUN" != "1" ] && ! kubectl get nodes >/dev/null 2>&1; then
+        k8s_diagnose "the cluster connection" kruise-system
+        fail "the Kubernetes cluster is not answering" \
+            "the API server did not respond -- start it (minikube start, or Docker Desktop's Kubernetes) and re-run"
+    fi
     run_cmd "adding the OpenKruise chart repo" helm repo add openkruise "$OPENKRUISE_CHARTS" || true
     run_cmd "updating chart repos" helm repo update || true
     local nsargs=""
     nsargs="$(k8s_ns_args kruise-system)"
-    if ! run_cmd "installing kruise" helm upgrade --install kruise openkruise/kruise \
-            --namespace kruise-system $nsargs --wait --timeout 5m; then
+    if ! helm_install_with_retry "installing kruise" kruise openkruise/kruise kruise-system \
+            $nsargs --wait --timeout 5m; then
+        k8s_diagnose "the kruise release" kruise-system kruise
         fail "could not install OpenKruise" "see chapter 8.1 of docs/MANUAL.md for the manual steps"
     fi
-    if ! run_cmd "installing kruise-game" helm upgrade --install kruise-game openkruise/kruise-game \
-            --namespace kruise-system --wait --timeout 5m; then
+    if ! helm_install_with_retry "installing kruise-game" kruise-game openkruise/kruise-game kruise-system \
+            --wait --timeout 5m; then
+        k8s_diagnose "the kruise-game release" kruise-system kruise-game
         fail "could not install kruise-game" "the GameServerSet CRD will be missing without it"
     fi
     if [ "$OPT_DRY_RUN" = "1" ]; then
@@ -3505,6 +3600,7 @@ k8s_openkruise() {
     if wait_for "the GameServerSet CRD to appear" 180 kubectl get crd gameserversets.game.kruise.io; then
         ui_ok "GameServerSet CRD ready"
     else
+        k8s_diagnose "the GameServerSet CRD" kruise-system
         fail "the GameServerSet CRD never appeared" \
              "check 'kubectl get crd | grep kruise'; a wrong API group here is the classic failure"
     fi
@@ -3563,9 +3659,10 @@ k8s_deploy() {
     if [ "$CFG_K8S_INSTALL_MODE" = "helm" ]; then
         local nsargs=""
         nsargs="$(k8s_ns_args "$KUBECTL_NS")"
-        if ! run_streaming "helm upgrade --install $CFG_RELEASE" helm upgrade --install "$CFG_RELEASE" \
-                "$ROOT/deploy/helm/bedwars" --namespace "$KUBECTL_NS" $nsargs \
+        if ! helm_install_with_retry "helm upgrade --install $CFG_RELEASE" "$CFG_RELEASE" \
+                "$ROOT/deploy/helm/bedwars" "$KUBECTL_NS" $nsargs \
                 -f "$ROOT/deploy/helm/values-install.yaml"; then
+            k8s_diagnose "the $CFG_RELEASE release" "$KUBECTL_NS" "$CFG_RELEASE"
             fail "helm install failed" "run 'helm template' by hand to see the rendered manifests"
         fi
         ui_ok "release $CFG_RELEASE applied"
