@@ -3641,6 +3641,13 @@ only way OpenKruise is published. If you are seeing the 404 you are running an o
 The chart repository is `https://openkruise.github.io/charts/` — not `https://openkruise.io/charts`,
 which is also a 404 (an older version of this manual printed that one; it has been corrected).
 
+**The helm install fails with `get-helm-3: 311: [[: not found` / `[: false: unexpected operator`**
+The helm installer script is written in **bash**, and it was being run with `sh`. On Debian and
+Ubuntu `sh` is dash, so the script dies at its first `[[` and then reports `Either curl or wget is
+required` — a consequence, not the cause, which is why the message sends you looking at curl. It is
+run with `bash` now, and the installer checks afterwards that `helm` is actually on `PATH` rather
+than trusting the script's exit code. If you are seeing this, you are running an older `install.sh`.
+
 **`error: unable to recognize ...: no matches for kind "GameServerSet"`**
 The OpenKruise CRD is not installed. Install OpenKruise and kruise-game first (chapter 8.1).
 Note that `kubectl apply -k` does not fail loudly for this — it reports the unknown kind and

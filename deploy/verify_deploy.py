@@ -250,6 +250,13 @@ def verify_installer() -> None:
           "install.sh: helm must be installed by the installer when OpenKruise needs it")
     check("USE_SUDO=false" in text,
           "install.sh: the helm installer script must not be allowed to reach for sudo")
+    #  Reported next: get-helm-3 was run with `sh`. On Debian and Ubuntu that is dash, and the
+    #  script is bash -- it dies at its first `[[` ("[[: not found") and then reports that curl
+    #  is missing, which sends you looking in the wrong place.
+    check('helmsh="bash"' in text,
+          "install.sh: the helm installer script must be run by bash")
+    check(not re.search(r'USE_SUDO=false sh "\$tmp_script"', text),
+          "install.sh: running the helm installer script with sh fails on dash")
 
 
 def verify_lobby() -> None:

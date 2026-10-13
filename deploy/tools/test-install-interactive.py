@@ -109,8 +109,8 @@ CHECKS = [
 #  half -- or that returned early -- then shows up as a missing check instead of as a run
 #  that quietly did less than it claims.
 RUN = []
-EXPECTED_CHECKS = 32         # 23 above + 5 sudo-hang + 4 OpenKruise checks
-EXPECTED_WITHOUT_HOST = 19   # the same, minus the interactive thirteen
+EXPECTED_CHECKS = 34         # 23 above + 5 sudo-hang + 6 OpenKruise checks
+EXPECTED_WITHOUT_HOST = 21   # the same, minus the interactive thirteen
 
 
 #  A stage that cannot run on this host. Recorded with the number of checks it would have
@@ -443,14 +443,22 @@ def check_openkruise_installs_helm():
     with tempfile.TemporaryDirectory(prefix="bedwars-kruise-") as root:
         tmpdir = os.path.join(root, "bin")
         os.makedirs(tmpdir)
-        build_fake_path(tmpdir, hide=("helm", "minikube", "kind", "kubectl", "java", "mvn"),
-                        stubs=kube_stubs(kubectl=KUBECTL_LIVE_NO_KRUISE))
+        build_fake_path(tmpdir, hide=("helm", "minikube", "kind", "kubectl", "java", "mvn",
+                                      "apt-get", "uname"),
+                        stubs=kube_stubs(kubectl=KUBECTL_LIVE_NO_KRUISE,
+                                         uname=UBUNTU_UNAME_STUB, **{"apt-get": PRESENT_NOOP_STUB}))
         text, rc = run_kubernetes_install(tmpdir, os.path.join(root, "home"))
 
         ok = note("kruise-all-in-one" not in text and "404" not in text,
                   "OpenKruise is not fetched from the release URL that answers 404")
         ok = note("helm repo add openkruise https://openkruise.github.io/charts/" in text,
                   "and the chart repository it does use is the one that answers") and ok
+        #  Reported next: the helm installer script was run with `sh`, which is dash on Ubuntu, so
+        #  it died at its first `[[` and blamed curl. Its own shell is bash.
+        ok = note("USE_SUDO=false bash" in text,
+                  "the helm installer script is run by bash, the shell it is written in") and ok
+        ok = note("USE_SUDO=false sh " not in text,
+                  "and never by sh, which is dash on Ubuntu and fails at the first [[") and ok
 
     #  2. Unattended with no helm: refuse with the command, rather than trying anything.
     with tempfile.TemporaryDirectory(prefix="bedwars-helm-") as root:

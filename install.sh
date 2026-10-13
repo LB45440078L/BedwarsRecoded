@@ -1476,7 +1476,18 @@ install_binary_tool() {
             local helmdir
             if [ "$IS_ROOT" = "1" ] || [ -w "$BIN_DIR" ]; then helmdir="$BIN_DIR"; else helmdir="$HOME/.local/bin"; fi
             mkdir -p "$helmdir" 2>/dev/null || true
-            run_streaming "installing helm" env HELM_INSTALL_DIR="$helmdir" USE_SUDO=false sh "$tmp_script" || { FAILED_INSTALL="$FAILED_INSTALL $tool"; return 1; }
+            #  The script is written in bash, and on Debian/Ubuntu `sh` is dash: run that way it
+            #  dies at its first `[[` with "[[: not found" and then reports "Either curl or wget
+            #  is required", which is a consequence, not the cause. Run it with the shell it was
+            #  written for -- bash is present, the installer itself is bash.
+            local helmsh="bash"
+            command -v bash >/dev/null 2>&1 || helmsh="sh"
+            run_streaming "installing helm" env HELM_INSTALL_DIR="$helmdir" USE_SUDO=false "$helmsh" "$tmp_script" || { FAILED_INSTALL="$FAILED_INSTALL $tool"; return 1; }
+            if ! command -v helm >/dev/null 2>&1; then
+                #  The installer script can exit 0 having put helm somewhere we do not look.
+                ui_warn "the helm installer finished but no helm is on PATH"
+                FAILED_INSTALL="$FAILED_INSTALL $tool"; return 1
+            fi
             case ":$PATH:" in *":$helmdir:"*) ;; *) PATH="$helmdir:$PATH"; export PATH ;; esac
             ;;
         minikube)
@@ -3396,7 +3407,10 @@ OPENKRUISE_CHARTS="https://openkruise.github.io/charts/"
 ensure_helm() {
     if command -v helm >/dev/null 2>&1; then return 0; fi
     if [ "$OPT_DRY_RUN" = "1" ]; then
-        ui_info "[dry-run] helm would be installed here"
+        #  Walk the real install route so the dry run prints the commands it would run, which is
+        #  the only place `bash` vs `sh` for the helm installer script is visible before it bites.
+        ui_info "[dry-run] helm is needed; here is what would install it"
+        install_one_tool helm || true
         return 0
     fi
     if [ "$OPT_YES" = "1" ] || [ "$OPT_INSTALL_DEPS" = "no" ]; then
